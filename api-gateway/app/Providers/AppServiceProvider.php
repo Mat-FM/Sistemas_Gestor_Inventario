@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Exceptions\ApiException;
 use App\Services\Jwt\JwtService;
+use App\Services\Proxy\ProxyService;
 use App\Services\Routing\RouteMap;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -28,6 +29,12 @@ class AppServiceProvider extends ServiceProvider
         // lectura y no accede a la base de datos (RNF13). El closure lee la configuración al resolverlo, no al
         // registrar, así que una tabla mal escrita falla en la primera petición proxy, con un error claro.
         $this->app->singleton(RouteMap::class, fn () => new RouteMap(config('gateway_routes')));
+
+        // El proxy recibe las URLs de los servicios y el tiempo máximo ya leídos de la configuración (RNF14).
+        $this->app->singleton(ProxyService::class, fn () => new ProxyService(
+            (array) config('gateway.services'),
+            (int) config('gateway.timeout_seconds'),
+        ));
     }
 
     /**

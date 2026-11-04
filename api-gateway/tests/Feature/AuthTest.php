@@ -9,6 +9,7 @@ use App\Services\Jwt\JwtService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Contracts\Hashing\Hasher;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\ApiHelpers;
@@ -305,7 +306,15 @@ class AuthTest extends TestCase
 
     public function test_solo_se_acepta_post_en_el_login(): void
     {
-        $this->getJson('/api/auth/login')->assertStatus(405);
+        // Otro método cae en el comodín de reenvío (Tarea 9): 401 sin token y 404 con token, nunca 405, para no
+        // revelar qué rutas existen. Nunca llega a un servicio ni al controlador del login.
+        Http::preventStrayRequests();
+        Http::fake();
+
+        $this->getJson('/api/auth/login')->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
+        $this->conSesion($this->usuario())->getJson('/api/auth/login')->assertStatus(404)->assertJsonPath('error.codigo', 'NO_EXISTE');
+
+        Http::assertNothingSent();
     }
 
     public function test_el_administrador_sembrado_puede_entrar_y_esta_obligado_a_cambiar_su_contrasena(): void

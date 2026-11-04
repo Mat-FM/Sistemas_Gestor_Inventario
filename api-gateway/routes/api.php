@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\ProxyController;
 use App\Http\Controllers\RolController;
 use App\Http\Controllers\UsuarioController;
 use Illuminate\Support\Facades\Route;
@@ -41,4 +42,11 @@ Route::middleware(['jwt', 'throttle:api', 'cambio.contrasena'])->group(function 
 
         Route::get('roles', [RolController::class, 'index']);
     });
+
+    // Reenvío a los microservicios (Tabla 4). Por estar dentro del grupo, una ruta desconocida sin token es 401
+    // antes que 404 (no revela qué rutas existen). ProxyController decide con el mapa de rutas (404 si no está
+    // publicada, 403 si el rol no puede). `fallback()` hace que el enrutador lo pruebe siempre después de todas
+    // las demás rutas, también de las que se registren más tarde, así que las rutas propias siempre ganan. Como
+    // acepta todos los métodos, un método no listado en /api es 401 sin token y 404 con token, nunca 405.
+    Route::any('{path}', ProxyController::class)->where('path', '.*')->fallback();
 });

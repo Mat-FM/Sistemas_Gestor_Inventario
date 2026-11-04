@@ -6,12 +6,14 @@ use App\Http\Middleware\AuthenticateJwt;
 use App\Http\Middleware\EnforcePasswordChange;
 use App\Http\Middleware\LogRequest;
 use App\Http\Middleware\RequireRole;
+use App\Services\Proxy\ProxyService;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -36,6 +38,12 @@ return Application::configure(basePath: dirname(__DIR__))
         // Primero el identificador de petición y luego el registro, antes que cualquier otro middleware de /api
         // (JWT, cambio de contraseña pendiente y límite de peticiones los añaden las rutas).
         $middleware->api(prepend: [AssignRequestId::class, LogRequest::class]);
+
+        // Una carga multipart se reenvía reconstruida a partir de los campos que PHP ya interpretó (no hay cuerpo en
+        // bruto): estos dos middleware globales no deben recortarlos ni convertir '' en null antes del proxy (D11).
+        $esMultipart = fn (Request $request): bool => ProxyService::esMultipart((string) $request->headers->get('Content-Type'));
+        $middleware->trimStrings(except: [$esMultipart]);
+        $middleware->convertEmptyStringsToNull(except: [$esMultipart]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Todas las respuestas son JSON con la forma común de error, pida lo que pida el cliente.
