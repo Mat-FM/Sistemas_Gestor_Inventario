@@ -129,16 +129,4 @@ class AuthController extends Controller
     {
         return new ApiException(401, 'CREDENCIALES_INVALIDAS', 'Correo o contraseña incorrectos.');
     }
-
-    /** El usuario que dejó AuthenticateJwt; sin él (cadena de middleware mal armada) es 401 y no un error interno. */
-    private function usuarioActual(Request $request): Usuario
-    {
-        $usuario = $request->attributes->get('usuario');
-
-        if (! $usuario instanceof Usuario) {
-            throw ApiException::noAutenticado();
-        }
-
-        return $usuario;
-    }
 }

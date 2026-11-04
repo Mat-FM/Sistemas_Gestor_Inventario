@@ -1,10 +1,12 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\RolController;
+use App\Http\Controllers\UsuarioController;
 use Illuminate\Support\Facades\Route;
 
 // Rutas públicas del Gateway (prefijo /api): /api/auth, /api/usuarios, /api/roles
-// y el comodín de reenvío a los microservicios. Las dos últimas se agregan en las tareas siguientes.
+// y el comodín de reenvío a los microservicios (que se agrega en una tarea posterior).
 
 // Público: no lleva `jwt`. Límite de 10 intentos por minuto por IP (RNF19), exitosos o no.
 Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
@@ -21,5 +23,22 @@ Route::middleware(['jwt', 'throttle:api', 'cambio.contrasena'])->group(function 
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me']);
         Route::put('contrasena', [AuthController::class, 'cambiarContrasena']);
+    });
+
+    // Usuarios y roles (RF07, Tabla 6): solo ADMINISTRADOR (403 SIN_PERMISO a los demás). Las ocho rutas de la tabla
+    // y ninguna más: sin apiResource, porque agregaría PATCH y DELETE (los usuarios no se borran, se inactivan). El
+    // `{id}` se valida en UsuarioService::obtener y no con `where`, para que 401 y 403 le ganen al 404 de un id malo.
+    Route::middleware('rol:ADMINISTRADOR')->group(function (): void {
+        Route::prefix('usuarios')->group(function (): void {
+            Route::get('/', [UsuarioController::class, 'index']);
+            Route::post('/', [UsuarioController::class, 'store']);
+            Route::get('{id}', [UsuarioController::class, 'show']);
+            Route::put('{id}', [UsuarioController::class, 'update']);
+            Route::post('{id}/inactivar', [UsuarioController::class, 'inactivar']);
+            Route::post('{id}/activar', [UsuarioController::class, 'activar']);
+            Route::post('{id}/restablecer-contrasena', [UsuarioController::class, 'restablecerContrasena']);
+        });
+
+        Route::get('roles', [RolController::class, 'index']);
     });
 });
