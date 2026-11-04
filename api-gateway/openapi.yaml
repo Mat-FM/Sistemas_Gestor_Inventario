@@ -16,7 +16,8 @@ info:
 
     `POST /api/auth/login` entrega un JWT. Las demás operaciones lo reciben en la cabecera
     `Authorization: Bearer <token>`. El token vale 60 minutos; el rol y el estado del usuario se leen de la base en
-    cada petición, así que un usuario inactivado deja de poder entrar aunque su token no haya vencido.
+    cada petición, así que un usuario inactivado deja de poder entrar aunque su token no haya vencido. Restablecer
+    la contraseña de un usuario o inactivarlo además revoca los tokens que ya se le habían emitido.
 
     Mientras `debe_cambiar_contrasena` sea `true` (primer inicio de sesión o contraseña restablecida) el Gateway solo
     permite `PUT /api/auth/contrasena` y `POST /api/auth/logout`; todo lo demás responde 403
@@ -359,8 +360,9 @@ paths:
       summary: Inactivar un usuario
       description: |
         Solo ADMINISTRADOR. El usuario ya no puede iniciar sesión y su token deja de servir en la petición siguiente.
-        Es idempotente. Un administrador no puede inactivarse a sí mismo (409 `CONFLICTO`): la recuperación de
-        contraseña es solo por administrador y el sistema quedaría sin acceso.
+        Además revoca los tokens ya emitidos del usuario: reactivarlo con `activar` no los rehabilita y debe iniciar
+        sesión de nuevo. Es idempotente. Un administrador no puede inactivarse a sí mismo (409 `CONFLICTO`): la
+        recuperación de contraseña es solo por administrador y el sistema quedaría sin acceso.
       security:
         - bearerAuth: []
       parameters:
@@ -397,7 +399,9 @@ paths:
       tags: [Usuarios]
       operationId: activarUsuario
       summary: Activar un usuario
-      description: Solo ADMINISTRADOR. Vuelve a permitir el inicio de sesión del usuario. Es idempotente.
+      description: |
+        Solo ADMINISTRADOR. Vuelve a permitir el inicio de sesión del usuario. Es idempotente. No rehabilita los tokens
+        emitidos antes de inactivarlo: el usuario debe iniciar sesión de nuevo.
       security:
         - bearerAuth: []
       parameters:
@@ -424,7 +428,10 @@ paths:
       description: |
         Solo ADMINISTRADOR. Reemplaza la recuperación de contraseña por correo (RF08): el administrador asigna una
         contraseña temporal, la anterior deja de servir y el usuario debe cambiarla en su siguiente inicio de
-        sesión (`debe_cambiar_contrasena` pasa a `true`).
+        sesión (`debe_cambiar_contrasena` pasa a `true`). Además revoca los tokens ya emitidos del usuario, de modo
+        que una sesión robada no vuelve a servir cuando fija su contraseña definitiva; si un administrador restablece
+        la suya, su token actual también deja de servir y debe iniciar sesión de nuevo con la temporal. Un token
+        emitido en el mismo segundo del restablecimiento sigue valiendo.
       security:
         - bearerAuth: []
       parameters:
@@ -477,7 +484,8 @@ components:
       bearerFormat: JWT
       description: |
         JWT obtenido en `POST /api/auth/login`, enviado como `Authorization: Bearer <token>`. Vale 60 minutos.
-        Un token vencido, manipulado o de un usuario inactivo o inexistente recibe 401.
+        Un token vencido, manipulado, revocado (restablecer la contraseña o inactivar al usuario revoca los ya
+        emitidos) o de un usuario inactivo o inexistente recibe 401.
 
   parameters:
     IdUsuario:
@@ -529,7 +537,7 @@ components:
 
   responses:
     NoAutenticado:
-      description: Falta el token, está vencido, está manipulado o es de un usuario inactivo o inexistente.
+      description: Falta el token, está vencido, está manipulado, fue revocado o es de un usuario inactivo o inexistente.
       content:
         application/json:
           schema:
