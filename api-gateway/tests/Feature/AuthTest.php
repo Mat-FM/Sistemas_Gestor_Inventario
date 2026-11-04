@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\AuthController;
 use App\Models\Usuario;
 use App\Rules\ContrasenaValida;
 use App\Services\Jwt\JwtService;
@@ -42,7 +43,7 @@ class AuthTest extends TestCase
     }
 
     /**
-     * Cuenta cada Hash::check y la última pareja (valor, hash) comprobada, y delega en el hasher real.
+     * Registra cada Hash::check (valor, hash) y cuenta cada Hash::make, y delega en el hasher real.
      */
     private function espiarHash(): object
     {
@@ -50,6 +51,8 @@ class AuthTest extends TestCase
         {
             /** @var list<array{string, string}> */
             public array $comprobaciones = [];
+
+            public int $fabricaciones = 0;
 
             public function __construct(private readonly Hasher $real) {}
 
@@ -60,6 +63,8 @@ class AuthTest extends TestCase
 
             public function make(#[\SensitiveParameter] $value, array $options = [])
             {
+                $this->fabricaciones++;
+
                 return $this->real->make($value, $options);
             }
 
@@ -193,28 +198,46 @@ class AuthTest extends TestCase
         }
     }
 
-    public function test_con_un_correo_inexistente_igualmente_se_compara_contra_un_hash_falso(): void
+    public function test_cada_login_hace_una_sola_operacion_bcrypt_exista_o_no_el_correo(): void  // Ruling 22
     {
         $real = $this->usuario('OPERADOR_BODEGA', ['correo' => 'op@example.test', 'contrasena' => 'Clave1234']);
         $espia = $this->espiarHash();
 
+        // Un correo inexistente: cero Hash::make (el hash falso no se calcula por petición) y un Hash::check.
         $this->postJson('/api/auth/login', ['correo' => 'nadie@example.test', 'contrasena' => 'Clave1234'])->assertStatus(401);
-        $this->assertCount(1, $espia->comprobaciones, 'Un correo inexistente debe costar un Hash::check, igual que uno existente.');
+        $this->assertSame(0, $espia->fabricaciones, 'Calcular un hash por petición delata que el correo no existe.');
+        $this->assertCount(1, $espia->comprobaciones);
+        $this->assertSame(['Clave1234', AuthController::HASH_FALSO], $espia->comprobaciones[0]);
 
-        [$valor, $hashFalso] = $espia->comprobaciones[0];
-        $this->assertSame('Clave1234', $valor);
-        $this->assertNotSame($real->contrasena_cifrada, $hashFalso);
-        // Un bcrypt de verdad y del mismo costo que los hashes reales: si no, el tiempo delataría la cuenta.
-        $info = password_get_info($hashFalso);
-        $this->assertSame('bcrypt', $info['algoName']);
-        $this->assertSame((int) config('hashing.bcrypt.rounds'), $info['options']['cost']);
-        $this->assertSame($info['options']['cost'], password_get_info($real->contrasena_cifrada)['options']['cost']);
-
-        // Y un correo existente con la contraseña errónea también cuesta exactamente un Hash::check.
+        // Un correo existente con la contraseña errónea: lo mismo.
         $espia->comprobaciones = [];
         $this->postJson('/api/auth/login', ['correo' => 'op@example.test', 'contrasena' => 'otra-cosa'])->assertStatus(401);
+        $this->assertSame(0, $espia->fabricaciones);
         $this->assertCount(1, $espia->comprobaciones);
-        $this->assertSame($real->contrasena_cifrada, $espia->comprobaciones[0][1]);
+        $this->assertSame(['otra-cosa', $real->contrasena_cifrada], $espia->comprobaciones[0]);
+
+        // Y con la contraseña correcta.
+        $espia->comprobaciones = [];
+        $this->postJson('/api/auth/login', ['correo' => 'op@example.test', 'contrasena' => 'Clave1234'])->assertOk();
+        $this->assertSame(0, $espia->fabricaciones);
+        $this->assertCount(1, $espia->comprobaciones);
+        $this->assertSame(['Clave1234', $real->contrasena_cifrada], $espia->comprobaciones[0]);
+    }
+
+    public function test_el_hash_falso_es_un_bcrypt_valido_con_el_costo_de_bcrypt_rounds_de_env_example(): void  // Ruling 22
+    {
+        $info = Hash::info(AuthController::HASH_FALSO);
+        $this->assertSame('bcrypt', $info['algoName']);
+
+        // El costo de producción es el de .env.example; si alguien cambia uno sin el otro, esta prueba avisa.
+        $this->assertMatchesRegularExpression('/^BCRYPT_ROUNDS=(\d+)$/m', file_get_contents(base_path('.env.example')));
+        preg_match('/^BCRYPT_ROUNDS=(\d+)$/m', file_get_contents(base_path('.env.example')), $coincidencias);
+        $this->assertSame((int) $coincidencias[1], $info['options']['cost']);
+
+        // Es un hash que nadie conoce: no corresponde a ninguna contraseña de uso común ni a las de las pruebas.
+        foreach (['password', 'Contrasena123', 'Clave1234'] as $candidata) {
+            $this->assertFalse(Hash::check($candidata, AuthController::HASH_FALSO));
+        }
     }
 
     public function test_usuario_inactivo_con_la_contrasena_correcta_es_403_usuario_inactivo(): void
