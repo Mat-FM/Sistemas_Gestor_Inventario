@@ -34,10 +34,13 @@ Todo lo demás bajo `/api` se reenvía al microservicio que corresponda, sin el 
 | Ruta | Quién |
 | --- | --- |
 | `POST /api/auth/login` | Pública (10 intentos por minuto por IP) |
-| `POST /api/auth/logout`, `GET /api/auth/me`, `PUT /api/auth/contrasena` | Cualquier usuario autenticado |
+| `PUT /api/auth/contrasena`, `POST /api/auth/logout` | Cualquier usuario autenticado |
+| `GET /api/auth/me` | Cualquier usuario autenticado sin cambio de contraseña pendiente |
 | `GET\|POST /api/usuarios`, `GET\|PUT /api/usuarios/{id}`, `POST /api/usuarios/{id}/inactivar`, `POST /api/usuarios/{id}/activar`, `POST /api/usuarios/{id}/restablecer-contrasena`, `GET /api/roles` | Solo `ADMINISTRADOR` |
 | `GET /health` | Pública |
 | `GET /docs` y `GET /docs/openapi.yaml` | Públicas |
+
+Mientras un usuario tenga el cambio de contraseña pendiente (el primer administrador, un usuario recién creado o uno al que le restablecieron la contraseña), solo funcionan `PUT /api/auth/contrasena` y `POST /api/auth/logout`. Cualquier otra ruta autenticada, incluidas `GET /api/auth/me` y las que se reenvían a los servicios, responde 403 `CAMBIO_CONTRASENA_REQUERIDO` hasta que la cambie.
 
 `/docs` publica la documentación OpenAPI del propio Gateway (`openapi.yaml`): solo describe las rutas de esta tabla, porque cada microservicio publica la suya. La página usa Swagger UI cargado desde un CDN, así que el navegador necesita acceso a internet.
 
@@ -70,6 +73,7 @@ Las demás variables traen valores que funcionan tal cual en local. Las principa
 | `RATE_LIMIT_PER_MINUTE` | Peticiones por minuto por usuario (100) |
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | Intentos de inicio de sesión por minuto por IP (10) |
 | `MS_*_URL` | URL de cada microservicio (RNF14); por defecto, los nombres del DNS interno de Kubernetes |
+| `TRUSTED_PROXIES` | Proxies de confianza (vacía en local; ver «Notas de despliegue») |
 | `APP_LOCALE`, `APP_FALLBACK_LOCALE` | Idioma de los mensajes (`es`) |
 
 ## Base de datos
@@ -84,7 +88,7 @@ php artisan migrate --seed
 
 Las credenciales por defecto del `docker-compose.yml` (`gateway` / `change_me`, base `gateway_db`) son las de `.env.example`; si cambia `GATEWAY_DB_PASSWORD` en el `.env` de la raíz, cambie también `DB_PASSWORD`.
 
-`migrate --seed` falla con un mensaje claro si `ADMIN_EMAIL` o `ADMIN_PASSWORD` faltan o la contraseña no cumple la regla. Se puede repetir sin riesgo: no duplica roles y nunca sobrescribe un usuario que ya existe.
+`migrate --seed` falla con un mensaje claro si `ADMIN_EMAIL` o `ADMIN_PASSWORD` faltan o la contraseña no cumple la regla. Repetirlo no duplica roles ni sobrescribe un usuario que ya existe, pero vuelve a exigir una `ADMIN_PASSWORD` válida cada vez, aunque el administrador ya exista. Por eso conviene ejecutar `php artisan migrate --seed` una sola vez, al instalar, y después solo `php artisan migrate`: así no hay que dejar la contraseña temporal en el entorno de un pipeline de despliegue.
 
 ## Ejecutar el servidor
 
@@ -92,6 +96,8 @@ Las credenciales por defecto del `docker-compose.yml` (`gateway` / `change_me`, 
 php artisan serve        # http://127.0.0.1:8000
 curl http://127.0.0.1:8000/health
 ```
+
+`GET /health` responde 200 `{"estado":"ok","servicio":"api-gateway"}` solo si la configuración permite atender peticiones: `JWT_SECRET` tiene al menos 32 caracteres, `JWT_TTL_MINUTES` es de al menos un minuto y las seis `MS_*_URL` son URLs `http` o `https` válidas. Si no, responde 503 `SERVICIO_NO_DISPONIBLE`, sin decir qué falla, y registra un error `configuracion_no_valida` con los nombres de las variables que hay que revisar (nunca sus valores). Sirve como sonda de readiness: un pod mal configurado no recibe tráfico, en vez de responder 500 a cada inicio de sesión o ruta autenticada. No consulta la base de datos ni los microservicios, no exige token y no tiene límite de peticiones.
 
 La documentación queda en `http://127.0.0.1:8000/docs`.
 
@@ -123,8 +129,22 @@ La integración continua lo ejecuta en cada pull request que toque `api-gateway/
 
 ## Notas de despliegue
 
-- **Entorno de producción.** Defina `APP_LOCALE=es` y `CACHE_STORE=database`. El contador del límite de peticiones vive en el almacén de caché; con `database` se comparte entre las copias del Gateway (RNF05) y hay que haber migrado la tabla `cache` (`php artisan migrate`). Con otros almacenes locales (`array`, `file`) cada copia contaría por separado. Todas las copias deben compartir el mismo `JWT_SECRET`, o no se reconocerán los tokens entre sí.
+- **Entorno de producción.** Defina `APP_ENV=production` y `APP_DEBUG=false`: `.env.example` trae `local` y `true`, que son para desarrollo. Las respuestas JSON nunca incluyen trazas ni mensajes internos, ni siquiera con el modo de depuración activo, pero en producción debe estar apagado. Defina también `APP_LOCALE=es` y `CACHE_STORE=database`. El contador del límite de peticiones vive en el almacén de caché; con `database` se comparte entre las copias del Gateway (RNF05) y hay que haber migrado la tabla `cache` (`php artisan migrate`). Con otros almacenes locales (`array`, `file`) cada copia contaría por separado. Todas las copias deben compartir el mismo `JWT_SECRET`, o no se reconocerán los tokens entre sí.
 - **Limpieza de la caché.** El almacén `database` no elimina las filas vencidas de la tabla `cache`: solo borra una fila vencida cuando se vuelve a leer esa misma clave, y Laravel no trae un comando de Artisan que pode el resto. Programe una limpieza periódica fuera de la aplicación, por ejemplo con un CronJob de Kubernetes que ejecute `DELETE FROM cache WHERE expiration <= UNIX_TIMESTAMP();`.
-- **IP real del cliente.** El límite de 10 intentos de inicio de sesión por IP depende de que la aplicación vea la IP real del cliente. Hoy `bootstrap/app.php` no configura proxies de confianza: detrás de un Ingress o de un balanceador, todos los clientes llegarían con la IP de ese intermediario y compartirían un único contador de 10 intentos por minuto. Antes de desplegar detrás de uno, configure `$middleware->trustProxies(at: [...])` en `bootstrap/app.php`, limitado al CIDR del Ingress; nunca `'*'`, porque entonces cualquier cliente podría falsear su IP con `X-Forwarded-For`.
-- **Imagen del contenedor.** Cuando se contenerice, la imagen debe incluir `openapi.yaml`, `resources/docs/swagger-ui.html` y `lang/`. Si falta alguno, `/docs` o los mensajes de validación fallan.
+- **IP real del cliente (`TRUSTED_PROXIES`).** El límite de 10 intentos de inicio de sesión por IP depende de que la aplicación vea la IP real del cliente. Detrás de un Ingress, de un Service o de un balanceador, todos los clientes llegarían con la IP de ese intermediario y compartirían un único contador: tras 10 intentos en un minuto, nadie más podría iniciar sesión. `TRUSTED_PROXIES` es la lista de IP o CIDR de esos intermediarios, separados por comas (por ejemplo, `10.0.0.0/8`). Las entradas vacías y los espacios se ignoran. Solo de esas direcciones se aceptan `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Port` y `X-Forwarded-Proto`; cualquier otra petición se toma con la IP que conecta. Vacía (el valor de `.env.example`), no se confía en ningún proxy y esas cabeceras se ignoran siempre. `*`, `REMOTE_ADDR` y los rangos `/0` se rechazan, porque confiar en todos dejaría a cualquier cliente falsear su IP con `X-Forwarded-For` y esquivar el límite. Con uno de esos valores, todas las peticiones (también `/health`) responden 500 y el registro explica el motivo.
+- **Tamaño de las cargas (`/api/importaciones`).** Los archivos llegan como `multipart/form-data` y PHP los limita con `upload_max_filesize` (cada archivo) y `post_max_size` (la petición entera, que debe ser mayor). Súbalos en la configuración de PHP de la imagen al tamaño máximo que acepte el servicio de destino. Si un archivo supera `upload_max_filesize`, el Gateway responde 422 `DATOS_NO_VALIDOS` («El archivo no se recibió completo.») y no reenvía nada. Si la petición supera `post_max_size`, PHP descarta todos sus campos y archivos (los deja vacíos y solo emite un aviso). Cuando PHP conoce la longitud de la petición (`Content-Length`, lo normal), el Gateway lo detecta y responde 413 `PETICION_MAL_FORMADA` sin reenviar nada. Si no la conoce (una petición por partes, *chunked*, que el servidor web no reagrupa), el Gateway no puede detectarlo y reenvía al servicio una petición vacía, sin campos ni archivos.
+- **Imagen del contenedor.** Cuando se contenerice, la imagen debe incluir `openapi.yaml`, `resources/docs/swagger-ui.html` y `lang/`. Sin los dos primeros, `/docs` responde 500. Sin `lang/`, la validación sigue funcionando, pero muchos mensajes salen como claves sin traducir (por ejemplo, `validation.required`) en vez del texto en español.
 - **Único punto de entrada (RNF09).** El Gateway es el único componente accesible desde fuera del clúster. Los microservicios confían en las cabeceras `X-User-*` que él añade, así que solo deben ser alcanzables desde dentro del clúster.
+
+## Sesiones
+
+El token es un JWT sin estado: el Gateway no guarda sesiones y el token sirve hasta que vence, a los `JWT_TTL_MINUTES` (60 por defecto) de emitirse. En cada petición se vuelve a leer al usuario de la base, y el rol y la bodega salen de ahí, no del token. Por eso inactivar a un usuario o cambiarle el rol surte efecto de inmediato en las rutas autenticadas: con el token que ya tenía, la siguiente petición es 401 o se hace con el rol nuevo.
+
+Limitación conocida: no existe revocación de tokens.
+
+- `POST /api/auth/logout` no invalida el token; es el cliente quien debe borrarlo.
+- Restablecer la contraseña (`POST /api/usuarios/{id}/restablecer-contrasena`) no invalida los tokens ya emitidos. Deja el cambio de contraseña pendiente, así que mientras el usuario no cambie la temporal esos tokens solo sirven para `PUT /api/auth/contrasena` (que exige la contraseña temporal) y `POST /api/auth/logout`. En cuanto la cambia, todos sus tokens aún vigentes vuelven a servir para todo hasta que vencen.
+- Cambiar la propia contraseña (`PUT /api/auth/contrasena`) tampoco invalida los demás tokens del usuario.
+- Reactivar a un usuario inactivado (`POST /api/usuarios/{id}/activar`) vuelve a habilitar los tokens que se le emitieron antes de inactivarlo y aún no han vencido.
+
+Cómo resolverlo es una decisión pendiente del equipo.
