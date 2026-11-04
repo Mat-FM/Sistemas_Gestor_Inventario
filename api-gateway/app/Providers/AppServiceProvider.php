@@ -2,7 +2,11 @@
 
 namespace App\Providers;
 
+use App\Exceptions\ApiException;
 use App\Services\Jwt\JwtService;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -25,6 +29,29 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        $this->configurarLimitadores();
+    }
+
+    /**
+     * Límite de peticiones (RNF19). Los dos limitadores cuentan en el almacén de caché por defecto, que en
+     * producción es `database` y se comparte entre las copias del Gateway (RNF05, D13). Los topes se leen de
+     * `config('gateway.rate_limit')` en cada petición, no al arrancar.
+     */
+    private function configurarLimitadores(): void
+    {
+        // `throttle:api`: 100 por minuto por usuario autenticado. Va después de `jwt` (AuthenticateJwt lo garantiza
+        // con el marcador AuthenticatesRequests) para leer el usuario ya autenticado. Sin usuario (cadena mal
+        // armada) responde 401, igual que EnforcePasswordChange, en vez de contar por IP en silencio.
+        RateLimiter::for('api', function (Request $request): Limit {
+            $usuario = $request->user() ?? throw ApiException::noAutenticado();
+
+            return Limit::perMinute((int) config('gateway.rate_limit.por_usuario'))
+                ->by('usuario:'.$usuario->getKey());
+        });
+
+        // `throttle:login`: 10 intentos por minuto por IP en POST /api/auth/login. Cuentan todos, también los
+        // correctos, y la clave es solo la IP: cambiar de correo en cada intento no da un contador nuevo.
+        RateLimiter::for('login', fn (Request $request): Limit => Limit::perMinute((int) config('gateway.rate_limit.login_por_ip'))
+            ->by((string) $request->ip()));
     }
 }

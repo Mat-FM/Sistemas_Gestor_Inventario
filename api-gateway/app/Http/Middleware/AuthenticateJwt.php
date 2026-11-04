@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Models\Usuario;
 use App\Services\Jwt\JwtService;
 use Closure;
+use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -19,8 +20,13 @@ use Symfony\Component\HttpFoundation\Response;
  * siguiente aunque su token no haya vencido.
  *
  * Todo fallo es el mismo 401 NO_AUTENTICADO, sin indicar la causa.
+ *
+ * Implementa `AuthenticatesRequests`, un marcador sin métodos: Laravel ordena el middleware de cada ruta según
+ * su lista de prioridad, y ese marcador es el que coloca la autenticación antes de `ThrottleRequests`. Sin él,
+ * `throttle:api` se ejecutaría antes que `jwt` aunque la ruta los declare al revés, no vería al usuario y
+ * contaría por IP en vez de por usuario.
  */
-class AuthenticateJwt
+class AuthenticateJwt implements AuthenticatesRequests
 {
     /** Cabeceras que solo el Gateway puede poner hacia los servicios (Tarea 9); las del cliente se descartan. */
     private const CABECERAS_DE_IDENTIDAD = ['X-User-Id', 'X-User-Rol', 'X-User-Bodega'];
