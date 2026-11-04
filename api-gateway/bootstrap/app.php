@@ -6,11 +6,11 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Exceptions\HttpResponseException;
-use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -28,8 +28,15 @@ return Application::configure(basePath: dirname(__DIR__))
         // Todas las respuestas son JSON con la forma común de error, pida lo que pida el cliente.
         $exceptions->shouldRenderJsonWhen(fn () => true);
 
-        // Los errores del cliente (401, 403, 404, 409, 503...) no son fallos del servidor: no se registran como error.
-        $exceptions->dontReport(ApiException::class);
+        // Qué se registra en el log: los errores del cliente (4xx, ya sean ApiException o HttpException) no son
+        // fallos del servidor y no se registran; los 5xx sí, incluido el 503 por la caída de un microservicio.
+        // Laravel ignora todas las HttpException por defecto; se retira esa regla y se sustituye por esta.
+        $exceptions->stopIgnoring(HttpException::class);
+        $exceptions->dontReportWhen(fn (Throwable $e) => match (true) {
+            $e instanceof ApiException => $e->status < 500,
+            $e instanceof HttpExceptionInterface => $e->getStatusCode() < 500,
+            default => false,
+        });
 
         // Fuente única del cuerpo: todos los renderizadores pasan por un ApiException.
         $responder = fn (ApiException $e, array $cabeceras = []): JsonResponse => response()->json($e->cuerpo(), $e->status, $cabeceras);
@@ -44,18 +51,19 @@ return Application::configure(basePath: dirname(__DIR__))
                 }
             }
 
-            return $responder(new ApiException(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos.', $detalles));
+            return $responder(ApiException::datosNoValidos($detalles));
         });
 
         $exceptions->render(fn (AuthenticationException $e) => $responder(ApiException::noAutenticado()));
 
-        $exceptions->render(fn (NotFoundHttpException $e) => $responder(ApiException::noExiste()));
+        // abort(), 404 (NotFoundHttpException), 405, 429 del limitador (ThrottleRequestsException), 403 de
+        // AuthorizationException, etc. Conserva el estado y las cabeceras (Allow, Retry-After, X-RateLimit-*);
+        // si se responde como error interno genérico, las cabeceras de la excepción se descartan.
+        $exceptions->render(function (HttpExceptionInterface $e) use ($responder) {
+            $error = ApiException::deHttp($e);
 
-        // Conserva Retry-After (y las cabeceras X-RateLimit-*) que añade el limitador.
-        $exceptions->render(fn (ThrottleRequestsException $e) => $responder(
-            new ApiException(429, 'DEMASIADAS_PETICIONES', 'Demasiadas peticiones. Intente de nuevo más tarde.'),
-            $e->getHeaders(),
-        ));
+            return $responder($error, $error->status === $e->getStatusCode() ? $e->getHeaders() : []);
+        });
 
         // Último recurso: nunca expone la traza ni el mensaje de la excepción, con o sin APP_DEBUG.
         // La excepción ya se registra en el log por la vía normal de Laravel (report).
@@ -65,6 +73,6 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
-            return $responder(new ApiException(500, 'ERROR_INTERNO', 'Error interno del servidor.'));
+            return $responder(ApiException::errorInterno());
         });
     })->create();
