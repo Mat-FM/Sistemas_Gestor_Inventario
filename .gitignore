@@ -1,0 +1,39 @@
+# Variables de entorno (se versiona solo el ejemplo)
+.env
+.env.*
+!.env.example
+
+# Sistema operativo / editores
+.DS_Store
+.idea/
+.vscode/
+*.swp
+CLAUDE.md
+
+# Laravel / PHP
+vendor/
+storage/*.key
+storage/logs/
+storage/framework/cache/
+storage/framework/sessions/
+storage/framework/views/
+bootstrap/cache/
+.phpunit.result.cache
+
+# Node.js / Express
+node_modules/
+npm-debug.log*
+coverage/
+
+# Python / Flask
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Datos locales de contenedores y pruebas de carga
+*.log
+performance-tests/**/results/

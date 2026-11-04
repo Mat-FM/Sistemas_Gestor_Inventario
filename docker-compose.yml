@@ -1,0 +1,110 @@
+# Entorno local: una base de datos por componente (RNF02, RNF03).
+# Por ahora solo levanta las bases de datos. Los servicios se agregarán aquí
+# a medida que cada uno tenga su Dockerfile (la contenerización de los servicios
+# es de una entrega posterior).
+#
+# Uso:
+#   cp .env.example .env     # y cambiar las contraseñas
+#   docker compose up -d
+
+name: gestor-inventario
+
+x-mysql: &mysql
+  image: mysql:8.4
+  restart: unless-stopped
+
+x-postgres: &postgres
+  image: postgres:16
+  restart: unless-stopped
+
+services:
+  # ---------- MySQL (Laravel) ----------
+  db-api-gateway:
+    <<: *mysql
+    environment:
+      MYSQL_DATABASE: ${GATEWAY_DB_NAME:-gateway_db}
+      MYSQL_USER: ${GATEWAY_DB_USER:-gateway}
+      MYSQL_PASSWORD: ${GATEWAY_DB_PASSWORD:-change_me}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    ports:
+      - "127.0.0.1:${GATEWAY_DB_PORT:-3307}:3306"
+    volumes:
+      - db-api-gateway:/var/lib/mysql
+
+  db-ms-catalogo:
+    <<: *mysql
+    environment:
+      MYSQL_DATABASE: ${CATALOGO_DB_NAME:-catalogo_db}
+      MYSQL_USER: ${CATALOGO_DB_USER:-catalogo}
+      MYSQL_PASSWORD: ${CATALOGO_DB_PASSWORD:-change_me}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    ports:
+      - "127.0.0.1:${CATALOGO_DB_PORT:-3308}:3306"
+    volumes:
+      - db-ms-catalogo:/var/lib/mysql
+
+  db-ms-proveedores:
+    <<: *mysql
+    environment:
+      MYSQL_DATABASE: ${PROVEEDORES_DB_NAME:-proveedores_db}
+      MYSQL_USER: ${PROVEEDORES_DB_USER:-proveedores}
+      MYSQL_PASSWORD: ${PROVEEDORES_DB_PASSWORD:-change_me}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    ports:
+      - "127.0.0.1:${PROVEEDORES_DB_PORT:-3309}:3306"
+    volumes:
+      - db-ms-proveedores:/var/lib/mysql
+
+  # ---------- PostgreSQL (Express y Flask) ----------
+  db-ms-inventario:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: ${INVENTARIO_DB_NAME:-inventario_db}
+      POSTGRES_USER: ${INVENTARIO_DB_USER:-inventario}
+      POSTGRES_PASSWORD: ${INVENTARIO_DB_PASSWORD:-change_me}
+    ports:
+      - "127.0.0.1:${INVENTARIO_DB_PORT:-5433}:5432"
+    volumes:
+      - db-ms-inventario:/var/lib/postgresql/data
+
+  db-ms-compras:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: ${COMPRAS_DB_NAME:-compras_db}
+      POSTGRES_USER: ${COMPRAS_DB_USER:-compras}
+      POSTGRES_PASSWORD: ${COMPRAS_DB_PASSWORD:-change_me}
+    ports:
+      - "127.0.0.1:${COMPRAS_DB_PORT:-5434}:5432"
+    volumes:
+      - db-ms-compras:/var/lib/postgresql/data
+
+  db-ms-notificaciones:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: ${NOTIFICACIONES_DB_NAME:-notificaciones_db}
+      POSTGRES_USER: ${NOTIFICACIONES_DB_USER:-notificaciones}
+      POSTGRES_PASSWORD: ${NOTIFICACIONES_DB_PASSWORD:-change_me}
+    ports:
+      - "127.0.0.1:${NOTIFICACIONES_DB_PORT:-5435}:5432"
+    volumes:
+      - db-ms-notificaciones:/var/lib/postgresql/data
+
+  db-ms-reportes:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: ${REPORTES_DB_NAME:-reportes_db}
+      POSTGRES_USER: ${REPORTES_DB_USER:-reportes}
+      POSTGRES_PASSWORD: ${REPORTES_DB_PASSWORD:-change_me}
+    ports:
+      - "127.0.0.1:${REPORTES_DB_PORT:-5436}:5432"
+    volumes:
+      - db-ms-reportes:/var/lib/postgresql/data
+
+volumes:
+  db-api-gateway:
+  db-ms-catalogo:
+  db-ms-proveedores:
+  db-ms-inventario:
+  db-ms-compras:
+  db-ms-notificaciones:
+  db-ms-reportes:
