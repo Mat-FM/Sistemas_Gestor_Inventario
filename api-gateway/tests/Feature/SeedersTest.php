@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Rol;
 use App\Models\Usuario;
+use App\Rules\ContrasenaValida;
 use Database\Seeders\AdminSeeder;
 use Database\Seeders\DatabaseSeeder;
 use Database\Seeders\RolSeeder;
@@ -163,6 +164,82 @@ class SeedersTest extends TestCase
         }
 
         $this->assertSame(0, Usuario::count());
+    }
+
+    /** @return array<string, array{string}> */
+    public static function contrasenasQueNoCumplenD4(): array
+    {
+        return [
+            'corta' => ['corta1'],
+            'solo letras' => ['sololetras'],
+            'solo números' => ['12345678'],
+            'más de 72 bytes' => [str_repeat('a', 72).'1'],
+        ];
+    }
+
+    #[DataProvider('contrasenasQueNoCumplenD4')]
+    public function test_admin_seeder_rechaza_una_admin_password_que_no_cumple_d4_sin_imprimirla(string $contrasena): void
+    {
+        $this->admin('admin@example.test', $contrasena);
+        $this->seed(RolSeeder::class);
+
+        try {
+            $this->seed(AdminSeeder::class);
+            $this->fail('El AdminSeeder debía rechazar una ADMIN_PASSWORD que no cumple D4.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('ADMIN_PASSWORD', $e->getMessage());
+            $this->assertStringContainsString(ContrasenaValida::MENSAJE, $e->getMessage());
+            $this->assertStringNotContainsString($contrasena, $e->getMessage());
+            $this->assertStringNotContainsString('ADMIN_EMAIL', $e->getMessage());
+        }
+
+        $this->assertSame(0, Usuario::count());
+    }
+
+    public function test_admin_seeder_acepta_una_admin_password_en_el_limite_de_d4(): void
+    {
+        $this->admin('admin@example.test', 'abcdefg1');
+        $this->seed(RolSeeder::class);
+        $this->seed(AdminSeeder::class);
+
+        $u = Usuario::firstOrFail();
+        $this->assertTrue(Hash::check('abcdefg1', $u->contrasena_cifrada));
+    }
+
+    public function test_admin_seeder_normaliza_el_correo_con_recorte_y_minusculas(): void
+    {
+        $this->admin("  Admin@Example.TEST \n");
+        $this->seed(RolSeeder::class);
+        $this->seed(AdminSeeder::class);
+
+        $this->assertSame(['admin@example.test'], Usuario::pluck('correo')->all());
+    }
+
+    public function test_admin_seeder_repetido_con_el_correo_en_otras_mayusculas_no_duplica(): void
+    {
+        $this->admin('admin@example.test');
+        $this->seed(RolSeeder::class);
+        $this->seed(AdminSeeder::class);
+
+        $this->admin('ADMIN@Example.test', 'OtraDistinta789');
+        $this->seed(AdminSeeder::class);
+
+        $this->assertSame(1, Usuario::count());
+        $u = Usuario::firstOrFail();
+        $this->assertSame('admin@example.test', $u->correo);
+        $this->assertTrue(Hash::check('Temporal123', $u->contrasena_cifrada));
+    }
+
+    public function test_admin_seeder_guarda_la_contrasena_sin_espacios_en_los_extremos_porque_el_inicio_de_sesion_los_recorta(): void
+    {
+        $this->admin('admin@example.test', '  Temporal123  ');
+        $this->seed(RolSeeder::class);
+        $this->seed(AdminSeeder::class);
+
+        $u = Usuario::firstOrFail();
+        $this->assertTrue(Hash::check('Temporal123', $u->contrasena_cifrada));
+        $this->postJson('/api/auth/login', ['correo' => 'admin@example.test', 'contrasena' => '  Temporal123  '])
+            ->assertOk();
     }
 
     public function test_admin_seeder_sin_el_rol_administrador_falla_y_pide_ejecutar_rol_seeder(): void

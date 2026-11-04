@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\Rol;
 use App\Models\Usuario;
+use App\Rules\ContrasenaValida;
 use App\Support\Roles;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
@@ -14,6 +15,11 @@ class AdminSeeder extends Seeder
     /**
      * Crea el primer administrador con ADMIN_EMAIL y ADMIN_PASSWORD, con el cambio de contraseña pendiente. Si ya
      * existe un usuario con ese correo no lo toca: ni su contraseña, ni su estado, ni su rol.
+     *
+     * El correo se guarda normalizado (sin espacios y en minúsculas, como lo busca el inicio de sesión) y
+     * ADMIN_PASSWORD debe cumplir la política de contraseñas (D4), porque es una contraseña temporal más. El
+     * inicio de sesión recorta los espacios de los extremos de lo que recibe, así que aquí se hace lo mismo
+     * antes de cifrar: de otro modo la cuenta quedaría inalcanzable. Los errores nunca imprimen la contraseña.
      */
     public function run(): void
     {
@@ -34,6 +40,14 @@ class AdminSeeder extends Seeder
             ));
         }
 
+        $contrasena = trim($contrasena);
+        if (! ContrasenaValida::cumple($contrasena)) {
+            throw new RuntimeException(sprintf(
+                'No se puede crear el primer administrador: ADMIN_PASSWORD no es válida. %s',
+                ContrasenaValida::MENSAJE,
+            ));
+        }
+
         $rol = Rol::where('nombre', Roles::ADM)->first();
         if ($rol === null) {
             throw new RuntimeException(sprintf(
@@ -43,7 +57,7 @@ class AdminSeeder extends Seeder
         }
 
         Usuario::unguarded(fn () => Usuario::firstOrCreate(
-            ['correo' => trim($correo)],
+            ['correo' => Usuario::normalizarCorreo($correo)],
             [
                 'nombre' => 'Administrador',
                 'contrasena_cifrada' => Hash::make($contrasena),

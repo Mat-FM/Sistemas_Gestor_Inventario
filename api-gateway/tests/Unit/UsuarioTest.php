@@ -60,6 +60,25 @@ class UsuarioTest extends TestCase
         $this->assertSame('hash-secreto-que-no-debe-salir', $u->contrasena_cifrada);
     }
 
+    /** @return array<string, array{string, string}> */
+    public static function correosSinNormalizar(): array
+    {
+        return [
+            'ya normalizado' => ['ana@example.test', 'ana@example.test'],
+            'mayúsculas' => ['Ana@X.com', 'ana@x.com'],
+            'todo en mayúsculas' => ['ANA@EXAMPLE.TEST', 'ana@example.test'],
+            'espacios alrededor' => ['  ana@example.test  ', 'ana@example.test'],
+            'tabulador y salto de línea' => ["\tAna@Example.Test\n", 'ana@example.test'],
+            'mayúsculas con acento' => ['ÁNGEL@Example.test', 'ángel@example.test'],
+        ];
+    }
+
+    #[DataProvider('correosSinNormalizar')]
+    public function test_normalizar_correo_recorta_y_pasa_a_minusculas(string $entrada, string $esperado): void
+    {
+        $this->assertSame($esperado, Usuario::normalizarCorreo($entrada));
+    }
+
     public function test_correo_unico_a_nivel_de_base_de_datos(): void
     {
         $this->crear(Roles::VEN, ['correo' => 'repetido@example.test']);

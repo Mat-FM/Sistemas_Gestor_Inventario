@@ -42,6 +42,16 @@ class Usuario extends Model
         ];
     }
 
+    /**
+     * Forma única en que se guarda y se busca el correo: sin espacios en los extremos y en minúsculas. Así
+     * `Ana@X.com` y `ana@x.com` son el mismo usuario sin depender de la intercalación del motor (MySQL no
+     * distingue mayúsculas, SQLite sí). Todo lo que escriba o consulte `correo` debe pasar por aquí.
+     */
+    public static function normalizarCorreo(string $correo): string
+    {
+        return mb_strtolower(trim($correo));
+    }
+
     /** @return BelongsTo<Rol, $this> */
     public function rol(): BelongsTo
     {

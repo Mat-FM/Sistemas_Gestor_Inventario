@@ -65,7 +65,8 @@ class MiddlewareTest extends TestCase
                 ]);
             });
 
-            // Las rutas reales llegan en la Tarea 5; aquí solo hacen falta sus direcciones y métodos.
+            // Sustitutos de las rutas reales de AuthController (misma dirección y método, registrados después
+            // y por tanto con prioridad): estas pruebas solo miden la cadena de middleware, no el controlador.
             Route::get('/api/auth/me', fn () => response()->json(['ok' => true]));
             Route::put('/api/auth/contrasena', fn () => response()->noContent());
             Route::post('/api/auth/logout', fn () => response()->noContent());
