@@ -19,6 +19,10 @@ use Symfony\Component\HttpFoundation\Response;
  * Por eso un usuario inactivado, borrado o con otro rol deja de servir, o cambia de efecto, en la petición
  * siguiente aunque su token no haya vencido.
  *
+ * Además, si el usuario tiene `sesiones_desde` (la fijan restablecer su contraseña e inactivarlo), un token emitido
+ * antes de esa marca tampoco sirve, aunque no haya vencido: así los tokens anteriores a un restablecimiento no
+ * reviven cuando el usuario fija su contraseña ni cuando se le reactiva.
+ *
  * Todo fallo es el mismo 401 NO_AUTENTICADO, sin indicar la causa.
  *
  * Implementa `AuthenticatesRequests`, un marcador sin métodos: Laravel ordena el middleware de cada ruta según
@@ -41,6 +45,7 @@ class AuthenticateJwt implements AuthenticatesRequests
 
         $reclamos = $this->jwt->verificar($this->tokenDe($request));
         $usuario = $this->cargarUsuario($reclamos->sub);
+        $this->comprobarQueNoEstaRevocado($usuario, $reclamos->iat);
 
         $request->attributes->set('usuario', $usuario);
         $request->setUserResolver(static fn (): Usuario => $usuario);
@@ -74,5 +79,20 @@ class AuthenticateJwt implements AuthenticatesRequests
         }
 
         return $usuario;
+    }
+
+    /**
+     * Revocación de sesiones: restablecer la contraseña o inactivar al usuario fija `sesiones_desde`, y un token
+     * emitido (`iat`, en segundos) antes de esa marca ya no vale. Con `iat` igual o posterior sí: así quien inicia
+     * sesión con la contraseña temporal en el mismo segundo del restablecimiento no queda bloqueado. Esa ventana de
+     * un segundo es una limitación aceptada: un token emitido en ese mismo segundo sobrevive a la revocación.
+     *
+     * Es el mismo 401 genérico de cualquier otro token no válido, sin indicar que fue por revocación.
+     */
+    private function comprobarQueNoEstaRevocado(Usuario $usuario, int $iat): void
+    {
+        if ($usuario->sesiones_desde !== null && $iat < $usuario->sesiones_desde->getTimestamp()) {
+            throw ApiException::noAutenticado();
+        }
     }
 }

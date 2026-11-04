@@ -7,6 +7,7 @@ use App\Models\Usuario;
 use App\Rules\ContrasenaValida;
 use App\Support\Roles;
 use Closure;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -711,6 +712,9 @@ class UsuariosTest extends TestCase
 
     public function test_inactivar_y_activar(): void
     {
+        // Reloj controlado: inactivar revoca los tokens emitidos antes (a la resolución de un segundo), así que el
+        // token anterior y la inactivación no pueden caer en el mismo segundo.
+        Carbon::setTestNow(Carbon::parse('2030-03-05 12:00:00', 'UTC'));
         $admin = $this->usuario(Roles::ADM);
         $usuario = $this->usuario(Roles::VEN, ['correo' => 'vendedora@example.test']);
         $tokenAnterior = $this->tokenDe($usuario);
@@ -719,7 +723,10 @@ class UsuariosTest extends TestCase
 
         // Control: antes de inactivarla entra.
         $this->postJson('/api/auth/login', $credenciales)->assertOk();
+        $this->withToken($tokenAnterior)->getJson('/api/auth/me')->assertOk();
 
+        Carbon::setTestNow(Carbon::now()->addSeconds(10));
+        $this->conSesion($admin);
         $this->postJson("/api/usuarios/{$usuario->id_usuario}/inactivar")
             ->assertOk()
             ->assertJsonPath('id_usuario', $usuario->id_usuario)
@@ -736,14 +743,18 @@ class UsuariosTest extends TestCase
         $this->conSesion($admin);
         $this->postJson("/api/usuarios/{$usuario->id_usuario}/inactivar")->assertOk()->assertJsonPath('activo', false);
 
+        Carbon::setTestNow(Carbon::now()->addSeconds(10));
         $this->postJson("/api/usuarios/{$usuario->id_usuario}/activar")
             ->assertOk()
             ->assertJsonPath('id_usuario', $usuario->id_usuario)
             ->assertJsonPath('activo', true);
         $this->assertTrue($usuario->fresh()->activo);
 
-        $this->postJson('/api/auth/login', $credenciales)->assertOk();
-        $this->withToken($tokenAnterior)->getJson('/api/auth/me')->assertOk();
+        // Puede volver a entrar, pero el token anterior a la inactivación no revive: inactivar revocó las sesiones
+        // y activar no las rehabilita. El que se emite después de reactivar sí vale.
+        $login = $this->postJson('/api/auth/login', $credenciales)->assertOk();
+        $this->withToken($tokenAnterior)->getJson('/api/auth/me')->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
+        $this->withToken($login->json('token'))->getJson('/api/auth/me')->assertOk()->assertJsonPath('id_usuario', $usuario->id_usuario);
 
         $this->conSesion($admin);
         $this->postJson("/api/usuarios/{$usuario->id_usuario}/activar")->assertOk()->assertJsonPath('activo', true);
@@ -802,14 +813,19 @@ class UsuariosTest extends TestCase
 
     public function test_restablecer_contrasena_204_deja_la_temporal_y_el_cambio_pendiente(): void
     {
+        // Reloj controlado: restablecer revoca los tokens emitidos antes (a la resolución de un segundo), así que el
+        // token anterior y el restablecimiento no pueden caer en el mismo segundo.
+        Carbon::setTestNow(Carbon::parse('2030-03-05 12:00:00', 'UTC'));
         $usuario = $this->usuario(Roles::VEN, ['correo' => 'vendedora@example.test', 'contrasena' => 'Anterior123']);
         $tokenAnterior = $this->tokenDe($usuario);
-        $this->conSesion($this->usuario(Roles::ADM));
+        $admin = $this->usuario(Roles::ADM);
 
         // Control: antes de restablecer, la contraseña anterior entra y no hay cambio pendiente.
         $this->postJson('/api/auth/login', ['correo' => 'vendedora@example.test', 'contrasena' => 'Anterior123'])
             ->assertOk()->assertJsonPath('usuario.debe_cambiar_contrasena', false);
 
+        Carbon::setTestNow(Carbon::now()->addSeconds(10));
+        $this->conSesion($admin);
         $respuesta = $this->postJson("/api/usuarios/{$usuario->id_usuario}/restablecer-contrasena", ['contrasena_temporal' => 'Temporal456'])
             ->assertNoContent();
         $this->assertSame('', $respuesta->getContent());
@@ -829,8 +845,11 @@ class UsuariosTest extends TestCase
         $login = $this->postJson('/api/auth/login', ['correo' => 'vendedora@example.test', 'contrasena' => 'Temporal456'])
             ->assertOk()->assertJsonPath('usuario.debe_cambiar_contrasena', true);
 
-        // El cambio pendiente aplica ya, también al token que tenía antes: solo puede cambiar la contraseña.
+        // El token que tenía antes murió (el restablecimiento revoca las sesiones anteriores); el de la temporal vale,
+        // pero con el cambio pendiente solo puede cambiar la contraseña.
         $this->withToken($tokenAnterior)->getJson('/api/auth/me')
+            ->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
+        $this->withToken($login->json('token'))->getJson('/api/auth/me')
             ->assertStatus(403)->assertJsonPath('error.codigo', 'CAMBIO_CONTRASENA_REQUERIDO');
 
         $this->withToken($login->json('token'))

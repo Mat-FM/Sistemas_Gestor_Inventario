@@ -19,7 +19,8 @@ class Usuario extends Model
 
     public $timestamps = false;
 
-    protected $hidden = ['contrasena_cifrada'];
+    /** Datos internos que nunca salen en una serialización: `sesiones_desde` es la marca de revocación de sesiones. */
+    protected $hidden = ['contrasena_cifrada', 'sesiones_desde'];
 
     /**
      * Los mismos valores por defecto de la tabla, para que un usuario recién creado los tenga también en memoria.
@@ -39,6 +40,7 @@ class Usuario extends Model
             'activo' => 'boolean',
             'debe_cambiar_contrasena' => 'boolean',
             'fecha_creacion' => 'datetime',
+            'sesiones_desde' => 'datetime',
         ];
     }
 

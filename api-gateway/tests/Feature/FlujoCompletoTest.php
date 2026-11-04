@@ -208,4 +208,31 @@ class FlujoCompletoTest extends TestCase
         $this->comoPortador($token, 'GET', '/api/productos')->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
         $this->assertCount(1, $this->peticionesAlServicio(), 'Un token de usuario inactivo no debe llegar al servicio.');
     }
+
+    public function test_e_restablecer_la_contrasena_revoca_la_sesion_anterior_y_la_nueva_llega_al_servicio(): void
+    {
+        [$tokenAdmin] = $this->administradorListo();
+        [$token, $idOperador] = $this->operadorListo($tokenAdmin);
+        $this->assertReenviadoCon($this->comoPortador($token, 'GET', '/api/productos'), 0, $idOperador, 'OPERADOR_BODEGA', 7);
+
+        // La revocación se mide en segundos: se deja pasar un rato para que el token anterior sea anterior de verdad.
+        $this->travel(5)->seconds();
+        $this->comoPortador($tokenAdmin, 'POST', "/api/usuarios/{$idOperador}/restablecer-contrasena", ['contrasena_temporal' => 'Reinicio456'])
+            ->assertNoContent();
+
+        // El token anterior (el que habría robado un atacante) ya no llega al servicio.
+        $this->comoPortador($token, 'GET', '/api/productos')->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
+        $this->assertCount(1, $this->peticionesAlServicio(), 'Un token revocado no debe llegar al servicio.');
+
+        // La sesión nueva, con la temporal, no llega al servicio hasta que el usuario cambie la contraseña...
+        $this->travel(5)->seconds();
+        $nuevo = $this->iniciarSesion(self::CORREO_OPERADOR, 'Reinicio456');
+        $this->comoPortador($nuevo, 'GET', '/api/productos')->assertStatus(403)->assertJsonPath('error.codigo', 'CAMBIO_CONTRASENA_REQUERIDO');
+        $this->cambiarContrasena($nuevo, 'Reinicio456', self::NUEVA_OPERADOR);
+
+        // ... y después sí, con su identidad. El token anterior sigue muerto: cambiar la contraseña no lo revive.
+        $this->assertReenviadoCon($this->comoPortador($nuevo, 'GET', '/api/productos'), 1, $idOperador, 'OPERADOR_BODEGA', 7);
+        $this->comoPortador($token, 'GET', '/api/productos')->assertStatus(401)->assertJsonPath('error.codigo', 'NO_AUTENTICADO');
+        $this->assertCount(2, $this->peticionesAlServicio());
+    }
 }
