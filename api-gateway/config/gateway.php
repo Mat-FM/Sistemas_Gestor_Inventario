@@ -81,4 +81,17 @@ return [
         'login_por_ip' => (int) env('LOGIN_RATE_LIMIT_PER_MINUTE', 10),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Proxies de confianza
+    |--------------------------------------------------------------------------
+    |
+    | IP o CIDR (separados por comas) de los proxies cuyas cabeceras
+    | X-Forwarded-For, -Host, -Port y -Proto se aceptan; vacía, no se confía en
+    | ninguno. «*» se rechaza. La interpreta App\Http\Middleware\ConfiarEnProxies.
+    |
+    */
+
+    'trusted_proxies' => env('TRUSTED_PROXIES', ''),
+
 ];

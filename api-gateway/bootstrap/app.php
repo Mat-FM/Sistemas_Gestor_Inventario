@@ -3,6 +3,7 @@
 use App\Exceptions\ApiException;
 use App\Http\Middleware\AssignRequestId;
 use App\Http\Middleware\AuthenticateJwt;
+use App\Http\Middleware\ConfiarEnProxies;
 use App\Http\Middleware\EnforcePasswordChange;
 use App\Http\Middleware\LogRequest;
 use App\Http\Middleware\RequireRole;
@@ -13,6 +14,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
@@ -34,6 +36,9 @@ return Application::configure(basePath: dirname(__DIR__))
             'cambio.contrasena' => EnforcePasswordChange::class,
             'rol' => RequireRole::class,
         ]);
+
+        // Proxies de confianza por entorno (TRUSTED_PROXIES), leídos en cada petición: ver ConfiarEnProxies.
+        $middleware->replace(TrustProxies::class, ConfiarEnProxies::class);
 
         // Primero el identificador de petición y luego el registro, antes que cualquier otro middleware de /api
         // (JWT, cambio de contraseña pendiente y límite de peticiones los añaden las rutas).

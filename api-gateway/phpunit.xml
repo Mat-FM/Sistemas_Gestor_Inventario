@@ -35,6 +35,7 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <env name="TRUSTED_PROXIES" value=""/>
         <env name="JWT_SECRET" value="secreto-de-pruebas-con-mas-de-32-caracteres"/>
         <env name="MS_CATALOGO_URL" value="http://ms-catalogo:8000"/>
         <env name="MS_PROVEEDORES_URL" value="http://ms-proveedores:8000"/>
