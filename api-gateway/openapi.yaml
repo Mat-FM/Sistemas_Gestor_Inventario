@@ -1,0 +1,959 @@
+openapi: 3.0.3
+
+info:
+  title: API Gateway del Gestor de Inventario
+  version: 1.0.0
+  description: |
+    Único punto de entrada del sistema. Esta documentación describe **solo las 12 operaciones que atiende el propio
+    Gateway** (Tabla 6 de la Entrega 2): inicio y cierre de sesión, datos del usuario autenticado, cambio de
+    contraseña, gestión de usuarios y consulta de roles.
+
+    **El resto de las rutas `/api/...`** (catálogo, proveedores, inventario, compras, notificaciones, reportes e
+    importaciones) **se reenvían a los microservicios** según el rol del usuario, y **cada microservicio publica su
+    propia documentación OpenAPI**: no se repite aquí.
+
+    ## Autenticación
+
+    `POST /api/auth/login` entrega un JWT. Las demás operaciones lo reciben en la cabecera
+    `Authorization: Bearer <token>`. El token vale 60 minutos; el rol y el estado del usuario se leen de la base en
+    cada petición, así que un usuario inactivado deja de poder entrar aunque su token no haya vencido.
+
+    Mientras `debe_cambiar_contrasena` sea `true` (primer inicio de sesión o contraseña restablecida) el Gateway solo
+    permite `PUT /api/auth/contrasena` y `POST /api/auth/logout`; todo lo demás responde 403
+    `CAMBIO_CONTRASENA_REQUERIDO`.
+
+    ## Convenciones
+
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista vacía salvo en los 422,
+      donde trae un elemento `{campo, mensaje}` por cada campo inválido.
+    - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con `?pagina=1&por_pagina=20`
+      (`por_pagina` máximo 100).
+    - Fechas en ISO 8601 (UTC). Los identificadores numéricos son enteros JSON: `"2"` no es válido donde se pide `2`.
+    - Límites (RNF19): 100 peticiones por minuto por usuario y 10 intentos de inicio de sesión por minuto por
+      dirección IP. Al superarlos, 429 con la cabecera `Retry-After` (segundos).
+    - Cada respuesta lleva la cabecera `X-Request-Id`, un identificador generado por el Gateway para rastrear la
+      petición en los registros.
+
+servers:
+  - url: /
+    description: Este mismo Gateway
+
+tags:
+  - name: Autenticación
+    description: Inicio y cierre de sesión, usuario autenticado y cambio de contraseña.
+  - name: Usuarios
+    description: Gestión de usuarios (solo ADMINISTRADOR). Los usuarios no se borran, se inactivan.
+  - name: Roles
+    description: Consulta de los roles del sistema (solo ADMINISTRADOR).
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Autenticación]
+      operationId: iniciarSesion
+      summary: Iniciar sesión
+      description: |
+        Público. Devuelve un JWT válido 60 minutos (`expira_en`, en segundos) y los datos básicos del usuario.
+
+        Un correo inexistente y una contraseña incorrecta dan exactamente la misma respuesta 401. Se permiten 10
+        intentos por minuto por dirección IP, exitosos o no.
+
+        Si `usuario.debe_cambiar_contrasena` es `true`, el cliente debe llamar a `PUT /api/auth/contrasena` antes
+        que a cualquier otra operación.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InicioDeSesion'
+      responses:
+        '200':
+          description: Sesión iniciada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SesionIniciada'
+        '401':
+          description: El correo o la contraseña no son correctos (la respuesta es idéntica en los dos casos).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                credencialesInvalidas:
+                  summary: Correo inexistente o contraseña incorrecta
+                  value:
+                    error:
+                      codigo: CREDENCIALES_INVALIDAS
+                      mensaje: Correo o contraseña incorrectos.
+                      detalles: []
+        '403':
+          description: La contraseña es correcta, pero el usuario está inactivo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                usuarioInactivo:
+                  value:
+                    error:
+                      codigo: USUARIO_INACTIVO
+                      mensaje: El usuario está inactivo.
+                      detalles: []
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/auth/logout:
+    post:
+      tags: [Autenticación]
+      operationId: cerrarSesion
+      summary: Cerrar sesión
+      description: |
+        Autenticado. No hay sesión en el servidor que cerrar: el cliente borra el token, que de todas formas deja de
+        servir al cumplir sus 60 minutos. Funciona también con el cambio de contraseña pendiente.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Sin contenido.
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/auth/me:
+    get:
+      tags: [Autenticación]
+      operationId: obtenerUsuarioAutenticado
+      summary: Usuario autenticado
+      description: Autenticado. Devuelve el usuario dueño del token, con el nombre de su rol.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: El usuario autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/CambioDeContrasenaRequerido' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/auth/contrasena:
+    put:
+      tags: [Autenticación]
+      operationId: cambiarContrasena
+      summary: Cambiar la contraseña propia
+      description: |
+        Autenticado. Cambia la contraseña del usuario autenticado y deja `debe_cambiar_contrasena` en `false`. Es,
+        con el cierre de sesión, la única operación permitida mientras el cambio esté pendiente.
+
+        La contraseña nueva debe cumplir la política (mínimo 8 caracteres, una letra y un número, máximo 72 bytes) y
+        ser distinta de la actual.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CambioDeContrasena'
+      responses:
+        '204':
+          description: Contraseña cambiada. Sin contenido.
+        '401':
+          description: Sin token válido, o la contraseña actual no es correcta.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                sinToken:
+                  summary: Falta el token, está vencido o no es válido
+                  value:
+                    error:
+                      codigo: NO_AUTENTICADO
+                      mensaje: No autenticado.
+                      detalles: []
+                contrasenaActualIncorrecta:
+                  value:
+                    error:
+                      codigo: CONTRASENA_ACTUAL_INCORRECTA
+                      mensaje: La contraseña actual es incorrecta.
+                      detalles: []
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/usuarios:
+    get:
+      tags: [Usuarios]
+      operationId: listarUsuarios
+      summary: Listar usuarios
+      description: Solo ADMINISTRADOR. Listado paginado, ordenado por `id_usuario`. Nunca incluye contraseñas.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdRol'
+        - $ref: '#/components/parameters/FiltroActivo'
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: Una página de usuarios.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListadoDeUsuarios'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+    post:
+      tags: [Usuarios]
+      operationId: crearUsuario
+      summary: Crear un usuario
+      description: |
+        Solo ADMINISTRADOR. Crea un usuario activo con una contraseña temporal: en su primer inicio de sesión
+        `debe_cambiar_contrasena` es `true` y solo podrá cambiarla (RF07).
+
+        El correo se guarda sin espacios al borde y en minúsculas. `id_bodega` es obligatorio para
+        `OPERADOR_BODEGA`; para los demás roles se ignora y queda en `null`. No se valida contra ms-inventario.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioNuevo'
+      responses:
+        '201':
+          description: Usuario creado, con `debe_cambiar_contrasena` en `true`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/RolNoExiste' }
+        '409': { $ref: '#/components/responses/CorreoDuplicado' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/usuarios/{id}:
+    get:
+      tags: [Usuarios]
+      operationId: obtenerUsuario
+      summary: Obtener un usuario
+      description: Solo ADMINISTRADOR. Un `id` que no sea un número se trata como un usuario que no existe (404).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdUsuario'
+      responses:
+        '200':
+          description: El usuario.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/UsuarioNoExiste' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+    put:
+      tags: [Usuarios]
+      operationId: actualizarUsuario
+      summary: Editar un usuario
+      description: |
+        Solo ADMINISTRADOR. Reemplaza nombre, correo, rol y bodega; no toca la contraseña ni el estado. Las mismas
+        reglas de `id_bodega` y de correo que al crear.
+
+        Un administrador no puede cambiarse a sí mismo a otro rol (409 `CONFLICTO`): el sistema podría quedar sin
+        administradores. Otro administrador sí puede cambiarle el rol.
+
+        Si el usuario de la ruta no existe es 404 aunque el cuerpo también sea inválido.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdUsuario'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsuarioEditado'
+      responses:
+        '200':
+          description: El usuario actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404':
+          description: El usuario de la ruta o el rol indicado no existen.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                usuarioNoExiste:
+                  value:
+                    error:
+                      codigo: NO_EXISTE
+                      mensaje: El usuario no existe.
+                      detalles: []
+                rolNoExiste:
+                  value:
+                    error:
+                      codigo: NO_EXISTE
+                      mensaje: El rol indicado no existe.
+                      detalles: []
+        '409':
+          description: El correo ya lo usa otro usuario, o un administrador intenta quitarse el rol a sí mismo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                correoDuplicado:
+                  value:
+                    error:
+                      codigo: CORREO_DUPLICADO
+                      mensaje: Ya existe un usuario con ese correo.
+                      detalles: []
+                conflicto:
+                  summary: Un administrador se cambia a sí mismo a otro rol
+                  value:
+                    error:
+                      codigo: CONFLICTO
+                      mensaje: Un administrador no puede cambiarse a sí mismo a otro rol.
+                      detalles: []
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/usuarios/{id}/inactivar:
+    post:
+      tags: [Usuarios]
+      operationId: inactivarUsuario
+      summary: Inactivar un usuario
+      description: |
+        Solo ADMINISTRADOR. El usuario ya no puede iniciar sesión y su token deja de servir en la petición siguiente.
+        Es idempotente. Un administrador no puede inactivarse a sí mismo (409 `CONFLICTO`): la recuperación de
+        contraseña es solo por administrador y el sistema quedaría sin acceso.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdUsuario'
+      responses:
+        '200':
+          description: El usuario, ya inactivo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/UsuarioNoExiste' }
+        '409':
+          description: Un administrador intenta inactivarse a sí mismo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                conflicto:
+                  value:
+                    error:
+                      codigo: CONFLICTO
+                      mensaje: Un administrador no puede inactivarse a sí mismo.
+                      detalles: []
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/usuarios/{id}/activar:
+    post:
+      tags: [Usuarios]
+      operationId: activarUsuario
+      summary: Activar un usuario
+      description: Solo ADMINISTRADOR. Vuelve a permitir el inicio de sesión del usuario. Es idempotente.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdUsuario'
+      responses:
+        '200':
+          description: El usuario, ya activo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/UsuarioNoExiste' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/usuarios/{id}/restablecer-contrasena:
+    post:
+      tags: [Usuarios]
+      operationId: restablecerContrasena
+      summary: Restablecer la contraseña de un usuario
+      description: |
+        Solo ADMINISTRADOR. Reemplaza la recuperación de contraseña por correo (RF08): el administrador asigna una
+        contraseña temporal, la anterior deja de servir y el usuario debe cambiarla en su siguiente inicio de
+        sesión (`debe_cambiar_contrasena` pasa a `true`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdUsuario'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContrasenaTemporal'
+      responses:
+        '204':
+          description: Contraseña restablecida. Sin contenido.
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/UsuarioNoExiste' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /api/roles:
+    get:
+      tags: [Roles]
+      operationId: listarRoles
+      summary: Listar los roles
+      description: |
+        Solo ADMINISTRADOR. Los cuatro roles del sistema, en una sola página (la forma común de los listados). Sirve
+        para obtener el `id_rol` que piden la creación y la edición de usuarios.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Los cuatro roles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListadoDeRoles'
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '429': { $ref: '#/components/responses/DemasiadasPeticiones' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT obtenido en `POST /api/auth/login`, enviado como `Authorization: Bearer <token>`. Vale 60 minutos.
+        Un token vencido, manipulado o de un usuario inactivo o inexistente recibe 401.
+
+  parameters:
+    IdUsuario:
+      name: id
+      in: path
+      required: true
+      description: Identificador del usuario (`id_usuario`).
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        example: 3
+    FiltroIdRol:
+      name: id_rol
+      in: query
+      required: false
+      description: Solo los usuarios con este rol.
+      schema:
+        type: integer
+        example: 2
+    FiltroActivo:
+      name: activo
+      in: query
+      required: false
+      description: Solo los usuarios activos (`true`, `1`) o inactivos (`false`, `0`).
+      schema:
+        type: string
+        enum: ['true', 'false', '1', '0']
+    Pagina:
+      name: pagina
+      in: query
+      required: false
+      description: Número de página, desde 1.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 2147483647
+        default: 1
+    PorPagina:
+      name: por_pagina
+      in: query
+      required: false
+      description: Elementos por página (máximo 100).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    NoAutenticado:
+      description: Falta el token, está vencido, está manipulado o es de un usuario inactivo o inexistente.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            noAutenticado:
+              value:
+                error:
+                  codigo: NO_AUTENTICADO
+                  mensaje: No autenticado.
+                  detalles: []
+    SinPermiso:
+      description: |
+        El usuario no es ADMINISTRADOR (`SIN_PERMISO`), o tiene el cambio de contraseña pendiente
+        (`CAMBIO_CONTRASENA_REQUERIDO`, que se comprueba antes que el rol).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            sinPermiso:
+              value:
+                error:
+                  codigo: SIN_PERMISO
+                  mensaje: No tiene permiso para realizar esta acción.
+                  detalles: []
+            cambioDeContrasenaRequerido:
+              value:
+                error:
+                  codigo: CAMBIO_CONTRASENA_REQUERIDO
+                  mensaje: Debe cambiar su contraseña antes de continuar.
+                  detalles: []
+    CambioDeContrasenaRequerido:
+      description: El usuario tiene el cambio de contraseña pendiente; solo puede usar `PUT /api/auth/contrasena` y `POST /api/auth/logout`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            cambioDeContrasenaRequerido:
+              value:
+                error:
+                  codigo: CAMBIO_CONTRASENA_REQUERIDO
+                  mensaje: Debe cambiar su contraseña antes de continuar.
+                  detalles: []
+    DatosNoValidos:
+      description: Los datos enviados no son válidos. `detalles` trae un elemento por campo inválido.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            datosNoValidos:
+              value:
+                error:
+                  codigo: DATOS_NO_VALIDOS
+                  mensaje: Los datos enviados no son válidos.
+                  detalles:
+                    - campo: correo
+                      mensaje: El campo correo es obligatorio.
+    UsuarioNoExiste:
+      description: El usuario no existe (o el `id` no es un número).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            usuarioNoExiste:
+              value:
+                error:
+                  codigo: NO_EXISTE
+                  mensaje: El usuario no existe.
+                  detalles: []
+    RolNoExiste:
+      description: El `id_rol` indicado no corresponde a ningún rol.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            rolNoExiste:
+              value:
+                error:
+                  codigo: NO_EXISTE
+                  mensaje: El rol indicado no existe.
+                  detalles: []
+    CorreoDuplicado:
+      description: Ya existe un usuario con ese correo.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            correoDuplicado:
+              value:
+                error:
+                  codigo: CORREO_DUPLICADO
+                  mensaje: Ya existe un usuario con ese correo.
+                  detalles: []
+    DemasiadasPeticiones:
+      description: |
+        Se superó el límite de peticiones: 10 intentos de inicio de sesión por minuto por IP, o 100 peticiones por
+        minuto por usuario. `Retry-After` indica cuántos segundos esperar.
+      headers:
+        Retry-After:
+          description: Segundos que faltan para que el límite se renueve.
+          schema:
+            type: integer
+            minimum: 1
+            example: 42
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            demasiadasPeticiones:
+              value:
+                error:
+                  codigo: DEMASIADAS_PETICIONES
+                  mensaje: Demasiadas peticiones. Intente de nuevo más tarde.
+                  detalles: []
+    ErrorInterno:
+      description: Error interno. El mensaje es siempre genérico y nunca incluye trazas ni detalles internos.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            errorInterno:
+              value:
+                error:
+                  codigo: ERROR_INTERNO
+                  mensaje: Error interno del servidor.
+                  detalles: []
+    ServicioNoDisponible:
+      description: El Gateway no puede atender la petición en este momento (por ejemplo, está en mantenimiento).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            servicioNoDisponible:
+              value:
+                error:
+                  codigo: SERVICIO_NO_DISPONIBLE
+                  mensaje: El servicio no está disponible.
+                  detalles: []
+
+  schemas:
+    Error:
+      type: object
+      description: Forma común de todos los errores.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          properties:
+            codigo:
+              type: string
+              description: |
+                Código estable para que el cliente decida qué hacer. Los de estas operaciones: `NO_AUTENTICADO`,
+                `SIN_PERMISO`, `CAMBIO_CONTRASENA_REQUERIDO`, `DATOS_NO_VALIDOS`, `DEMASIADAS_PETICIONES`,
+                `CREDENCIALES_INVALIDAS`, `USUARIO_INACTIVO`, `CONTRASENA_ACTUAL_INCORRECTA`, `NO_EXISTE`,
+                `CORREO_DUPLICADO`, `CONFLICTO`, `SERVICIO_NO_DISPONIBLE` y `ERROR_INTERNO`.
+              example: DATOS_NO_VALIDOS
+            mensaje:
+              type: string
+              description: Texto para mostrar al usuario.
+              example: Los datos enviados no son válidos.
+            detalles:
+              type: array
+              description: Un elemento por campo inválido en los 422; vacía en los demás errores.
+              items:
+                $ref: '#/components/schemas/DetalleDeError'
+
+    DetalleDeError:
+      type: object
+      required: [campo, mensaje]
+      properties:
+        campo:
+          type: string
+          example: correo
+        mensaje:
+          type: string
+          example: El campo correo es obligatorio.
+
+    Meta:
+      type: object
+      description: Paginación de los listados.
+      required: [pagina, por_pagina, total]
+      properties:
+        pagina:
+          type: integer
+          example: 1
+        por_pagina:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          description: Total de elementos que cumplen el filtro, en todas las páginas.
+          example: 4
+
+    Rol:
+      type: object
+      required: [id_rol, nombre, descripcion]
+      properties:
+        id_rol:
+          type: integer
+          example: 1
+        nombre:
+          type: string
+          enum: [ADMINISTRADOR, OPERADOR_BODEGA, VENDEDOR, CONTADOR]
+          example: ADMINISTRADOR
+        descripcion:
+          type: string
+          nullable: true
+          example: Acceso total a usuarios, catálogo, proveedores, compras, reportes y configuración.
+
+    Usuario:
+      type: object
+      description: Usuario del sistema. Nunca incluye la contraseña ni su hash.
+      required:
+        - id_usuario
+        - nombre
+        - correo
+        - id_rol
+        - rol
+        - id_bodega
+        - activo
+        - debe_cambiar_contrasena
+        - fecha_creacion
+      properties:
+        id_usuario:
+          type: integer
+          example: 3
+        nombre:
+          type: string
+          example: Omar Operador
+        correo:
+          type: string
+          format: email
+          example: omar@example.com
+        id_rol:
+          type: integer
+          example: 2
+        rol:
+          type: string
+          description: Nombre del rol.
+          enum: [ADMINISTRADOR, OPERADOR_BODEGA, VENDEDOR, CONTADOR]
+          example: OPERADOR_BODEGA
+        id_bodega:
+          type: integer
+          nullable: true
+          description: Bodega del operador de bodega; `null` para los demás roles.
+          example: 7
+        activo:
+          type: boolean
+          example: true
+        debe_cambiar_contrasena:
+          type: boolean
+          description: Si es `true`, el usuario solo puede cambiar su contraseña o cerrar sesión.
+          example: false
+        fecha_creacion:
+          type: string
+          format: date-time
+          description: ISO 8601, en UTC.
+          example: '2026-11-04T16:10:29Z'
+
+    UsuarioDeSesion:
+      type: object
+      description: Datos del usuario que devuelve el inicio de sesión (un subconjunto de `Usuario`).
+      required: [id_usuario, nombre, rol, id_bodega, debe_cambiar_contrasena]
+      properties:
+        id_usuario:
+          type: integer
+          example: 3
+        nombre:
+          type: string
+          example: Omar Operador
+        rol:
+          type: string
+          enum: [ADMINISTRADOR, OPERADOR_BODEGA, VENDEDOR, CONTADOR]
+          example: OPERADOR_BODEGA
+        id_bodega:
+          type: integer
+          nullable: true
+          example: 7
+        debe_cambiar_contrasena:
+          type: boolean
+          example: false
+
+    SesionIniciada:
+      type: object
+      required: [token, expira_en, usuario]
+      properties:
+        token:
+          type: string
+          description: JWT (HS256) para la cabecera `Authorization` con el esquema `Bearer`.
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzIn0.firma-de-ejemplo
+        expira_en:
+          type: integer
+          description: Vigencia del token, en segundos.
+          example: 3600
+        usuario:
+          $ref: '#/components/schemas/UsuarioDeSesion'
+
+    ListadoDeUsuarios:
+      type: object
+      required: [datos, meta]
+      properties:
+        datos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Usuario'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ListadoDeRoles:
+      type: object
+      required: [datos, meta]
+      properties:
+        datos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Rol'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    InicioDeSesion:
+      type: object
+      required: [correo, contrasena]
+      properties:
+        correo:
+          type: string
+          maxLength: 255
+          example: admin@example.com
+        contrasena:
+          type: string
+          format: password
+          maxLength: 255
+
+    CambioDeContrasena:
+      type: object
+      required: [contrasena_actual, contrasena_nueva]
+      properties:
+        contrasena_actual:
+          type: string
+          format: password
+          maxLength: 255
+        contrasena_nueva:
+          type: string
+          format: password
+          minLength: 8
+          description: |
+            Mínimo 8 caracteres, con al menos una letra y un número; máximo 72 bytes (bcrypt no lee más). Debe ser
+            distinta de la actual.
+
+    ContrasenaTemporal:
+      type: object
+      required: [contrasena_temporal]
+      properties:
+        contrasena_temporal:
+          type: string
+          format: password
+          minLength: 8
+          description: |
+            Mínimo 8 caracteres, con al menos una letra y un número; máximo 72 bytes. El usuario deberá cambiarla en
+            su siguiente inicio de sesión.
+
+    UsuarioNuevo:
+      type: object
+      required: [nombre, correo, id_rol, contrasena_temporal]
+      properties:
+        nombre:
+          type: string
+          maxLength: 100
+          example: Omar Operador
+        correo:
+          type: string
+          format: email
+          maxLength: 255
+          example: omar@example.com
+        id_rol:
+          type: integer
+          description: Entero JSON (`2`, no `"2"`). Los identificadores salen de `GET /api/roles`; si no existe, 404.
+          example: 2
+        id_bodega:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 4294967295
+          description: Entero JSON. Obligatorio para `OPERADOR_BODEGA`; con los demás roles se ignora y queda en `null`.
+          example: 7
+        contrasena_temporal:
+          type: string
+          format: password
+          minLength: 8
+          description: |
+            Mínimo 8 caracteres, con al menos una letra y un número; máximo 72 bytes. El usuario deberá cambiarla en
+            su primer inicio de sesión.
+
+    UsuarioEditado:
+      type: object
+      description: Reemplaza todos los campos editables; el usuario no cambia de contraseña ni de estado.
+      required: [nombre, correo, id_rol]
+      properties:
+        nombre:
+          type: string
+          maxLength: 100
+          example: Omar Operador
+        correo:
+          type: string
+          format: email
+          maxLength: 255
+          example: omar@example.com
+        id_rol:
+          type: integer
+          description: Entero JSON (`2`, no `"2"`). Si no existe, 404.
+          example: 2
+        id_bodega:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 4294967295
+          description: Entero JSON. Obligatorio para `OPERADOR_BODEGA`; con los demás roles se ignora y queda en `null`.
+          example: 7

@@ -24,7 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         then: function (): void {
-            // /health y, más adelante, /docs: propias del Gateway, sin grupos de middleware.
+            // /health y /docs: propias del Gateway, sin grupos de middleware.
             Route::group([], base_path('routes/internal.php'));
         },
     )
