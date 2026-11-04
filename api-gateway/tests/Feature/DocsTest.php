@@ -148,6 +148,34 @@ class DocsTest extends TestCase
         $this->assertStringContainsString("url: '/docs/openapi.yaml'", $html);
     }
 
+    public function test_swagger_ui_no_consulta_el_validador_en_linea_de_terceros(): void
+    {
+        $html = (string) $this->get('/docs')->getContent();
+
+        // El valor por defecto de `validatorUrl` en swagger-ui-dist es https://validator.swagger.io/validator: con
+        // un host que no sea localhost, el distintivo del validador le enviaría a un tercero la URL pública del
+        // Gateway. La página lo desactiva de forma explícita y no menciona ese servicio.
+        $this->assertMatchesRegularExpression('/\bvalidatorUrl\s*:\s*null\b/', $html, 'La configuración de Swagger UI debe llevar validatorUrl: null.');
+        $this->assertStringNotContainsString('validator.swagger.io', $html);
+    }
+
+    public function test_la_pagina_solo_puede_cargar_recursos_del_cdn_fijado_y_no_configura_origenes_remotos(): void
+    {
+        $html = (string) $this->get('/docs')->getContent();
+
+        // Todos los orígenes que nombra la página (con o sin esquema) son uno solo: el CDN de los dos recursos con SRI.
+        preg_match_all('#(?:https?:)?//([A-Za-z0-9.\[\]:-]+)#', $html, $anfitriones);
+        $this->assertSame(['cdn.jsdelivr.net'], array_values(array_unique($anfitriones[1])));
+        $this->assertSame(2, preg_match_all('#<(?:link|script)\b[^>]*\sintegrity="sha384-#i', $html), 'Los dos recursos externos llevan SRI.');
+
+        // La configuración de SwaggerUIBundle: sin ninguna URL absoluta, sin cargar la configuración ni otros
+        // documentos desde fuera, y sin el preset standalone (el único diseño que pinta el distintivo del validador).
+        $this->assertSame(1, preg_match('#SwaggerUIBundle\(\{(.*?)\}\);#s', $html, $configuracion), 'No se encontró la configuración de SwaggerUIBundle.');
+        $this->assertDoesNotMatchRegularExpression('#https?://|[\'"]//#i', $configuracion[1], 'La configuración no debe llevar URLs absolutas.');
+        $this->assertDoesNotMatchRegularExpression('/\b(configUrl|urls|queryConfigEnabled|oauth2RedirectUrl)\b/', $configuracion[1]);
+        $this->assertStringNotContainsStringIgnoringCase('standalone', $html);
+    }
+
     public function test_no_se_publica_nada_mas_bajo_docs(): void
     {
         foreach (['/docs/openapi.json', '/docs/openapi.yml', '/docs/index.html', '/docs/otra-cosa', '/docs/openapi.yaml/x'] as $ruta) {
