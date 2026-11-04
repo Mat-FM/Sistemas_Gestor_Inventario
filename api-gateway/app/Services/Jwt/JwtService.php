@@ -23,7 +23,7 @@ class JwtService
 {
     private const ALGORITMO = 'HS256';
 
-    private const LONGITUD_MINIMA_SECRETO = 32;
+    public const LONGITUD_MINIMA_SECRETO = 32;
 
     private readonly Key $llave;
 
