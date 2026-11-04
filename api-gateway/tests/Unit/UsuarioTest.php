@@ -119,6 +119,22 @@ class UsuarioTest extends TestCase
         $this->assertSame(1, Rol::whereKey($u->id_rol)->count());
     }
 
+    public function test_sesiones_desde_se_lee_como_fecha_y_nunca_se_serializa(): void
+    {
+        $this->crear(Roles::VEN, ['sesiones_desde' => '2030-03-05 07:08:09']);
+
+        $u = Usuario::with('rol')->firstOrFail();
+
+        // Con valor no nulo: es un dato interno, como la contraseña (Ruling 36).
+        $this->assertInstanceOf(Carbon::class, $u->sesiones_desde);
+        $this->assertSame(Carbon::parse('2030-03-05 07:08:09', 'UTC')->getTimestamp(), $u->sesiones_desde->getTimestamp());
+        $this->assertArrayNotHasKey('sesiones_desde', $u->toArray());
+        $this->assertStringNotContainsString('sesiones_desde', $u->toJson());
+        $this->assertStringNotContainsString('07:08:09', $u->toJson());
+        // El atributo sigue disponible para el código que decide si un token está revocado.
+        $this->assertNotNull($u->getAttribute('sesiones_desde'));
+    }
+
     public function test_los_valores_por_defecto_de_un_usuario_nuevo(): void
     {
         $this->assertTrue((new Usuario)->activo);
@@ -169,6 +185,7 @@ class UsuarioTest extends TestCase
             'activo' => ['activo', false],
             'debe_cambiar_contrasena' => ['debe_cambiar_contrasena', true],
             'id_bodega' => ['id_bodega', 3],
+            'sesiones_desde' => ['sesiones_desde', '2030-03-05 07:08:09'],
         ];
     }
 

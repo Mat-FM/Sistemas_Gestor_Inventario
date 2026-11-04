@@ -118,6 +118,10 @@ class UsuarioService
      * Inactiva al usuario (los usuarios no se borran): ya no puede iniciar sesión y su token deja de servir en la
      * petición siguiente. Un administrador no puede inactivarse a sí mismo: quedaría sin acceso, y la recuperación
      * de contraseña es solo por administrador (D10). Es idempotente.
+     *
+     * También revoca las sesiones emitidas hasta ahora (`sesiones_desde`): `activar` no la limpia, así que reactivar al
+     * usuario no rehabilita los tokens anteriores a la inactivación. La marca se fija después del rechazo de
+     * autoprotección, para que un 409 no revoque nada.
      */
     public function inactivar(Usuario $usuario, Usuario $actor): Usuario
     {
@@ -126,12 +130,13 @@ class UsuarioService
         }
 
         $usuario->activo = false;
+        $usuario->sesiones_desde = now();
         $usuario->save();
 
         return $usuario;
     }
 
-    /** Vuelve a activar al usuario. Es idempotente. */
+    /** Vuelve a activar al usuario. Es idempotente. No toca `sesiones_desde`: los tokens anteriores siguen revocados. */
     public function activar(Usuario $usuario): Usuario
     {
         $usuario->activo = true;
@@ -143,11 +148,16 @@ class UsuarioService
     /**
      * Fija una contraseña temporal (cifrada con bcrypt) y deja el cambio pendiente: la anterior deja de servir y,
      * mientras no la cambie, el usuario solo puede cambiar su contraseña o cerrar sesión (RF08).
+     *
+     * También revoca las sesiones emitidas hasta ahora (`sesiones_desde`, en el mismo guardado): quien tuviera un
+     * token robado no lo recupera cuando el usuario fija su contraseña definitiva. Si el administrador restablece la
+     * suya, su propio token también deja de servir y debe iniciar sesión con la temporal.
      */
     public function restablecerContrasena(Usuario $usuario, string $contrasenaTemporal): void
     {
         $usuario->contrasena_cifrada = Hash::make($contrasenaTemporal);
         $usuario->debe_cambiar_contrasena = true;
+        $usuario->sesiones_desde = now();
         $usuario->save();
     }
 

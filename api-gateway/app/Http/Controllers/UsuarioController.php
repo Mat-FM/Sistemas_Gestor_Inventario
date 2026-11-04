@@ -81,7 +81,7 @@ class UsuarioController extends Controller
         return new UsuarioResource($this->usuarios->actualizar($usuario, $datos, $this->usuarioActual($request)));
     }
 
-    /** POST /api/usuarios/{id}/inactivar → 200 con el usuario; ya no puede iniciar sesión. */
+    /** POST /api/usuarios/{id}/inactivar → 200 con el usuario; ya no puede iniciar sesión y se revocan sus sesiones. */
     public function inactivar(Request $request, string $id): UsuarioResource
     {
         $usuario = $this->usuarios->obtener($id);
@@ -95,7 +95,10 @@ class UsuarioController extends Controller
         return new UsuarioResource($this->usuarios->activar($this->usuarios->obtener($id)));
     }
 
-    /** POST /api/usuarios/{id}/restablecer-contrasena → 204: deja la temporal y el cambio de contraseña pendiente. */
+    /**
+     * POST /api/usuarios/{id}/restablecer-contrasena → 204: deja la temporal y el cambio de contraseña pendiente, y
+     * revoca las sesiones emitidas hasta ahora (también la del propio administrador si restablece la suya).
+     */
     public function restablecerContrasena(Request $request, string $id): Response
     {
         $usuario = $this->usuarios->obtener($id);
