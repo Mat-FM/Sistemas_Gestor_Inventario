@@ -17,11 +17,15 @@ use Symfony\Component\HttpFoundation\Response;
  * Sustituye al TrustProxies de Laravel en la pila global (bootstrap/app.php) por dos motivos:
  * - la lista se lee en cada petición, con la configuración ya cargada; `trustProxies(at:)` en `withMiddleware`
  *   se evalúa al resolver el kernel HTTP, antes de cargar `.env` y la configuración;
- * - con la lista vacía no se confía en nadie: el de Laravel confía en todos si el Host (que pone el cliente)
- *   termina en `.on-forge.com` o `.on-vapor.com`, y un cliente podría falsificar su IP.
+ * - con la lista vacía no se confía en nadie: sin proxies configurados, el de Laravel confía en todos si el Host
+ *   (que pone el cliente) termina en `.on-forge.com` o `.on-vapor.com`, o en Laravel Cloud, y un cliente podría
+ *   falsificar su IP con `X-Forwarded-For`.
  *
  * Confiar en todos (`*`, `REMOTE_ADDR` o un rango `/0`) se rechaza: permitiría falsificar `X-Forwarded-For` y
- * esquivar el límite por IP. No guarda estado entre peticiones: la lista de Symfony se reescribe en cada una.
+ * esquivar el límite por IP. Una entrada que no sea una IP ni un CIDR también se rechaza, en vez de ignorarla en
+ * silencio. El error salta en la petición (500, registrado con el mensaje), nunca al arrancar: los comandos de
+ * consola no lo leen. No guarda estado entre peticiones: la lista de Symfony se reescribe en cada una, también
+ * vacía, para que no quede la de una petición anterior.
  */
 class ConfiarEnProxies extends TrustProxies
 {
@@ -60,8 +64,33 @@ class ConfiarEnProxies extends TrustProxies
                     .'Indique las IP o los CIDR concretos de los proxies, separados por comas.'
                 );
             }
+
+            if (! self::esIpOCidr($entrada)) {
+                throw new InvalidArgumentException(
+                    "TRUSTED_PROXIES contiene «{$entrada}», que no es una IP ni un CIDR. "
+                    .'Indique las IP (v4 o v6) o los CIDR de los proxies, separados por comas; por ejemplo, 10.0.0.0/8.'
+                );
+            }
         }
 
         return $proxies;
+    }
+
+    /** Una IP v4 o v6, o un CIDR con un prefijo de hasta 32 o 128 bits (el `/0` ya se rechazó antes). */
+    private static function esIpOCidr(string $entrada): bool
+    {
+        $partes = explode('/', $entrada);
+
+        if (count($partes) > 2 || filter_var($partes[0], FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+
+        if (count($partes) === 1) {
+            return true;
+        }
+
+        $maximo = str_contains($partes[0], ':') ? 128 : 32;
+
+        return preg_match('/^[0-9]{1,3}$/', $partes[1]) === 1 && (int) $partes[1] <= $maximo;
     }
 }

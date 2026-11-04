@@ -100,6 +100,19 @@ class ProxiesDeConfianzaTest extends TestCase
         }
     }
 
+    public function test_el_trust_proxies_por_defecto_de_laravel_si_confia_en_todos_con_un_host_de_forge(): void
+    {
+        // Documenta el problema que motivó ConfiarEnProxies: con el middleware por defecto y sin proxies
+        // configurados, un Host de Forge hace que se acepte un X-Forwarded-For falso. Si esta prueba deja de
+        // cumplirse, Laravel cambió ese comportamiento.
+        $peticion = Request::create('http://gateway.on-forge.com/_prueba/ip', 'GET', server: ['REMOTE_ADDR' => self::PROXY]);
+        $peticion->headers->set('X-Forwarded-For', self::CLIENTE);
+
+        $ip = (new TrustProxies)->handle($peticion, fn (Request $r) => response($r->ip()))->getContent();
+
+        $this->assertSame(self::CLIENTE, $ip);
+    }
+
     public function test_con_un_cidr_de_confianza_se_usa_la_ip_del_cliente_real(): void
     {
         $this->confiarEn('10.0.0.0/8');

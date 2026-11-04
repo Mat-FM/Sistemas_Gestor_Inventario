@@ -88,4 +88,44 @@ class GatewayConfigTest extends TestCase
         $this->assertArrayHasKey('correo', config('gateway.admin'));
         $this->assertArrayHasKey('contrasena', config('gateway.admin'));
     }
+
+    public function test_los_proxies_de_confianza_salen_de_trusted_proxies_y_vacia_no_se_confia_en_ninguno(): void
+    {
+        // phpunit.xml la fija vacía; sin variable, el valor por defecto también es vacío (no confiar en nadie).
+        $this->assertSame('', config('gateway.trusted_proxies'));
+
+        $env = $_ENV['TRUSTED_PROXIES'] ?? null;
+        $server = $_SERVER['TRUSTED_PROXIES'] ?? null;
+
+        try {
+            $_ENV['TRUSTED_PROXIES'] = $_SERVER['TRUSTED_PROXIES'] = '10.0.0.0/8';
+            $this->assertSame('10.0.0.0/8', (require config_path('gateway.php'))['trusted_proxies']);
+
+            unset($_ENV['TRUSTED_PROXIES'], $_SERVER['TRUSTED_PROXIES']);
+            putenv('TRUSTED_PROXIES');
+            $this->assertSame('', (require config_path('gateway.php'))['trusted_proxies']);
+        } finally {
+            $env === null ? $this->quitarVariable($_ENV, 'TRUSTED_PROXIES') : $_ENV['TRUSTED_PROXIES'] = $env;
+            $server === null ? $this->quitarVariable($_SERVER, 'TRUSTED_PROXIES') : $_SERVER['TRUSTED_PROXIES'] = $server;
+        }
+    }
+
+    public function test_env_example_trae_trusted_proxies_vacia_con_su_comentario(): void
+    {
+        $ejemplo = (string) file_get_contents(base_path('.env.example'));
+
+        $this->assertMatchesRegularExpression('/^TRUSTED_PROXIES=$/m', $ejemplo);
+
+        // El bloque de comentarios justo encima explica el formato, el valor vacío y el rechazo de «*».
+        $this->assertSame(1, preg_match('/((?:^#.*\n)+)TRUSTED_PROXIES=/m', $ejemplo, $m));
+        foreach (['CIDR', 'comas', 'vacía', '«*»', 'X-Forwarded-For'] as $texto) {
+            $this->assertStringContainsString($texto, $m[1]);
+        }
+    }
+
+    /** @param  array<string, mixed>  $superglobal */
+    private function quitarVariable(array &$superglobal, string $nombre): void
+    {
+        unset($superglobal[$nombre]);
+    }
 }
