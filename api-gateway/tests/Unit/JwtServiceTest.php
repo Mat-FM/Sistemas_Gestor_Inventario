@@ -549,6 +549,42 @@ class JwtServiceTest extends TestCase
         new JwtService('');
     }
 
+    /** @return array<string, array{string}> */
+    public static function secretosNoValidos(): array
+    {
+        return [
+            'vacío' => [''],
+            'corto' => ['corto-pero-secreto'],
+            'de 31 caracteres' => [str_repeat('x', 31)],
+        ];
+    }
+
+    #[DataProvider('secretosNoValidos')]
+    public function test_el_rechazo_del_secreto_dice_como_generar_uno_valido(string $secreto): void
+    {
+        try {
+            new JwtService($secreto);
+            $this->fail('Debía rechazar el secreto.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('al menos 32 caracteres', $e->getMessage());
+            $this->assertStringContainsString('JWT_SECRET', $e->getMessage());
+            $this->assertStringContainsString('openssl rand -base64 48', $e->getMessage());
+        }
+    }
+
+    public function test_sin_secreto_configurado_el_mensaje_tambien_dice_como_generarlo(): void
+    {
+        config(['gateway.jwt.secret' => null]);
+
+        try {
+            $this->app->make(JwtService::class);
+            $this->fail('Debía rechazar la falta de secreto.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('JWT_SECRET', $e->getMessage());
+            $this->assertStringContainsString('openssl rand -base64 48', $e->getMessage());
+        }
+    }
+
     /** @return array<string, array{int}> */
     public static function vigenciasNoValidas(): array
     {

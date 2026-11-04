@@ -30,7 +30,11 @@ class JwtService
     public function __construct(#[\SensitiveParameter] private readonly string $secreto, private readonly int $ttlMinutes = 60)
     {
         if (strlen($secreto) < self::LONGITUD_MINIMA_SECRETO) {
-            throw new InvalidArgumentException('El secreto del JWT debe tener al menos '.self::LONGITUD_MINIMA_SECRETO.' caracteres.');
+            // La pista dice cómo arreglarlo, pero nunca repite el valor recibido: puede ser un secreto real.
+            throw new InvalidArgumentException(
+                'El secreto del JWT debe tener al menos '.self::LONGITUD_MINIMA_SECRETO.' caracteres. '
+                .'Genere uno con «openssl rand -base64 48» y defínalo en la variable JWT_SECRET.'
+            );
         }
 
         if ($ttlMinutes < 1) {

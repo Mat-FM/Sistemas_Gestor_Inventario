@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use Dotenv\Dotenv;
 use Tests\TestCase;
 
 /**
@@ -59,6 +60,27 @@ class GatewayConfigTest extends TestCase
     {
         $this->assertSame(60, config('gateway.jwt.ttl_minutes'));
         $this->assertSame('secreto-de-pruebas-con-mas-de-32-caracteres', config('gateway.jwt.secret'));
+    }
+
+    public function test_env_example_deja_vacios_los_secretos_que_se_deben_generar_y_no_trae_valores_de_ejemplo_que_fallen(): void
+    {
+        $contenido = file_get_contents(base_path('.env.example'));
+        $variables = Dotenv::parse($contenido);
+
+        // Un secreto de ejemplo corto (p. ej. «change_me») haría fallar a JwtService al primer uso.
+        $this->assertArrayHasKey('JWT_SECRET', $variables);
+        $this->assertSame('', $variables['JWT_SECRET']);
+        $this->assertStringContainsString('openssl rand -base64 48', $contenido);
+
+        // El primer administrador no tiene valores de ejemplo: la contraseña debe elegirla quien instala.
+        $this->assertArrayHasKey('ADMIN_EMAIL', $variables);
+        $this->assertSame('', $variables['ADMIN_EMAIL']);
+        $this->assertArrayHasKey('ADMIN_PASSWORD', $variables);
+        $this->assertSame('', $variables['ADMIN_PASSWORD']);
+
+        // Único valor de ejemplo permitido: la contraseña de la base de datos local, que coincide con la del
+        // docker-compose.yml de la raíz y por eso funciona tal cual.
+        $this->assertSame(['DB_PASSWORD'], array_keys(array_filter($variables, fn (string $valor): bool => $valor === 'change_me')));
     }
 
     public function test_el_primer_administrador_sigue_en_la_configuracion(): void
