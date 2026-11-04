@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Exceptions\ApiException;
 use App\Services\Jwt\JwtService;
+use App\Services\Routing\RouteMap;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -22,6 +23,11 @@ class AppServiceProvider extends ServiceProvider
             (string) config('gateway.jwt.secret'),
             (int) config('gateway.jwt.ttl_minutes'),
         ));
+
+        // El mapa de rutas se construye con la tabla de config/gateway_routes.php y se comparte: es de solo
+        // lectura y no accede a la base de datos (RNF13). El closure lee la configuración al resolverlo, no al
+        // registrar, así que una tabla mal escrita falla en la primera petición proxy, con un error claro.
+        $this->app->singleton(RouteMap::class, fn () => new RouteMap(config('gateway_routes')));
     }
 
     /**
