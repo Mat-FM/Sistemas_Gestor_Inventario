@@ -1,0 +1,50 @@
+name: CI api-gateway
+
+# Pruebas unitarias del API Gateway con cobertura mínima del 60 % (RNF20).
+# Corre en cada pull request que toque el Gateway o este mismo archivo.
+on:
+  pull_request:
+    paths:
+      - 'api-gateway/**'
+      - '.github/workflows/ci-api-gateway.yml'
+
+# El token solo necesita leer el código.
+permissions:
+  contents: read
+
+# Una ejecución nueva sobre la misma rama cancela la anterior, que ya quedó obsoleta.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api-gateway
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # pcov mide la cobertura. Las extensiones son las que exige composer.json más pdo_sqlite y sqlite3, que
+      # usan las pruebas (SQLite en memoria): no hace falta ningún servicio MySQL.
+      - name: Preparar PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+          extensions: ctype, dom, fileinfo, filter, iconv, libxml, mbstring, openssl, pdo_sqlite, session, sqlite3, tokenizer, xml, xmlwriter
+
+      - name: Instalar las dependencias
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Preparar el entorno
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Ejecutar las pruebas con cobertura mínima del 60 %
+        run: php artisan test --coverage --min=60
