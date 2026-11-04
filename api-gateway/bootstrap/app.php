@@ -1,6 +1,11 @@
 <?php
 
 use App\Exceptions\ApiException;
+use App\Http\Middleware\AssignRequestId;
+use App\Http\Middleware\AuthenticateJwt;
+use App\Http\Middleware\EnforcePasswordChange;
+use App\Http\Middleware\LogRequest;
+use App\Http\Middleware\RequireRole;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -22,7 +27,15 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        $middleware->alias([
+            'jwt' => AuthenticateJwt::class,
+            'cambio.contrasena' => EnforcePasswordChange::class,
+            'rol' => RequireRole::class,
+        ]);
+
+        // Primero el identificador de petición y luego el registro, antes que cualquier otro middleware de /api
+        // (JWT, cambio de contraseña pendiente y límite de peticiones los añaden las rutas).
+        $middleware->api(prepend: [AssignRequestId::class, LogRequest::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Todas las respuestas son JSON con la forma común de error, pida lo que pida el cliente.
