@@ -240,9 +240,10 @@ class SeedersTest extends TestCase
             }
         }
 
+        // Solo la clave `admin`: el resto de config/gateway.php tiene sus propias pruebas (GatewayConfigTest).
         $this->assertSame(
-            ['admin' => ['correo' => 'desde-entorno@example.test', 'contrasena' => 'ClaveDelEntorno1']],
-            $config,
+            ['correo' => 'desde-entorno@example.test', 'contrasena' => 'ClaveDelEntorno1'],
+            $config['admin'],
         );
     }
 }
