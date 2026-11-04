@@ -76,11 +76,15 @@ return [
     | by Laravel's translation / localization methods. This option can be
     | set to any locale for which you plan to have translation strings.
     |
+    | El Gateway responde en español: lang/es trae los mensajes de validación.
+    | Sin APP_LOCALE ni APP_FALLBACK_LOCALE el idioma es «es», y también en el
+    | de respaldo, para que ningún mensaje salga en inglés.
+    |
     */
 
-    'locale' => env('APP_LOCALE', 'en'),
+    'locale' => env('APP_LOCALE', 'es'),
 
-    'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
+    'fallback_locale' => env('APP_FALLBACK_LOCALE', 'es'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),
 
