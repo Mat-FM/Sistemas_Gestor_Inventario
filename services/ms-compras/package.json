@@ -1,0 +1,46 @@
+{
+  "name": "ms-compras",
+  "version": "1.0.0",
+  "description": "Órdenes de compra, recepciones y devoluciones a proveedor (RF06, RF13) — Distribuidora El Montañero",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node --env-file=.env scripts/migrar.js",
+    "dev": "node --env-file=.env --watch src/server.js",
+    "simulador": "node dev/simulador-servicios.js",
+    "test": "jest --runInBand",
+    "test:cobertura": "jest --runInBand --coverage"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "js-yaml": "^4.1.0",
+    "pg": "^8.13.0",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "setupFiles": [
+      "<rootDir>/tests/entorno.js"
+    ],
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "lines": 60
+      }
+    },
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/server.js"
+    ]
+  }
+}
