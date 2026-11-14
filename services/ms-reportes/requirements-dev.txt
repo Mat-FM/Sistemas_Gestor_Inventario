@@ -1,0 +1,7 @@
+# Dependencias para desarrollar: las de la aplicación más las de las pruebas.
+# Instalar con: pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Pruebas y cobertura
+pytest==9.2.0
+pytest-cov==7.1.0

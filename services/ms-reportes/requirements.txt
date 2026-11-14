@@ -1,9 +1,10 @@
-# Dependencias de ms-reportes, con versión fija para que todos instalen lo mismo.
-# Instalar con: pip install -r requirements.txt
+# Dependencias de ms-reportes (las que lleva la imagen Docker), con versión fija para que todos instalen lo mismo.
+# Para desarrollar y correr las pruebas: pip install -r requirements-dev.txt
 
-# Aplicación web
+# Aplicación web y servidor de producción (el que usa la imagen Docker)
 Flask==3.1.3
 python-dotenv==1.2.4
+gunicorn==27.0.1
 
 # Base de datos PostgreSQL: modelos (SQLAlchemy), migraciones (Alembic) y driver
 Flask-SQLAlchemy==3.1.1
@@ -16,7 +17,3 @@ requests==2.34.2
 # Carga masiva (Excel) y exportación a PDF (RF16)
 openpyxl==3.1.5
 fpdf2==2.9.0
-
-# Pruebas y cobertura
-pytest==9.2.0
-pytest-cov==7.1.0

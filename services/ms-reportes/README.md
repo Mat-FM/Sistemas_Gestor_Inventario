@@ -13,14 +13,15 @@ Reportes, panel de indicadores, panel de auditoría, exportación a CSV y PDF e 
 
 | Uso | Librería |
 | --- | --- |
-| Aplicación web | Flask, python-dotenv (lee el `.env`) |
+| Aplicación web | Flask, python-dotenv (lee el `.env`) y gunicorn (servidor de producción, en la imagen Docker) |
 | Modelos y migraciones | Flask-SQLAlchemy, Flask-Migrate (Alembic) y `psycopg` para PostgreSQL |
 | Llamadas a otros servicios | requests (los reintentos y el cortacircuitos están escritos en el servicio) |
 | Lectura de Excel | openpyxl (los CSV se leen con el módulo `csv` de Python) |
 | PDF | fpdf2 |
 | Pruebas | pytest y pytest-cov |
 
-Las versiones exactas están en `requirements.txt`.
+Las versiones exactas están en `requirements.txt` (lo que lleva la imagen) y `requirements-dev.txt` (además, las
+pruebas).
 
 ## Rutas
 
@@ -147,7 +148,7 @@ docker compose up -d db-ms-reportes     # PostgreSQL en 127.0.0.1:5436
 cd services/ms-reportes
 python3 -m venv .venv
 source .venv/bin/activate               # en cada terminal nueva; el prompt muestra (.venv)
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env                    # los valores por defecto ya apuntan a esa base
 flask db upgrade                        # crea las tablas
 flask run --port 5000                   # http://127.0.0.1:5000/docs
@@ -161,13 +162,39 @@ responden 503 y las importaciones quedan `FALLIDA`; `/health`, `/docs` y la cons
 
 Si cambia un modelo, la migración se genera con `flask db migrate -m "descripción"` y se aplica con `flask db upgrade`.
 
+## Docker (RNF03)
+
+La imagen sirve la aplicación con **gunicorn** sobre `python:3.14-slim`, con un usuario sin privilegios. No lleva el
+`.env`, las pruebas ni el entorno virtual (`.dockerignore`): toda la configuración llega por variables de entorno.
+Incluye las migraciones y los archivos de `/docs`. Tiene un `HEALTHCHECK` que consulta `/health`.
+
+Desde `services/ms-reportes`, con la base del `docker-compose.yml` levantada (`docker compose up -d db-ms-reportes`
+desde la raíz):
+
+```bash
+docker build -t ms-reportes .
+
+# Dentro de la red del compose, la base se llama db-ms-reportes y escucha en el 5432.
+VARIABLES="-e DB_HOST=db-ms-reportes -e DB_PORT=5432 -e DB_NAME=reportes_db -e DB_USER=reportes -e DB_PASSWORD=change_me"
+
+docker run --rm --network gestor-inventario_default $VARIABLES ms-reportes flask db upgrade   # crea las tablas
+docker run -d --name ms-reportes --network gestor-inventario_default $VARIABLES -p 127.0.0.1:5000:5000 ms-reportes
+```
+
+El servicio queda en `http://127.0.0.1:5000/docs`. Las migraciones no se aplican solas al arrancar: se ejecutan una vez
+con `flask db upgrade`, como arriba, antes de iniciar el servicio (con varias réplicas, que arranquen todas a la vez no
+debe aplicar la misma migración varias veces). Para que los reportes funcionen, las variables `MS_*_URL` deben apuntar
+a los demás servicios. `GUNICORN_WORKERS` (por defecto 2) cambia la cantidad de procesos; cada proceso lleva su propio
+cortacircuitos.
+
 ## Variables de entorno (RNF14)
 
 | Variable | Uso |
 | --- | --- |
 | `FLASK_APP` | Módulo de la aplicación (`app`), para `flask run` y `flask db` |
 | `SERVICE_NAME` | Nombre del servicio en los registros y en `/health` (`ms-reportes`) |
-| `PORT` | Puerto del servicio en el clúster (5000). `flask run` no lo lee: en local se indica con `--port` |
+| `PORT` | Puerto en el que escucha gunicorn en la imagen Docker (5000). `flask run` no lo lee: en local se indica con `--port` |
+| `GUNICORN_WORKERS` | Procesos de gunicorn en la imagen Docker (2) |
 | `LOG_LEVEL` | Nivel mínimo de los registros (`INFO`) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Conexión a PostgreSQL |
 | `MS_CATALOGO_URL`, `MS_PROVEEDORES_URL`, `MS_INVENTARIO_URL`, `MS_COMPRAS_URL` | Direcciones de los demás servicios. En el clúster, `http://<servicio>:<puerto>` |
@@ -202,4 +229,4 @@ Cobertura actual: **98 %** (55 pruebas). RNF20 no exige cobertura para este serv
 ## Pendiente
 
 - Probar los reportes y la carga de stock inicial contra ms-inventario y ms-compras cuando estén implementados.
-- Dockerfile (con un servidor de producción, como gunicorn) y manifiestos de Kubernetes.
+- Manifiestos de Kubernetes.
