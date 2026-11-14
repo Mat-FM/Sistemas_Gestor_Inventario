@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProveedorController;
+use App\Http\Controllers\ProveedorLoteController;
 use App\Http\Controllers\ProveedorProductoController;
 use Illuminate\Support\Facades\Route;
 
@@ -24,3 +25,6 @@ Route::controller(ProveedorProductoController::class)->where(['id' => '[0-9]+', 
     Route::post('/proveedores/{id}/productos', 'store');
     Route::delete('/proveedores/{id}/productos/{idProducto}', 'destroy');
 });
+
+// Rutas internas: solo las llaman otros servicios dentro del clúster; el Gateway no las publica.
+Route::post('/internas/proveedores/lote', [ProveedorLoteController::class, 'store']);

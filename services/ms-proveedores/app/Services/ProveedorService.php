@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\ApiException;
 use App\Models\Proveedor;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Validator;
 
 /**
  * Reglas de negocio de los proveedores (RF03). No sabe nada de HTTP: lo usan los controladores.
@@ -75,6 +76,48 @@ class ProveedorService
 
         // Se recarga para devolverlo con todos sus campos, igual que al consultarlo.
         return $proveedor->refresh();
+    }
+
+    /**
+     * Carga masiva con éxito parcial (RF16): cada fila se valida y se crea por separado, con las mismas
+     * reglas de POST /proveedores. Las válidas se guardan y las inválidas se reportan en `rechazados`.
+     * `fila` es la posición en la lista, empezando en 1. Si un NIT se repite (en la base o dentro del
+     * mismo lote), gana la primera aparición: las demás chocan con el NIT ya creado y se rechazan.
+     *
+     * @return array{creados: int, rechazados: list<array{fila: int, motivo: string}>}
+     */
+    public function crearLote(array $filas): array
+    {
+        $creados = 0;
+        $rechazados = [];
+
+        foreach ($filas as $indice => $fila) {
+            $numeroFila = $indice + 1;
+
+            if (! is_array($fila)) {
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => 'La fila debe ser un objeto con los datos del proveedor.'];
+
+                continue;
+            }
+
+            $validador = Validator::make($fila, self::reglas());
+            if ($validador->fails()) {
+                // Todos los errores de la fila en un solo texto, para corregirlos de una vez.
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => implode(' ', $validador->errors()->all())];
+
+                continue;
+            }
+
+            try {
+                $this->crear($validador->validated());
+                $creados++;
+            } catch (ApiException $e) {
+                // NIT_DUPLICADO: ya existe en la base o apareció antes en este lote.
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => $e->getMessage()];
+            }
+        }
+
+        return ['creados' => $creados, 'rechazados' => $rechazados];
     }
 
     /** Actualiza los datos del proveedor. El NIT no está en $datos: no es editable. */
