@@ -2,18 +2,24 @@
 
 namespace Tests\Feature;
 
-// use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class ExampleTest extends TestCase
 {
     /**
-     * A basic test example.
+     * Una ruta que no existe responde 404 con la forma común de error.
      */
-    public function test_the_application_returns_a_successful_response(): void
+    public function test_una_ruta_inexistente_responde_404_con_la_forma_comun(): void
     {
-        $response = $this->get('/');
+        $response = $this->get('/ruta-que-no-existe');
 
-        $response->assertStatus(200);
+        $response->assertStatus(404)
+            ->assertExactJson([
+                'error' => [
+                    'codigo' => 'NO_EXISTE',
+                    'mensaje' => 'El recurso no existe.',
+                    'detalles' => [],
+                ],
+            ]);
     }
 }
