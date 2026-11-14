@@ -5,8 +5,7 @@ info:
   version: 1.0.0
   description: |
     Microservicio de reportes, panel de indicadores e importación masiva validada (RF11, RF14, RF15, RF16).
-    Implementa las operaciones de la Tabla 12 de la Entrega 2. Por ahora están las importaciones (RF16); los
-    reportes y los indicadores se agregarán a este documento cuando se implementen.
+    Implementa las operaciones de la Tabla 12 de la Entrega 2.
 
     **Rutas internas.** Las rutas aquí descritas son las del servicio, **sin el prefijo `/api`**. Desde fuera del
     clúster se llaman a través del API Gateway con ese prefijo (por ejemplo, `GET /api/importaciones` llega aquí como
@@ -19,7 +18,19 @@ info:
       donde trae un elemento `{campo, mensaje}` por cada error de validación.
     - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con `?pagina=1&por_pagina=20`
       (`por_pagina` máximo 100).
-    - Fechas en ISO 8601 (UTC).
+    - Fechas en ISO 8601 (UTC). Los filtros de fecha usan el formato AAAA-MM-DD.
+
+    ## Reportes e indicadores (RF11, RF14, RF15)
+
+    Se calculan en el momento con datos de `ms-inventario`, `ms-catalogo` y `ms-compras` (llamada 6) y no se guardan.
+    Si uno de esos servicios no responde, la respuesta es 503 `SERVICIO_NO_DISPONIBLE`.
+
+    - `?formato` admite `json` (por defecto), `csv` o `pdf`. Con `csv` o `pdf` la respuesta es un archivo para
+      descargar. El CSV está separado por punto y coma, con coma decimal y en UTF-8 con BOM, para abrirse con Excel en
+      español.
+    - Rotación: cuenta solo los movimientos `SALIDA` del periodo. Entran todos los productos ACTIVOS, con 0 si no
+      tuvieron salidas.
+    - Valorización: cantidad en existencia por el precio registrado del producto.
 
     ## Importación masiva (RF16)
 
@@ -48,10 +59,225 @@ servers:
     description: Este mismo servicio
 
 tags:
+  - name: Reportes
+  - name: Indicadores
   - name: Importaciones
   - name: Operación
 
 paths:
+  /reportes/existencias:
+    get:
+      tags: [Reportes]
+      summary: Existencias por producto y bodega
+      description: Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Ordenadas por código y bodega.
+      parameters:
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_categoria
+          in: query
+          description: Productos de esa categoría y de sus subcategorías.
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Existencias (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id_producto: { type: integer, example: 1 }
+                    codigo: { type: string, example: CAF-500 }
+                    nombre: { type: string, example: Café molido 500 g }
+                    id_categoria: { type: integer, example: 2 }
+                    id_bodega: { type: integer, example: 1 }
+                    bodega: { type: string, example: Bodega Centro }
+                    cantidad_disponible: { type: number, example: 12 }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/valorizacion:
+    get:
+      tags: [Reportes]
+      summary: Valorización del inventario
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Valor de cada producto (cantidad en existencia por su
+        precio) y `valor_total`. Sin `id_bodega`, la cantidad es la suma de las dos bodegas.
+      parameters:
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Valorización (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  productos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id_producto: { type: integer, example: 1 }
+                        codigo: { type: string, example: CAF-500 }
+                        nombre: { type: string, example: Café molido 500 g }
+                        cantidad: { type: number, example: 12.5 }
+                        precio: { type: number, example: 18500.5 }
+                        valor: { type: number, example: 231256.25 }
+                  valor_total: { type: number, example: 231256.25 }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/rotacion:
+    get:
+      tags: [Reportes]
+      summary: Productos con mayor y menor rotación
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Ordena los productos ACTIVOS por sus salidas (`SALIDA`)
+        en el periodo; los que no tuvieron salidas cuentan con 0.
+      parameters:
+        - name: fecha_desde
+          in: query
+          required: true
+          schema: { type: string, format: date, example: '2026-11-01' }
+        - name: fecha_hasta
+          in: query
+          required: true
+          schema: { type: string, format: date, example: '2026-11-30' }
+        - name: limite
+          in: query
+          description: Cuántos productos lleva cada lista.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Las dos listas (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mayor_rotacion:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+                  menor_rotacion:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422':
+          description: Faltan las fechas, no son válidas o el rango no es válido (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/kardex:
+    get:
+      tags: [Reportes]
+      summary: Kardex filtrado
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF15). Los movimientos de `GET /movimientos` de ms-inventario con
+        sus mismos filtros, del más reciente al más antiguo, con el código y el nombre del producto y el nombre de la
+        bodega. Sin paginar.
+      parameters:
+        - name: id_producto
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_usuario
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: tipo
+          in: query
+          schema:
+            type: string
+            enum: [ENTRADA, SALIDA, AJUSTE, DEVOLUCION_CLIENTE, ENTRADA_COMPRA, DEVOLUCION_PROVEEDOR, TRASLADO_SALIDA,
+                   TRASLADO_ENTRADA, CARGA_INICIAL]
+        - name: fecha_desde
+          in: query
+          schema: { type: string, format: date }
+        - name: fecha_hasta
+          in: query
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Movimientos (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id_movimiento: { type: integer, example: 9 }
+                    fecha: { type: string, format: date-time, example: '2026-11-10T10:00:00Z' }
+                    tipo: { type: string, example: SALIDA }
+                    id_producto: { type: integer, example: 1 }
+                    codigo: { type: string, example: CAF-500 }
+                    nombre: { type: string, example: Café molido 500 g }
+                    id_bodega: { type: integer, example: 1 }
+                    bodega: { type: string, example: Bodega Centro }
+                    cantidad: { type: number, example: 4 }
+                    saldo_resultante: { type: number, example: 8 }
+                    id_usuario: { type: integer, example: 7 }
+                    documento_referencia: { type: string, nullable: true, example: FAC-1001 }
+                    observacion: { type: string, nullable: true }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /indicadores:
+    get:
+      tags: [Indicadores]
+      summary: Panel de indicadores
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF14). Solo JSON. El periodo solo afecta a `mayor_rotacion`: sin
+        `fecha_hasta` termina hoy y sin `fecha_desde` empieza 30 días antes. Los demás indicadores son del momento.
+      parameters:
+        - name: fecha_desde
+          in: query
+          schema: { type: string, format: date }
+        - name: fecha_hasta
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Indicadores.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valor_total: { type: number, description: Valor de todo el inventario., example: 231756.25 }
+                  productos_bajo_umbral: { type: integer, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
+                  productos_agotados:
+                    type: integer
+                    description: Productos ACTIVOS cuya suma en las dos bodegas es 0, también los que no tienen saldo.
+                    example: 2
+                  proximos_a_vencer: { type: integer, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
+                  mayor_rotacion:
+                    type: array
+                    description: Los 5 productos con más salidas en el periodo.
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+                  ordenes_pendientes: { type: integer, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
   /importaciones:
     post:
       tags: [Importaciones]
@@ -175,6 +401,10 @@ paths:
 
 components:
   parameters:
+    Formato:
+      name: formato
+      in: query
+      schema: { type: string, enum: [json, csv, pdf], default: json }
     XUserId:
       name: X-User-Id
       in: header
@@ -191,6 +421,14 @@ components:
       schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
 
   schemas:
+    ProductoRotacion:
+      type: object
+      properties:
+        id_producto: { type: integer, example: 2 }
+        codigo: { type: string, example: AGU-001 }
+        nombre: { type: string, example: Agua 600 ml }
+        salidas: { type: number, description: Suma de las salidas del periodo., example: 30 }
+
     Tipo:
       type: string
       enum: [PRODUCTOS, PROVEEDORES, STOCK_INICIAL]
@@ -251,3 +489,17 @@ components:
                 properties:
                   campo: { type: string }
                   mensaje: { type: string }
+
+  responses:
+    DatosNoValidos:
+      description: Datos no válidos (`DATOS_NO_VALIDOS`), con un detalle por cada error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServicioNoDisponible:
+      description: Un servicio del que depende el reporte no responde (`SERVICIO_NO_DISPONIBLE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { codigo: SERVICIO_NO_DISPONIBLE, mensaje: ms-inventario no responde. Intente de nuevo más tarde., detalles: [] }

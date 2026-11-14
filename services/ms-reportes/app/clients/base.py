@@ -16,6 +16,7 @@ import time
 import requests
 from flask import current_app, g, has_request_context
 
+from app.errores import ApiError
 from app.registro import CABECERA
 
 ESPERAS_REINTENTO = (0.2, 0.4, 0.8)
@@ -28,11 +29,13 @@ log = logging.getLogger(__name__)
 _cortacircuitos: dict[str, dict] = {}
 
 
-class ServicioNoDisponible(Exception):
-    """El servicio no respondió, respondió con un error 5xx, dio una respuesta no válida o el cortacircuitos está abierto."""
+class ServicioNoDisponible(ApiError):
+    """El servicio no respondió, respondió con un error 5xx, dio una respuesta no válida o el cortacircuitos está
+    abierto. Si nadie la atrapa, responde 503 SERVICIO_NO_DISPONIBLE (los reportes); la importación la atrapa
+    para guardarse como FALLIDA."""
 
     def __init__(self, servicio: str):
-        super().__init__(f"{servicio} no responde.")
+        super().__init__(503, "SERVICIO_NO_DISPONIBLE", f"{servicio} no responde. Intente de nuevo más tarde.")
         self.servicio = servicio
 
 
@@ -44,6 +47,21 @@ class ClienteServicio:
     def get(self, ruta: str, params: dict | None = None):
         """Consulta: se reintenta. Devuelve el JSON de una respuesta 200."""
         return self._json(self._llamar("GET", ruta, reintentar=True, params=params))
+
+    def todas_las_paginas(self, ruta: str, params: dict | None = None, por_pagina: int = 100) -> list:
+        """Pide un listado paginado {datos, meta} página por página y devuelve todos sus elementos."""
+        todos = []
+        pagina = 1
+        while True:
+            respuesta = self.get(ruta, params={**(params or {}), "pagina": pagina, "por_pagina": por_pagina})
+            try:
+                todos.extend(respuesta["datos"])
+                if pagina * por_pagina >= int(respuesta["meta"]["total"]):
+                    return todos
+            except (KeyError, TypeError, ValueError):
+                log.error("respuesta_no_valida", extra={"contexto": {"destino": self.servicio, "ruta": ruta}})
+                raise ServicioNoDisponible(self.servicio)
+            pagina += 1
 
     def post(self, ruta: str, cuerpo: dict, cabeceras: dict | None = None, reintentar: bool = False):
         """Envío: solo se reintenta si el destino no lo duplica (reintentar=True). Devuelve el JSON de una respuesta 200."""

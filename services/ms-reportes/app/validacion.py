@@ -4,6 +4,8 @@ Cada función agrega a `errores` un {campo, mensaje} si el valor no es válido, 
 juntos en un solo 422 (ver `exigir_sin_errores`).
 """
 
+from datetime import date, datetime
+
 from app.errores import ApiError
 
 
@@ -30,3 +32,24 @@ def exigir_sin_errores(errores: list[dict]) -> None:
     """422 DATOS_NO_VALIDOS con todos los errores, si hay alguno."""
     if errores:
         raise ApiError.datos_no_validos(errores)
+
+
+def fecha(valor: str | None, campo: str, errores: list[dict]) -> date | None:
+    """Fecha con el formato AAAA-MM-DD. None si no llegó o si no es válida."""
+    if valor is None or valor == "":
+        return None
+    try:
+        return datetime.strptime(valor, "%Y-%m-%d").date()
+    except ValueError:
+        errores.append({"campo": campo, "mensaje": f"El campo {campo} debe ser una fecha con el formato AAAA-MM-DD."})
+        return None
+
+
+def opcion(valor: str | None, campo: str, errores: list[dict], opciones: tuple[str, ...]) -> str | None:
+    """Uno de los valores permitidos. None si no llegó o si no es válido."""
+    if valor is None or valor == "":
+        return None
+    if valor not in opciones:
+        errores.append({"campo": campo, "mensaje": f"El campo {campo} tiene un valor no válido."})
+        return None
+    return valor

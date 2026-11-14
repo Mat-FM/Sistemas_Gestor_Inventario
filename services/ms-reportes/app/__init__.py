@@ -36,8 +36,10 @@ def create_app(configuracion: dict | None = None) -> Flask:
     # Rutas del contrato. No llevan el prefijo /api: el Gateway lo quita antes de reenviar (Entrega 2, sección 4.1).
     from app.routes.importaciones import bp as importaciones
     from app.routes.operacion import bp as operacion
+    from app.routes.reportes import bp as reportes
 
     app.register_blueprint(importaciones)
+    app.register_blueprint(reportes)
     # /health y /docs: propias del servicio.
     app.register_blueprint(operacion)
 
