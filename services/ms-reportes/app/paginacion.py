@@ -5,9 +5,7 @@
 from collections.abc import Callable
 
 from flask import request
-from sqlalchemy import Select
 
-from app.extensions import db
 from app.validacion import entero
 
 POR_PAGINA_PREDETERMINADO = 20
@@ -21,10 +19,9 @@ def leer_paginacion(errores: list[dict]) -> tuple[int, int]:
     return pagina or 1, por_pagina or POR_PAGINA_PREDETERMINADO
 
 
-def paginar(consulta: Select, pagina: int, por_pagina: int, formato: Callable) -> dict:
-    """Ejecuta la consulta para una página y aplica `formato` a cada elemento."""
-    resultado = db.paginate(consulta, page=pagina, per_page=por_pagina, error_out=False)
+def respuesta_paginada(elementos: list, total: int, pagina: int, por_pagina: int, formato: Callable) -> dict:
+    """Aplica `formato` a cada elemento de la página y agrega `meta`."""
     return {
-        "datos": [formato(elemento) for elemento in resultado.items],
-        "meta": {"pagina": pagina, "por_pagina": por_pagina, "total": resultado.total},
+        "datos": [formato(elemento) for elemento in elementos],
+        "meta": {"pagina": pagina, "por_pagina": por_pagina, "total": total},
     }

@@ -33,4 +33,9 @@ def create_app(configuracion: dict | None = None) -> Flask:
     # Registra los modelos en SQLAlchemy, para que las migraciones (flask db migrate) los encuentren.
     from app import models  # noqa: F401
 
+    # Rutas del contrato. No llevan el prefijo /api: el Gateway lo quita antes de reenviar (Entrega 2, sección 4.1).
+    from app.routes.importaciones import bp as importaciones
+
+    app.register_blueprint(importaciones)
+
     return app
