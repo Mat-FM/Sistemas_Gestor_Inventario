@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\CategoriaController;
+use App\Http\Controllers\ProductoController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -15,4 +16,13 @@ Route::controller(CategoriaController::class)->where(['id' => '[0-9]+'])->group(
     Route::get('/categorias/{id}', 'show');
     Route::put('/categorias/{id}', 'update');
     Route::delete('/categorias/{id}', 'destroy');
+});
+
+Route::controller(ProductoController::class)->where(['id' => '[0-9]+'])->group(function () {
+    Route::get('/productos', 'index');
+    Route::post('/productos', 'store');
+    Route::get('/productos/{id}', 'show');
+    Route::put('/productos/{id}', 'update');
+    Route::post('/productos/{id}/inactivar', 'inactivar');
+    Route::post('/productos/{id}/activar', 'activar');
 });

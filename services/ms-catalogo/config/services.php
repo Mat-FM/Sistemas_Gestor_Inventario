@@ -35,4 +35,9 @@ return [
         ],
     ],
 
+    // Dirección de ms-proveedores para el filtro de productos por proveedor (RF12, llamada 8). RNF14.
+    'ms_proveedores' => [
+        'url' => env('MS_PROVEEDORES_URL', 'http://ms-proveedores:8000'),
+    ],
+
 ];

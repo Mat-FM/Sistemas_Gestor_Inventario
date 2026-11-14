@@ -31,6 +31,9 @@ class RegistrarPeticion
             $id = (string) Str::uuid();
         }
 
+        // Queda en la petición para reenviarlo en las llamadas a otros servicios (ProveedoresCliente).
+        $request->headers->set(self::CABECERA, $id);
+
         // El nombre del servicio sale de APP_NAME (RNF14).
         Log::shareContext(['servicio' => config('app.name'), 'request_id' => $id]);
 
