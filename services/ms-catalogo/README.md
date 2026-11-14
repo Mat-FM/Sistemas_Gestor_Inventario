@@ -168,6 +168,34 @@ la carga masiva, `/health`, `/docs`, la forma común de error y `X-Request-Id` (
 
 Cobertura actual: **98,8 %** (38 pruebas); RNF20 exige al menos 60 %.
 
+## Docker (RNF03)
+
+La imagen sirve la aplicación con **Apache y PHP 8.4** (`php:8.4-apache`), con el usuario `www-data` en el puerto
+8000. Instala las dependencias con Composer sin las de desarrollo y no lleva el `.env`, las pruebas ni `vendor/` del
+equipo (`.dockerignore`). Trae fijos los valores que no son secretos del `.env.example` (`APP_NAME`, `LOG_CHANNEL`,
+`CACHE_STORE=file`, `MS_PROVEEDORES_URL=http://ms-proveedores:8000`...) con `APP_ENV=production` y `APP_DEBUG=false`;
+el resto llega por variables de entorno. Apache no escribe su propio registro de accesos (incluiría la cadena de
+consulta): cada petición la registra la aplicación en JSON. Tiene un `HEALTHCHECK` que consulta `/health`.
+
+Desde `services/ms-catalogo`, con la base del `docker-compose.yml` levantada (`docker compose up -d db-ms-catalogo`
+desde la raíz):
+
+```bash
+docker build -t ms-catalogo .
+
+# Dentro de la red del compose, la base se llama db-ms-catalogo y escucha en el 3306.
+VARIABLES="-e APP_KEY=base64:$(openssl rand -base64 32) -e DB_HOST=db-ms-catalogo -e DB_DATABASE=catalogo_db -e DB_USERNAME=catalogo -e DB_PASSWORD=change_me"
+
+docker run --rm --network gestor-inventario_default $VARIABLES ms-catalogo php artisan migrate --force   # crea las tablas
+docker run -d --name ms-catalogo --network gestor-inventario_default $VARIABLES -p 127.0.0.1:8002:8000 ms-catalogo
+```
+
+El servicio queda en `http://127.0.0.1:8002/docs`. Para el filtro `?id_proveedor`, el contenedor de ms-proveedores
+debe estar en la misma red con el nombre `ms-proveedores` (ver el README de ms-proveedores), o se cambia
+`MS_PROVEEDORES_URL` con `-e`. Las migraciones no se aplican solas al arrancar: se ejecutan una vez con
+`php artisan migrate --force`, como arriba, antes de iniciar el servicio (con varias réplicas, que arranquen todas a
+la vez no debe aplicar la misma migración varias veces). `APP_KEY` debe ser la misma en todas las réplicas.
+
 ## Pendiente
 
-- Dockerfile y manifiestos de Kubernetes.
+- Manifiestos de Kubernetes.
