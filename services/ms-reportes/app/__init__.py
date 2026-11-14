@@ -23,4 +23,7 @@ def create_app(configuracion: dict | None = None) -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
 
+    # Registra los modelos en SQLAlchemy, para que las migraciones (flask db migrate) los encuentren.
+    from app import models  # noqa: F401
+
     return app
