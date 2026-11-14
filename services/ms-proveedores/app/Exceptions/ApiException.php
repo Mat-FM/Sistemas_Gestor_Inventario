@@ -41,6 +41,12 @@ class ApiException extends RuntimeException
         return new self($status, 'PETICION_MAL_FORMADA', $mensaje);
     }
 
+    /** 503: algo de lo que depende el servicio (su base de datos) no responde. */
+    public static function servicioNoDisponible(string $mensaje = 'El servicio no está disponible.'): self
+    {
+        return new self(503, 'SERVICIO_NO_DISPONIBLE', $mensaje);
+    }
+
     /** Siempre genérico: nunca muestra el mensaje ni la traza del error original. */
     public static function errorInterno(): self
     {

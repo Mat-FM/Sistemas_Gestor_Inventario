@@ -4,6 +4,7 @@ use App\Exceptions\ApiException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
@@ -13,6 +14,10 @@ return Application::configure(basePath: dirname(__DIR__))
         // Sin prefijo: el Gateway ya quitó /api antes de reenviar la petición.
         apiPrefix: '',
         commands: __DIR__.'/../routes/console.php',
+        then: function (): void {
+            // /health y /docs: propias del servicio, sin grupos de middleware.
+            Route::group([], base_path('routes/internal.php'));
+        },
     )
     ->withMiddleware(function (Middleware $middleware): void {
         //

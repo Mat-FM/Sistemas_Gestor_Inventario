@@ -1,0 +1,390 @@
+openapi: 3.0.3
+
+info:
+  title: ms-proveedores
+  version: 1.0.0
+  description: |
+    Microservicio de proveedores y de los productos que suministran (RF03). Implementa las operaciones de la
+    Tabla 8 de la Entrega 2.
+
+    **Rutas internas.** Las rutas aquí descritas son las del servicio, **sin el prefijo `/api`**. Desde fuera del
+    clúster se llaman a través del API Gateway con ese prefijo (por ejemplo, `GET /api/proveedores` llega aquí como
+    `GET /proveedores`). El Gateway verifica el token y el rol antes de reenviar la petición; este servicio no
+    revisa roles. `POST /internas/proveedores/lote` no lo publica el Gateway: solo lo llama `ms-reportes`.
+
+    ## Convenciones
+
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista vacía salvo en los 422,
+      donde trae un elemento `{campo, mensaje}` por cada error de validación.
+    - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con `?pagina=1&por_pagina=20`
+      (`por_pagina` máximo 100).
+    - Fechas en ISO 8601 (UTC).
+    - Los proveedores no se borran: se inactivan y se activan. Las asociaciones con productos sí se borran.
+    - `id_producto` es un identificador de `ms-catalogo`; este servicio no lo consulta ni lo valida contra el catálogo.
+
+servers:
+  - url: /
+    description: Este mismo servicio
+
+tags:
+  - name: Proveedores
+  - name: Productos del proveedor
+  - name: Internas
+  - name: Operación
+
+paths:
+  /proveedores:
+    get:
+      tags: [Proveedores]
+      summary: Listar proveedores
+      description: Roles en el Gateway ADMINISTRADOR y OPERADOR_BODEGA.
+      parameters:
+        - name: nit
+          in: query
+          description: NIT exacto.
+          schema: { type: string, maxLength: 20 }
+        - name: razon_social
+          in: query
+          description: Parte de la razón social (contiene el texto, sin distinguir mayúsculas).
+          schema: { type: string, maxLength: 150 }
+        - name: id_producto
+          in: query
+          description: Solo los proveedores que tienen asociado este producto de ms-catalogo.
+          schema: { type: integer, minimum: 1 }
+        - name: estado
+          in: query
+          schema: { $ref: '#/components/schemas/Estado' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: Listado paginado, ordenado por id_proveedor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos:
+                    type: array
+                    items: { $ref: '#/components/schemas/Proveedor' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+    post:
+      tags: [Proveedores]
+      summary: Crear proveedor
+      description: Rol en el Gateway ADMINISTRADOR. El proveedor se crea en estado ACTIVO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProveedorNuevo' }
+      responses:
+        '201':
+          description: Proveedor creado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '409':
+          description: Ya existe un proveedor con ese NIT (`NIT_DUPLICADO`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: NIT_DUPLICADO, mensaje: Ya existe un proveedor con ese NIT., detalles: [] }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+
+  /proveedores/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdProveedor'
+    get:
+      tags: [Proveedores]
+      summary: Consultar proveedor
+      description: Roles en el Gateway ADMINISTRADOR y OPERADOR_BODEGA.
+      responses:
+        '200':
+          description: Proveedor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+    put:
+      tags: [Proveedores]
+      summary: Actualizar proveedor
+      description: Rol en el Gateway ADMINISTRADOR. Igual que el POST, sin `nit`; si llega `nit`, se ignora (no es editable).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProveedorEditable' }
+      responses:
+        '200':
+          description: Proveedor actualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+
+  /proveedores/{id}/inactivar:
+    parameters:
+      - $ref: '#/components/parameters/IdProveedor'
+    post:
+      tags: [Proveedores]
+      summary: Inactivar proveedor
+      description: Rol en el Gateway ADMINISTRADOR. Pasa a INACTIVO (dar de baja). Si ya estaba INACTIVO, responde 200 sin cambios.
+      responses:
+        '200':
+          description: Proveedor inactivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+
+  /proveedores/{id}/activar:
+    parameters:
+      - $ref: '#/components/parameters/IdProveedor'
+    post:
+      tags: [Proveedores]
+      summary: Activar proveedor
+      description: Rol en el Gateway ADMINISTRADOR. Pasa a ACTIVO. Si ya estaba ACTIVO, responde 200 sin cambios.
+      responses:
+        '200':
+          description: Proveedor activo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+
+  /proveedores/{id}/productos:
+    parameters:
+      - $ref: '#/components/parameters/IdProveedor'
+    get:
+      tags: [Productos del proveedor]
+      summary: Productos del proveedor
+      description: |
+        Roles en el Gateway ADMINISTRADOR y OPERADOR_BODEGA. También la llama `ms-catalogo` dentro del clúster para el
+        filtro de productos por proveedor (RF12). Lista simple, sin paginar.
+      responses:
+        '200':
+          description: Asociaciones del proveedor, ordenadas por id_proveedor_producto.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProveedorProducto' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+    post:
+      tags: [Productos del proveedor]
+      summary: Asociar producto
+      description: |
+        Rol en el Gateway ADMINISTRADOR. No consulta a `ms-catalogo`. Se permite aunque el proveedor esté INACTIVO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_producto]
+              properties:
+                id_producto: { type: integer, minimum: 1, example: 25 }
+      responses:
+        '201':
+          description: Asociación creada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProveedorProducto' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '409':
+          description: El producto ya está asociado a este proveedor (`PRODUCTO_YA_ASOCIADO`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: PRODUCTO_YA_ASOCIADO, mensaje: El producto ya está asociado a este proveedor., detalles: [] }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+
+  /proveedores/{id}/productos/{id_producto}:
+    parameters:
+      - $ref: '#/components/parameters/IdProveedor'
+      - name: id_producto
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    delete:
+      tags: [Productos del proveedor]
+      summary: Quitar asociación
+      description: Rol en el Gateway ADMINISTRADOR. Borrado real.
+      responses:
+        '204':
+          description: Asociación eliminada.
+        '404':
+          description: El proveedor no existe o el producto no está asociado a él.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /internas/proveedores/lote:
+    post:
+      tags: [Internas]
+      summary: Carga masiva de proveedores
+      description: |
+        Solo la llama `ms-reportes` dentro del clúster con las filas de un archivo de PROVEEDORES (RF16); el Gateway
+        no la publica. Éxito parcial: cada fila se valida con las mismas reglas de `POST /proveedores` y se crea por
+        separado. `fila` es la posición en la lista, empezando en 1. Si un NIT se repite (en la base o dentro del
+        mismo lote), gana la primera aparición y las demás se rechazan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filas]
+              properties:
+                filas:
+                  type: array
+                  minItems: 1
+                  items: { $ref: '#/components/schemas/ProveedorNuevo' }
+      responses:
+        '200':
+          description: Resultado de la carga.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  creados: { type: integer, description: Cantidad de proveedores creados., example: 2 }
+                  rechazados:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fila: { type: integer, example: 3 }
+                        motivo: { type: string, example: Ya existe un proveedor con ese NIT. }
+        '422':
+          description: La lista `filas` falta o está vacía.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /health:
+    get:
+      tags: [Operación]
+      summary: Estado del servicio
+      description: RNF10. Comprueba que la base de datos responde. No pasa por el Gateway.
+      responses:
+        '200':
+          description: El servicio puede atender peticiones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  servicio: { type: string, example: ms-proveedores }
+        '503':
+          description: La base de datos no responde (`SERVICIO_NO_DISPONIBLE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    IdProveedor:
+      name: id
+      in: path
+      required: true
+      description: id_proveedor. Un valor no numérico responde 404.
+      schema: { type: integer, minimum: 1 }
+    Pagina:
+      name: pagina
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PorPagina:
+      name: por_pagina
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    Estado:
+      type: string
+      enum: [ACTIVO, INACTIVO]
+
+    ProveedorEditable:
+      type: object
+      required: [razon_social, nombre_contacto, telefono, correo, direccion]
+      properties:
+        razon_social: { type: string, maxLength: 150, example: Distribuidora Café S.A.S. }
+        nombre_contacto: { type: string, maxLength: 100, example: Ana Gómez }
+        telefono: { type: string, maxLength: 20, example: '3001234567' }
+        correo: { type: string, format: email, maxLength: 255, example: ventas@cafe.co }
+        direccion: { type: string, maxLength: 255, example: 'Cra 23 # 45-67, Manizales' }
+
+    ProveedorNuevo:
+      allOf:
+        - type: object
+          required: [nit]
+          properties:
+            nit: { type: string, maxLength: 20, example: 900123456-1 }
+        - $ref: '#/components/schemas/ProveedorEditable'
+
+    Proveedor:
+      type: object
+      properties:
+        id_proveedor: { type: integer, example: 1 }
+        nit: { type: string, example: 900123456-1 }
+        razon_social: { type: string, example: Distribuidora Café S.A.S. }
+        nombre_contacto: { type: string, example: Ana Gómez }
+        telefono: { type: string, example: '3001234567' }
+        correo: { type: string, example: ventas@cafe.co }
+        direccion: { type: string, example: 'Cra 23 # 45-67, Manizales' }
+        estado: { $ref: '#/components/schemas/Estado' }
+
+    ProveedorProducto:
+      type: object
+      properties:
+        id_proveedor_producto: { type: integer, example: 1 }
+        id_producto: { type: integer, description: Identificador de un producto de ms-catalogo., example: 25 }
+        fecha_asociacion: { type: string, format: date-time, example: '2026-11-14T19:09:40Z' }
+
+    Meta:
+      type: object
+      properties:
+        pagina: { type: integer, example: 1 }
+        por_pagina: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            codigo: { type: string }
+            mensaje: { type: string }
+            detalles:
+              type: array
+              items:
+                type: object
+                properties:
+                  campo: { type: string }
+                  mensaje: { type: string }
+
+  responses:
+    NoExiste:
+      description: El recurso no existe (`NO_EXISTE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { codigo: NO_EXISTE, mensaje: El proveedor no existe., detalles: [] }
+    DatosNoValidos:
+      description: Datos no válidos (`DATOS_NO_VALIDOS`), con un detalle por cada error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              codigo: DATOS_NO_VALIDOS
+              mensaje: Los datos enviados no son válidos.
+              detalles:
+                - { campo: nit, mensaje: El campo nit es obligatorio. }
