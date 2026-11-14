@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiException;
+use App\Http\Middleware\RegistrarPeticion;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -20,7 +21,9 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Registro de cada petición de la API (RNF10). /health y /docs quedan fuera, para que
+        // las comprobaciones de Kubernetes no llenen los registros.
+        $middleware->api(prepend: [RegistrarPeticion::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Todas las respuestas de error son JSON con la forma común, pida lo que pida el cliente.
