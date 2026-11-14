@@ -6,7 +6,9 @@
 from flask import Flask
 
 from app.config import cargar_configuracion
+from app.errores import registrar_manejadores
 from app.extensions import db, migrate
+from app.registro import configurar_registro
 
 
 def create_app(configuracion: dict | None = None) -> Flask:
@@ -17,8 +19,13 @@ def create_app(configuracion: dict | None = None) -> Flask:
     if configuracion:
         app.config.update(configuracion)
 
-    # Las respuestas JSON conservan tildes y eñes en lugar de escribirlas como á.
+    # Las respuestas JSON conservan tildes y eñes, en lugar de escribirlas como secuencias de escape.
     app.json.ensure_ascii = False
+    # Las claves salen en el orden en que se escriben (como en el contrato), no en orden alfabético.
+    app.json.sort_keys = False
+
+    configurar_registro(app)
+    registrar_manejadores(app)
 
     db.init_app(app)
     migrate.init_app(app, db)
