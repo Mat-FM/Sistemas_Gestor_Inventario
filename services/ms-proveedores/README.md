@@ -121,6 +121,32 @@ php artisan test
 Las pruebas usan SQLite en memoria (`phpunit.xml`), así que no necesitan MySQL. Cubren los endpoints de proveedores,
 asociaciones, carga masiva, `/health`, `/docs`, la forma común de error y `X-Request-Id` (`tests/Feature`).
 
+## Docker (RNF03)
+
+La imagen sirve la aplicación con **Apache y PHP 8.4** (`php:8.4-apache`), con el usuario `www-data` en el puerto
+8000. Instala las dependencias con Composer sin las de desarrollo y no lleva el `.env`, las pruebas ni `vendor/` del
+equipo (`.dockerignore`). Trae fijos los valores que no son secretos del `.env.example` (`APP_NAME`, `LOG_CHANNEL`,
+`CACHE_STORE`...) con `APP_ENV=production` y `APP_DEBUG=false`; el resto llega por variables de entorno. Apache no
+escribe su propio registro de accesos (incluiría la cadena de consulta): cada petición la registra la aplicación en
+JSON. Tiene un `HEALTHCHECK` que consulta `/health`.
+
+Desde `services/ms-proveedores`, con la base del `docker-compose.yml` levantada (`docker compose up -d
+db-ms-proveedores` desde la raíz):
+
+```bash
+docker build -t ms-proveedores .
+
+# Dentro de la red del compose, la base se llama db-ms-proveedores y escucha en el 3306.
+VARIABLES="-e APP_KEY=base64:$(openssl rand -base64 32) -e DB_HOST=db-ms-proveedores -e DB_DATABASE=proveedores_db -e DB_USERNAME=proveedores -e DB_PASSWORD=change_me"
+
+docker run --rm --network gestor-inventario_default $VARIABLES ms-proveedores php artisan migrate --force   # crea las tablas
+docker run -d --name ms-proveedores --network gestor-inventario_default $VARIABLES -p 127.0.0.1:8001:8000 ms-proveedores
+```
+
+El servicio queda en `http://127.0.0.1:8001/docs`. Las migraciones no se aplican solas al arrancar: se ejecutan una vez
+con `php artisan migrate --force`, como arriba, antes de iniciar el servicio (con varias réplicas, que arranquen todas a
+la vez no debe aplicar la misma migración varias veces). `APP_KEY` debe ser la misma en todas las réplicas.
+
 ## Pendiente
 
-- Dockerfile y manifiestos de Kubernetes.
+- Manifiestos de Kubernetes.
