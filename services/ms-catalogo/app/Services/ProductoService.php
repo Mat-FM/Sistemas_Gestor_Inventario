@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Models\Categoria;
 use App\Models\Producto;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Validator;
 
 /**
  * Reglas de negocio de los productos (RF01) y su búsqueda (RF12). No sabe nada de HTTP.
@@ -86,6 +87,46 @@ class ProductoService
 
         // Se recarga para devolverlo con todos sus campos, igual que al consultarlo.
         return $producto->refresh();
+    }
+
+    /**
+     * Carga masiva (RF16): crea cada fila válida y rechaza las demás con su número de fila (desde 1) y el motivo.
+     * Cada fila cumple las mismas reglas que POST /productos.
+     *
+     * @return array{creados: int, rechazados: list<array{fila: int, motivo: string}>}
+     */
+    public function crearLote(array $filas): array
+    {
+        $creados = 0;
+        $rechazados = [];
+
+        foreach ($filas as $indice => $fila) {
+            $numeroFila = $indice + 1;
+
+            if (! is_array($fila)) {
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => 'La fila debe ser un objeto con los datos del producto.'];
+
+                continue;
+            }
+
+            $validador = Validator::make($fila, self::reglas());
+            if ($validador->fails()) {
+                // Todos los errores de la fila en un solo texto, para corregirlos de una vez.
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => implode(' ', $validador->errors()->all())];
+
+                continue;
+            }
+
+            try {
+                $this->crear($validador->validated());
+                $creados++;
+            } catch (ApiException $e) {
+                // Categoría inexistente, o CODIGO_DUPLICADO: ya existe en la base o apareció antes en este lote.
+                $rechazados[] = ['fila' => $numeroFila, 'motivo' => $e->getMessage()];
+            }
+        }
+
+        return ['creados' => $creados, 'rechazados' => $rechazados];
     }
 
     /** Reemplaza los datos del producto. El código no está en $datos: no es editable. */

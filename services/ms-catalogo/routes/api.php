@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\ProductoController;
+use App\Http\Controllers\ProductoLoteController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -26,3 +27,6 @@ Route::controller(ProductoController::class)->where(['id' => '[0-9]+'])->group(f
     Route::post('/productos/{id}/inactivar', 'inactivar');
     Route::post('/productos/{id}/activar', 'activar');
 });
+
+// Rutas internas: solo las llaman otros servicios dentro del clúster; el Gateway no las publica.
+Route::post('/internas/productos/lote', [ProductoLoteController::class, 'store']);
