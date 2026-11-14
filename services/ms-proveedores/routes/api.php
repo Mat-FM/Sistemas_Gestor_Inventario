@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProveedorController;
+use App\Http\Controllers\ProveedorProductoController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -16,4 +17,10 @@ Route::controller(ProveedorController::class)->where(['id' => '[0-9]+'])->group(
     Route::put('/proveedores/{id}', 'update');
     Route::post('/proveedores/{id}/inactivar', 'inactivar');
     Route::post('/proveedores/{id}/activar', 'activar');
+});
+
+Route::controller(ProveedorProductoController::class)->where(['id' => '[0-9]+', 'idProducto' => '[0-9]+'])->group(function () {
+    Route::get('/proveedores/{id}/productos', 'index');
+    Route::post('/proveedores/{id}/productos', 'store');
+    Route::delete('/proveedores/{id}/productos/{idProducto}', 'destroy');
 });
