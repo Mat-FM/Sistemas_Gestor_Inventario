@@ -1,8 +1,18 @@
 <?php
 
+use App\Http\Controllers\CategoriaController;
 use Illuminate\Support\Facades\Route;
 
 /*
  * Rutas del servicio. No llevan el prefijo /api: el Gateway lo quita antes de reenviar la petición
  * (Entrega 2, sección 4.1). Por ejemplo, GET /api/productos llega aquí como GET /productos.
  */
+
+// {id} solo acepta números; cualquier otro valor responde 404.
+Route::controller(CategoriaController::class)->where(['id' => '[0-9]+'])->group(function () {
+    Route::get('/categorias', 'index');
+    Route::post('/categorias', 'store');
+    Route::get('/categorias/{id}', 'show');
+    Route::put('/categorias/{id}', 'update');
+    Route::delete('/categorias/{id}', 'destroy');
+});
