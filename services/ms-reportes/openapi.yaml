@@ -1,0 +1,253 @@
+openapi: 3.0.3
+
+info:
+  title: ms-reportes
+  version: 1.0.0
+  description: |
+    Microservicio de reportes, panel de indicadores e importación masiva validada (RF11, RF14, RF15, RF16).
+    Implementa las operaciones de la Tabla 12 de la Entrega 2. Por ahora están las importaciones (RF16); los
+    reportes y los indicadores se agregarán a este documento cuando se implementen.
+
+    **Rutas internas.** Las rutas aquí descritas son las del servicio, **sin el prefijo `/api`**. Desde fuera del
+    clúster se llaman a través del API Gateway con ese prefijo (por ejemplo, `GET /api/importaciones` llega aquí como
+    `GET /importaciones`). El Gateway verifica el token y el rol antes de reenviar la petición y envía el usuario en
+    la cabecera `X-User-Id`; este servicio no revisa roles.
+
+    ## Convenciones
+
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista vacía salvo en los 422,
+      donde trae un elemento `{campo, mensaje}` por cada error de validación.
+    - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con `?pagina=1&por_pagina=20`
+      (`por_pagina` máximo 100).
+    - Fechas en ISO 8601 (UTC).
+
+    ## Importación masiva (RF16)
+
+    El servicio lee el archivo, valida cada fila con las reglas del servicio dueño del dato, convierte la categoría,
+    el producto y la bodega en sus identificadores (llamadas a `ms-catalogo` y `ms-inventario`) y envía las filas
+    válidas a ese servicio (llamada 7). Las filas con error quedan en la importación con su número de fila.
+
+    | Tipo | Columnas (Tabla 13) | Servicio que recibe las filas |
+    | --- | --- | --- |
+    | PRODUCTOS | codigo, nombre, descripcion, categoria, unidad_medida, precio | ms-catalogo |
+    | PROVEEDORES | nit, razon_social, nombre_contacto, telefono, correo, direccion | ms-proveedores |
+    | STOCK_INICIAL | codigo_producto, codigo_bodega, cantidad, codigo_lote, fecha_vencimiento | ms-inventario |
+
+    - Formatos: CSV en UTF-8 separado por `,` o `;`, o Excel `.xlsx` (primera hoja).
+    - La fila 1 es el encabezado y debe traer todas las columnas del tipo; no distingue mayúsculas y las columnas de
+      más se ignoran. Las filas vacías se saltan.
+    - `numero_fila` es el número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila`
+      0 es un error de toda la importación.
+    - `categoria` es el nombre de la categoría (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la
+      fila se rechaza. `precio` y `cantidad` admiten coma decimal. `fecha_vencimiento` con el formato AAAA-MM-DD.
+    - Estados: `PROCESADA` (ninguna fila con error), `CON_ERRORES` (al menos una fila con error, aunque no se cree
+      ninguna) y `FALLIDA` (un servicio no respondió).
+
+servers:
+  - url: /
+    description: Este mismo servicio
+
+tags:
+  - name: Importaciones
+  - name: Operación
+
+paths:
+  /importaciones:
+    post:
+      tags: [Importaciones]
+      summary: Importar un archivo
+      description: |
+        Rol en el Gateway ADMINISTRADOR. Responde 201 también cuando hay filas con error o un servicio no respondió
+        (`estado` CON_ERRORES o FALLIDA): la importación queda guardada con sus errores. Solo un archivo que no se
+        puede usar (422) no se guarda.
+      parameters:
+        - $ref: '#/components/parameters/XUserId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tipo, archivo]
+              properties:
+                tipo: { $ref: '#/components/schemas/Tipo' }
+                archivo:
+                  type: string
+                  format: binary
+                  description: CSV o Excel (.xlsx).
+      responses:
+        '201':
+          description: Importación procesada, con sus errores.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportacionConErrores' }
+        '400':
+          description: Falta la cabecera `X-User-Id` o no es válida (`PETICION_MAL_FORMADA`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            Faltan `tipo` o `archivo`, el tipo no es válido, el formato no se admite, el archivo no se puede leer,
+            faltan columnas o no tiene filas (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  codigo: DATOS_NO_VALIDOS
+                  mensaje: Los datos enviados no son válidos.
+                  detalles:
+                    - { campo: archivo, mensaje: 'Faltan las columnas: unidad_medida, precio.' }
+    get:
+      tags: [Importaciones]
+      summary: Listar importaciones
+      description: Rol en el Gateway ADMINISTRADOR. Más recientes primero, sin los errores.
+      parameters:
+        - name: tipo
+          in: query
+          schema: { $ref: '#/components/schemas/Tipo' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: Listado paginado.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos:
+                    type: array
+                    items: { $ref: '#/components/schemas/Importacion' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '422':
+          description: Filtros no válidos (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /importaciones/{id}:
+    get:
+      tags: [Importaciones]
+      summary: Consultar una importación
+      description: Rol en el Gateway ADMINISTRADOR. Incluye sus errores por fila, ordenados por número de fila.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: id_importacion. Un valor no numérico responde 404.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Importación con sus errores.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportacionConErrores' }
+        '404':
+          description: La importación no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: NO_EXISTE, mensaje: La importación no existe., detalles: [] }
+
+  /health:
+    get:
+      tags: [Operación]
+      summary: Estado del servicio
+      description: RNF10. Comprueba que la base de datos responde; no consulta a los demás servicios. No pasa por el Gateway.
+      responses:
+        '200':
+          description: El servicio puede atender peticiones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  servicio: { type: string, example: ms-reportes }
+        '503':
+          description: La base de datos no responde (`SERVICIO_NO_DISPONIBLE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      description: Usuario que hace la petición. La pone el API Gateway.
+      schema: { type: integer, minimum: 1 }
+    Pagina:
+      name: pagina
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PorPagina:
+      name: por_pagina
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    Tipo:
+      type: string
+      enum: [PRODUCTOS, PROVEEDORES, STOCK_INICIAL]
+
+    Importacion:
+      type: object
+      properties:
+        id_importacion: { type: integer, example: 1 }
+        tipo: { $ref: '#/components/schemas/Tipo' }
+        nombre_archivo: { type: string, example: productos.csv }
+        estado: { type: string, enum: [PROCESADA, CON_ERRORES, FALLIDA], example: CON_ERRORES }
+        filas_totales: { type: integer, description: Filas con datos leídas del archivo., example: 5 }
+        filas_validas: { type: integer, description: Filas que el servicio destino creó., example: 3 }
+        filas_con_error: { type: integer, description: Filas con al menos un error., example: 2 }
+        id_usuario: { type: integer, description: Usuario del API Gateway que subió el archivo., example: 7 }
+        fecha: { type: string, format: date-time, example: '2026-11-14T23:01:04Z' }
+
+    ImportacionConErrores:
+      allOf:
+        - $ref: '#/components/schemas/Importacion'
+        - type: object
+          properties:
+            errores:
+              type: array
+              items:
+                type: object
+                properties:
+                  numero_fila:
+                    type: integer
+                    description: Fila del archivo (la primera de datos es la 2); 0 es un error de toda la importación.
+                    example: 3
+                  campo:
+                    type: string
+                    nullable: true
+                    description: Columna del archivo. Vacío si el error es de la fila completa o de toda la importación.
+                    example: precio
+                  mensaje: { type: string, example: El campo precio debe ser un número. }
+
+    Meta:
+      type: object
+      properties:
+        pagina: { type: integer, example: 1 }
+        por_pagina: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            codigo: { type: string }
+            mensaje: { type: string }
+            detalles:
+              type: array
+              items:
+                type: object
+                properties:
+                  campo: { type: string }
+                  mensaje: { type: string }
