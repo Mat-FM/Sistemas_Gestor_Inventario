@@ -17,4 +17,4 @@ No llama a ningún otro servicio.
 
 ## Pendiente
 
-La aplicación Laravel aún no está generada.
+Proyecto Laravel 12 creado y conectado a MySQL. Faltan las tablas, las rutas, `/health` y `/docs`.
