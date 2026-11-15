@@ -13,17 +13,16 @@ const COLUMNAS = [
   'fecha', 'id_usuario', 'documento_referencia', 'observacion',
 ];
 
-// Nombre de la unicidad de la clave en la migración. Una repetición se detecta por este nombre y no por el texto del mensaje de
-// PostgreSQL (depende del idioma del servidor y de su versión).
+// Nombre de la unicidad de la clave en la migración. Una repetición de la clave no se decide por el error: tras cualquier
+// fallo se relee por la clave (idempotencia.resolverFallo).
 const RESTRICCION_CLAVE = 'movimientos_clave_idempotencia_key';
-const VIOLACION_UNICA = '23505';
 
 /**
  * Inserta un movimiento. La `fecha` es `clock_timestamp()`, el instante de la escritura, y no el `DEFAULT now()` de la columna
  * (el inicio de la transacción): el motor inserta con el saldo ya bloqueado, así que por (producto, bodega) el orden
  * `fecha, id_movimiento` del kardex coincide con el orden en que se aplicaron los saldos (D24).
  * No valida nada: lo hace el motor. Con una clave ya usada lanza el 23505 de `movimientos_clave_idempotencia_key`
- * (ver esClaveDuplicada).
+ * (quien llama lo resuelve releyendo por la clave: idempotencia.resolverFallo).
  * @param {{tipo: string, idProducto: number, idBodega: number, cantidad: number, saldoResultante: number, idUsuario: number,
  *   claveIdempotencia: string, idLote?: number|null, idTraslado?: number|null, idConteo?: number|null,
  *   documentoReferencia?: string|null, observacion?: string|null}} datos
@@ -62,9 +61,4 @@ async function findByClave(dbOrTrx, claveAlmacenada) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ clave_idempotencia: claveAlmacenada }).first();
 }
 
-/** ¿Es este error el 23505 de la clave de idempotencia? Cualquier otro 23505 (u otro error) no lo es. */
-function esClaveDuplicada(error) {
-  return error?.code === VIOLACION_UNICA && error?.constraint === RESTRICCION_CLAVE;
-}
-
-module.exports = { RESTRICCION_CLAVE, insert, findByClave, esClaveDuplicada };
+module.exports = { RESTRICCION_CLAVE, insert, findByClave };

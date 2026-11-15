@@ -86,36 +86,13 @@ describe('movimientoRepository', () => {
       });
     });
   });
-
-  describe('esClaveDuplicada', () => {
-    it('reconoce el 23505 real de la clave de idempotencia', async () => {
-      await movimientoRepository.insert(db, fila());
-      let error;
-      try {
-        await movimientoRepository.insert(db, fila());
-      } catch (capturado) {
-        error = capturado;
-      }
-      expect(movimientoRepository.esClaveDuplicada(error)).toBe(true);
-    });
-
-    it.each([
-      ['un 23505 de otra restricción', { code: '23505', constraint: 'saldos_id_producto_id_bodega_key' }],
-      ['otro código con el mismo nombre de restricción', { code: '23514', constraint: 'movimientos_clave_idempotencia_key' }],
-      ['un error sin código', new Error('movimientos_clave_idempotencia_key')],
-      ['null', null],
-      ['undefined', undefined],
-    ])('no confunde %s con una clave repetida (se decide por el NOMBRE de la restricción, no por el mensaje)', (_caso, error) => {
-      expect(movimientoRepository.esClaveDuplicada(error)).toBe(false);
-    });
-  });
 });
 
-// Cada función que exporta el repositorio con sus argumentos: todas son asíncronas salvo el predicado.
+// Cada función que exporta el repositorio con sus argumentos: todas son asíncronas.
 promesasReales(movimientoRepository, {
   insert: [{ tipo: 'ENTRADA', idProducto: 5, idBodega: 1, cantidad: 3, saldoResultante: 3, idUsuario: 7, claveIdempotencia: '7:promesa' }],
   findByClave: ['7:k1'],
-}, { titulo: 'movimientoRepository', db: () => db, sincronas: { esClaveDuplicada: [null] } });
+}, { titulo: 'movimientoRepository', db: () => db });
 
 describe('movimientoService', () => {
   const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };

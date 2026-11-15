@@ -13,11 +13,22 @@ const movimientoRepository = require('../repositories/movimientoRepository');
 //   movimiento equivocado con un 200.
 // - Sin `#` en la cabecera (D25c): la clave de un usuario nunca coincide con una derivada (`abc#1` frente a la #1 de `abc`).
 // Inyectiva: el id solo tiene dígitos y la operación no lleva `:`, así que los dos primeros `:` separan siempre las partes.
+//
+// Sufijos de las derivadas (D25d), fijos para que ninguna tarea los invente; `base` es siempre
+// claveAlmacenada(idUsuario, OPERACIONES.X, clave):
+// - Traslado (Tarea 9): el movimiento TRASLADO_SALIDA lleva derivada(base, SUFIJOS_TRASLADO.SALIDA) y el TRASLADO_ENTRADA
+//   derivada(base, SUFIJOS_TRASLADO.ENTRADA). La repetición de POST /traslados se detecta releyendo la PRIMERA, la de salida,
+//   con resolverFallo (o findByClave antes de la transacción).
+// - Aprobación de conteo (Tarea 11): derivada(base, <id_producto>) por cada línea con diferencia.
+// - Carga inicial (Tarea 12): derivada(base, <n>) por fila, con n desde 1 (la posición de la fila en la lista enviada).
 // Peor caso: 10 (id) + 1 + 4 (operación) + 1 + 200 (clave) + 1 + 10 (sufijo) = 227 ≤ varchar(255).
 
 /** Operaciones que registran movimientos con su propia Idempotency-Key. */
 const OPERACIONES = Object.freeze({ MOVIMIENTO: 'mov', TRASLADO: 'tras', CONTEO: 'con', CARGA_INICIAL: 'ini' });
 const VALORES_OPERACION = Object.freeze(Object.values(OPERACIONES));
+
+/** Sufijos de las dos derivadas de un traslado (D25d). */
+const SUFIJOS_TRASLADO = Object.freeze({ SALIDA: 'salida', ENTRADA: 'entrada' });
 
 // La cabecera Idempotency-Key, sin espacios en los extremos, tiene de 1 a 200 caracteres (D25).
 const LARGO_MAXIMO_CLAVE = 200;
@@ -49,13 +60,15 @@ function leerClaveIdempotencia(valor) {
  * @param {string} operacion uno de los valores de OPERACIONES
  * @param {string} clave la cabecera ya validada (leerClaveIdempotencia)
  * @returns {string}
- * @throws {TypeError} error de PROGRAMACIÓN (nunca un AppError) si la operación no está en OPERACIONES o los otros
- *   argumentos no son un id y un texto no vacío
+ * @throws {TypeError} error de PROGRAMACIÓN (nunca un AppError) si la operación no está en OPERACIONES, si los otros
+ *   argumentos no son un id y un texto no vacío, o si la clave lleva «#» (D25d: la cabecera ya lo impide; es defensa para quien
+ *   la llame sin pasar por leerClaveIdempotencia, porque chocaría con una derivada)
  */
 function claveAlmacenada(idUsuario, operacion, clave) {
   if (!VALORES_OPERACION.includes(operacion)) throw new TypeError('La operación de la clave de idempotencia no es válida');
   if (!Number.isSafeInteger(idUsuario) || idUsuario < 1) throw new TypeError('idUsuario debe ser un entero positivo');
   if (typeof clave !== 'string' || clave === '') throw new TypeError('La clave de idempotencia debe ser un texto no vacío');
+  if (clave.includes(SEPARADOR_DERIVADA)) throw new TypeError('La clave de idempotencia no puede contener «#» (separa las derivadas)');
   return `${idUsuario}:${operacion}:${clave}`;
 }
 
@@ -104,4 +117,6 @@ async function resolverFallo(db, almacenada, error) {
   throw error;
 }
 
-module.exports = { OPERACIONES, LARGO_MAXIMO_CLAVE, leerClaveIdempotencia, claveAlmacenada, derivada, resolverFallo };
+module.exports = {
+  OPERACIONES, SUFIJOS_TRASLADO, LARGO_MAXIMO_CLAVE, leerClaveIdempotencia, claveAlmacenada, derivada, resolverFallo,
+};

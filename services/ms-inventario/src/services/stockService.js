@@ -79,7 +79,7 @@ function comprobarArgumentos(trx, datos) {
  * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia)
  * @throws 404 NO_EXISTE si la bodega no existe; 409 BODEGA_INACTIVA (D12); 409 STOCK_INSUFICIENTE si el saldo quedaría
  *   negativo; 422 DATOS_NO_VALIDOS (campo `cantidad`) si superaría el máximo del INTEGER; el 23505 de
- *   `movimientos_clave_idempotencia_key` si la clave ya existe (movimientoRepository.esClaveDuplicada);
+ *   `movimientos_clave_idempotencia_key` si la clave ya existe (quien llama relee con idempotencia.resolverFallo);
  *   TypeError ante argumentos imposibles
  */
 async function aplicarMovimiento(trx, datos) {

@@ -8,7 +8,7 @@ const { crearBodega } = require('./helpers/fixtures');
 // `<guardada>#<sufijo>` (D5), la lectura de la cabecera Idempotency-Key (funciones puras) y la relectura por clave tras un fallo
 // (resolverFallo, contra PostgreSQL real). El comportamiento de punta a punta está en movimientos.test.js.
 
-const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia, resolverFallo, LARGO_MAXIMO_CLAVE } = idempotencia;
+const { OPERACIONES, SUFIJOS_TRASLADO, claveAlmacenada, derivada, leerClaveIdempotencia, resolverFallo, LARGO_MAXIMO_CLAVE } = idempotencia;
 
 function atraparSincrono(funcion) {
   try {
@@ -54,6 +54,15 @@ describe('claveAlmacenada (D25, D25b)', () => {
     expect(error).not.toBeInstanceOf(AppError);
   });
 
+  it('D25d: una clave con «#» es un error de PROGRAMACIÓN (TypeError) aunque la cabecera ya lo impida; "abc-1" pasa', () => {
+    expect(claveAlmacenada(7, OPERACIONES.MOVIMIENTO, 'abc-1')).toBe('7:mov:abc-1'); // control
+    for (const clave of ['abc#1', '#', 'a#', '#b']) {
+      const error = atraparSincrono(() => claveAlmacenada(7, OPERACIONES.MOVIMIENTO, clave));
+      expect(error).toBeInstanceOf(TypeError);
+      expect(error).not.toBeInstanceOf(AppError);
+    }
+  });
+
   it.each([
     [null, 'k'], [0, 'k'], [1.5, 'k'], ['7', 'k'], [7, ''], [7, null], [7, 5],
   ])('claveAlmacenada(%p, "mov", %p) → TypeError', (usuario, clave) => {
@@ -93,10 +102,20 @@ describe('derivada (D5, D25c)', () => {
     expect(() => derivada(null, 1)).toThrow(TypeError);
   });
 
-  it('el peor caso cabe en varchar(255): id de 10 dígitos, operación de 4, clave de 200 y sufijo de 10 → 227', () => {
-    const peor = derivada(claveAlmacenada(2147483647, OPERACIONES.TRASLADO, 'k'.repeat(LARGO_MAXIMO_CLAVE)), 2147483647);
-    expect(peor.length).toBe(227);
-    expect(peor.length).toBeLessThanOrEqual(255);
+});
+
+describe('SUFIJOS_TRASLADO (D25d)', () => {
+  it('son salida y entrada, congelados', () => {
+    expect(SUFIJOS_TRASLADO).toEqual({ SALIDA: 'salida', ENTRADA: 'entrada' });
+    expect(Object.isFrozen(SUFIJOS_TRASLADO)).toBe(true);
+  });
+
+  it('las derivadas de salida y de entrada son distintas entre sí y de la base', () => {
+    const base = claveAlmacenada(7, OPERACIONES.TRASLADO, 'k');
+    const salida = derivada(base, SUFIJOS_TRASLADO.SALIDA);
+    const entrada = derivada(base, SUFIJOS_TRASLADO.ENTRADA);
+    expect([salida, entrada]).toEqual(['7:tras:k#salida', '7:tras:k#entrada']);
+    expect(new Set([base, salida, entrada]).size).toBe(3);
   });
 });
 
@@ -139,6 +158,29 @@ describe('resolverFallo (D25c: relectura por clave tras un fallo, reutilizable p
   });
   const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
   const errorPg = (code, constraint) => Object.assign(new Error(`error ${code}`), { code, ...(constraint ? { constraint } : {}) });
+
+  describe('longitud en la columna real (movimientos.clave_idempotencia es varchar(255))', () => {
+    // El peor caso LEGÍTIMO es 227: id de 10 dígitos + «:» + operación de 4 + «:» + clave de 200 + «#» + sufijo de 10. El techo
+    // real de la columna es 255: lo que pase de ahí lo rechaza PostgreSQL con 22001.
+    const peor = derivada(claveAlmacenada(2147483647, OPERACIONES.TRASLADO, 'k'.repeat(LARGO_MAXIMO_CLAVE)), 2147483647);
+
+    it('el peor caso (227) se guarda y se relee íntegro', async () => {
+      expect(peor.length).toBe(227);
+      const guardado = await sembrar(peor);
+      expect(await movimientoRepository.findByClave(db, peor)).toEqual(guardado);
+      expect((await db('movimientos').where({ id_movimiento: guardado.id_movimiento }).first()).clave_idempotencia).toBe(peor);
+    });
+
+    it('una de 228 (por encima del peor caso, solo en la prueba) también cabe; una de 256 da el 22001 de PostgreSQL', async () => {
+      const de228 = `${peor}x`;
+      expect(de228.length).toBe(228);
+      await sembrar(de228);
+      expect((await movimientoRepository.findByClave(db, de228)).id_movimiento).toEqual(expect.any(Number));
+      const de255 = 'k'.repeat(255);
+      await sembrar(de255); // el techo exacto
+      await expect(sembrar('k'.repeat(256))).rejects.toMatchObject({ code: '22001' });
+    });
+  });
 
   it('con una clave DERIVADA: devuelve el movimiento que otra petición confirmó con esa clave', async () => {
     const base = claveAlmacenada(7, OPERACIONES.CONTEO, 'k');
