@@ -88,8 +88,12 @@ describe('base de pruebas real (PostgreSQL)', () => {
 
   describe('createTestDb con zonaHoraria (D29: el huso de la sesión no debe cambiar una consulta)', () => {
     const zonaDe = async (conexion) => (await conexion.raw('SHOW TimeZone')).rows[0].TimeZone;
+    // La zona con la que nace una sesión NUEVA que no pide ninguna: la del servidor (postgresql.conf) o la de la base
+    // (ALTER DATABASE … SET timezone). NO se supone: es UTC en el contenedor y puede ser America/Bogota en un PostgreSQL local.
+    const zonaPorDefecto = async (conexion) => (await conexion.raw("SELECT reset_val FROM pg_settings WHERE name = 'TimeZone'")).rows[0].reset_val;
+    const CANDIDATAS = ['America/Bogota', 'Pacific/Auckland', 'Pacific/Kiritimati'];
 
-    it.each(['America/Bogota', 'Pacific/Auckland', 'UTC'])('cada conexión del pool nace con TimeZone = %s; sin la opción, la sesión no la tiene', async (zona) => {
+    it.each(['America/Bogota', 'Pacific/Auckland', 'UTC'])('cada conexión del pool nace con TimeZone = %s, sea cual sea la zona por defecto del servidor', async (zona) => {
       const conZona = createTestDb(process.env, { zonaHoraria: zona });
       try {
         expect(await zonaDe(conZona)).toBe(zona);
@@ -103,8 +107,29 @@ describe('base de pruebas real (PostgreSQL)', () => {
       } finally {
         await conZona.destroy();
       }
-      // Control: la instancia normal de la suite no fija ninguna zona de las tres (la de la base, o la de la máquina).
-      expect(['America/Bogota', 'Pacific/Auckland']).not.toContain(await zonaDe(db));
+    });
+
+    it('sin zonaHoraria la sesión conserva la zona por defecto del servidor, y pedir otra zona SÍ la cambia (la de contraste se elige distinta de la por defecto)', async () => {
+      const sinZona = createTestDb();
+      try {
+        const porDefecto = await zonaPorDefecto(sinZona);
+        expect(await zonaDe(sinZona)).toBe(porDefecto);
+        // Como máximo una de las tres candidatas coincide con la por defecto: siempre quedan al menos dos de contraste.
+        const contraste = CANDIDATAS.filter((zona) => zona !== porDefecto);
+        expect(contraste.length).toBeGreaterThanOrEqual(2);
+        for (const zona of contraste) {
+          const conZona = createTestDb(process.env, { zonaHoraria: zona });
+          try {
+            expect({ pedida: zona, sesion: await zonaDe(conZona) }).toEqual({ pedida: zona, sesion: zona });
+            expect(await zonaDe(conZona)).not.toBe(porDefecto);
+            expect(await zonaDe(sinZona)).toBe(porDefecto); // pedir una zona en un pool no cambia la de los demás
+          } finally {
+            await conZona.destroy();
+          }
+        }
+      } finally {
+        await sinZona.destroy();
+      }
     });
   });
 
