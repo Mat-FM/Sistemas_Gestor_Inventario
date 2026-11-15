@@ -1,4 +1,3 @@
-const { AppError } = require('../src/errors');
 const movimientoRepository = require('../src/repositories/movimientoRepository');
 const movimientoService = require('../src/services/movimientoService');
 const { promesasReales } = require('./helpers/capas');
@@ -122,52 +121,7 @@ describe('movimientoService', () => {
   const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
   const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
 
-  describe('claveAlmacenada (D25)', () => {
-    it('es `<id_usuario>:<clave>`, sin transformar la clave', () => {
-      expect(movimientoService.claveAlmacenada(7, 'k1')).toBe('7:k1');
-      expect(movimientoService.claveAlmacenada(12, ' A b ')).toBe('12: A b ');
-    });
-
-    it('es inyectiva: el primer ":" separa siempre el usuario (solo dígitos) de su clave', () => {
-      const pares = [[1, '2:x'], [12, 'x'], [1, '2x'], [12, ':x'], [121, 'x']];
-      const claves = pares.map(([usuario, clave]) => movimientoService.claveAlmacenada(usuario, clave));
-      expect(new Set(claves).size).toBe(pares.length);
-      for (const [indice, [usuario, clave]] of pares.entries()) {
-        const almacenada = claves[indice];
-        const corte = almacenada.indexOf(':');
-        expect([Number(almacenada.slice(0, corte)), almacenada.slice(corte + 1)]).toEqual([usuario, clave]);
-      }
-    });
-
-    it('con la clave más larga (200) y el id más alto cabe en varchar(255) y deja sitio a un sufijo `#<n>` de D5', () => {
-      const almacenada = movimientoService.claveAlmacenada(2147483647, 'k'.repeat(movimientoService.LARGO_MAXIMO_CLAVE));
-      expect(`${almacenada}#2147483647`.length).toBeLessThanOrEqual(255);
-    });
-
-    it.each([
-      [null, 'k'], [0, 'k'], [1.5, 'k'], ['7', 'k'], [7, ''], [7, null], [7, 5],
-    ])('claveAlmacenada(%p, %p) → TypeError (error de programación)', (usuario, clave) => {
-      expect(() => movimientoService.claveAlmacenada(usuario, clave)).toThrow(TypeError);
-    });
-  });
-
-  describe('leerClaveIdempotencia', () => {
-    it('devuelve la clave sin espacios en los extremos, hasta 200 caracteres', () => {
-      expect(movimientoService.leerClaveIdempotencia('  k1 ')).toBe('k1');
-      expect(movimientoService.leerClaveIdempotencia('k'.repeat(200))).toBe('k'.repeat(200));
-    });
-
-    it.each([[undefined], [''], ['   '], ['k'.repeat(201)], [['a', 'b']], [5]])('%p → 400 PETICION_MAL_FORMADA', (valor) => {
-      let error;
-      try {
-        movimientoService.leerClaveIdempotencia(valor);
-      } catch (capturado) {
-        error = capturado;
-      }
-      expect(error).toBeInstanceOf(AppError);
-      expect(error).toMatchObject({ status: 400, codigo: 'PETICION_MAL_FORMADA' });
-    });
-  });
+  // claveAlmacenada, derivada y leerClaveIdempotencia se prueban en idempotencia.test.js.
 
   describe('registrarMovimiento', () => {
     const peticion = (extra = {}) => ({

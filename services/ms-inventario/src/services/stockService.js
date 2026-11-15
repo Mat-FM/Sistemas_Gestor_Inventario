@@ -69,8 +69,8 @@ function comprobarArgumentos(trx, datos) {
  * @param {number|null} [datos.idConteo] ajustes de la aprobación de un conteo (Tarea 11)
  * @param {string|null} [datos.documentoReferencia] ya validado (≤ 100 caracteres)
  * @param {string|null} [datos.observacion] ya validada (≤ 500 caracteres)
- * @param {string} datos.claveIdempotencia la clave tal como se ALMACENA (movimientoService.claveAlmacenada, con los
- *   sufijos de D5 en las operaciones que generan varios movimientos); única en la tabla
+ * @param {string} datos.claveIdempotencia la clave tal como se ALMACENA (idempotencia.claveAlmacenada, o idempotencia.derivada
+ *   en las operaciones que generan varios movimientos, D5); única en la tabla
  * @param {number} datos.idUsuario autor del movimiento (RF10)
  * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia)
  * @throws 404 NO_EXISTE si la bodega no existe; 409 BODEGA_INACTIVA (D12); 409 STOCK_INSUFICIENTE si el saldo quedaría

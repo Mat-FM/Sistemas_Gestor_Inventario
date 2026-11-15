@@ -97,7 +97,7 @@ describe('POST /movimientos: registro (201)', () => {
     expect(res.body).not.toHaveProperty('clave_idempotencia');
     expect(typeof res.body.cantidad).toBe('number');
     expect(typeof res.body.saldo_resultante).toBe('number');
-    expect(fila.clave_idempotencia).toBe('7:mi-clave'); // D25: la clave se guarda con el prefijo del usuario
+    expect(fila.clave_idempotencia).toBe('7:mov:mi-clave'); // D25 y D25b: la clave se guarda con el usuario y la operación
   });
 
   it('tipos que suman y restan (D3): DEVOLUCION_CLIENTE y ENTRADA_COMPRA suman, DEVOLUCION_PROVEEDOR y SALIDA restan', async () => {
@@ -369,9 +369,19 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
       expect(await movimientos()).toHaveLength(1);
     });
 
-    it('de 200 caracteres → 201 (y se guarda con el prefijo del usuario: cabe en varchar(255))', async () => {
+    it('con "#" → 400 (D25c: chocaría con una clave derivada); el control "abc-1" sí pasa', async () => {
+      expect((await post(entrada(), ADM, 'abc-1')).status).toBe(201);
+      clients.catalogo.obtenerProducto.mockClear();
+      for (const clave of ['abc#1', '#', 'a#', 'centinela#9']) esError(await post(entrada(), ADM, clave), 400, 'PETICION_MAL_FORMADA');
+      // El mensaje no repite el valor recibido.
+      expect((await post(entrada(), ADM, 'centinela#9')).body.error.mensaje).not.toContain('centinela');
+      catalogoSinLlamadas();
+      expect(await movimientos()).toHaveLength(1);
+    });
+
+    it('de 200 caracteres → 201 (y se guarda con el prefijo del usuario y la operación: cabe en varchar(255))', async () => {
       expect((await post(entrada(), ADM, 'k'.repeat(200))).status).toBe(201);
-      expect((await movimientos())[0].clave_idempotencia).toBe(`7:${'k'.repeat(200)}`);
+      expect((await movimientos())[0].clave_idempotencia).toBe(`7:mov:${'k'.repeat(200)}`);
     });
 
     it('sin espacios en los extremos: " abc " y "abc" son la MISMA clave', async () => {
@@ -383,7 +393,7 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
       const dos = (a, b) => request.post('/movimientos').set(ADM).set('Idempotency-Key', [a, b]).send(entrada());
       const corta = await dos('a', 'b');
       expect(corta.status).toBe(201);
-      expect((await movimientos())[0].clave_idempotencia).toBe('7:a, b');
+      expect((await movimientos())[0].clave_idempotencia).toBe('7:mov:a, b');
       esError(await dos('x'.repeat(100), 'y'.repeat(100)), 400, 'PETICION_MAL_FORMADA');
     });
 
@@ -418,7 +428,23 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
       expect([uno.status, otro.status]).toEqual([201, 201]);
       expect(otro.body.id_movimiento).not.toBe(uno.body.id_movimiento);
       expect(otro.body).toMatchObject({ id_usuario: 8, cantidad: 3, saldo_resultante: 13 });
-      expect((await movimientos()).map((fila) => fila.clave_idempotencia)).toEqual(['7:k1', '8:k1']);
+      expect((await movimientos()).map((fila) => fila.clave_idempotencia)).toEqual(['7:mov:k1', '8:mov:k1']);
+    });
+
+    it('D25b: un movimiento de OTRA operación del mismo usuario con la misma clave (7:tras:k) NO es una repetición de POST /movimientos', async () => {
+      const { OPERACIONES, claveAlmacenada } = require('../src/services/idempotencia');
+      const movimientoRepository = require('../src/repositories/movimientoRepository');
+      const deTraslado = claveAlmacenada(7, OPERACIONES.TRASLADO, 'k');
+      expect(deTraslado).not.toBe(claveAlmacenada(7, OPERACIONES.MOVIMIENTO, 'k'));
+      const sembrado = await movimientoRepository.insert(db, {
+        tipo: 'TRASLADO_ENTRADA', idProducto: 5, idBodega: b1, cantidad: 2, saldoResultante: 2, idUsuario: 7, claveIdempotencia: deTraslado,
+      });
+      const res = await post(entrada(), ADM, 'k');
+      expect(res.status).toBe(201);
+      expect(res.body.id_movimiento).not.toBe(sembrado.id_movimiento);
+      expect(res.body.tipo).toBe('ENTRADA');
+      expect((await movimientos()).map((fila) => fila.clave_idempotencia)).toEqual(['7:tras:k', '7:mov:k']);
+      expect((await post(entrada(), ADM, 'k')).status).toBe(200); // la suya sí se repite
     });
 
     it('la clave almacenada es inyectiva: el usuario 1 con la clave "2:x" y el usuario 12 con la clave "x" no chocan', async () => {

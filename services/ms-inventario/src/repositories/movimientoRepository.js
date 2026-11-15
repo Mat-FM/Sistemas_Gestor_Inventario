@@ -55,7 +55,7 @@ async function insert(dbOrTrx, {
 
 /**
  * El movimiento guardado con esa clave, tal como se ALMACENA (ya con el prefijo del usuario: ver
- * movimientoService.claveAlmacenada). Comparación exacta.
+ * idempotencia.claveAlmacenada y, en las derivadas, idempotencia.derivada). Comparación exacta.
  * @returns {Promise<Movimiento|undefined>}
  */
 async function findByClave(dbOrTrx, claveAlmacenada) {

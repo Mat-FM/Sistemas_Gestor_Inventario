@@ -6,53 +6,19 @@ const { requireUser, scopeBodega } = require('../middleware/identity');
 const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
 const umbralRepository = require('../repositories/umbralRepository');
+const { OPERACIONES, claveAlmacenada, leerClaveIdempotencia } = require('./idempotencia');
 const stockService = require('./stockService');
 
-// Lógica de negocio de POST /movimientos (RF04, RF10, RNF17; RNF13): idempotencia por usuario, validación del cuerpo, permisos,
-// confirmación del producto en ms-catalogo y la transacción con el motor (stockService). No sabe nada de HTTP: recibe el cuerpo,
-// el valor de la cabecera Idempotency-Key y la identidad como datos. El SQL vive en los repositorios.
+// Lógica de negocio de POST /movimientos (RF04, RF10, RNF17; RNF13): idempotencia por usuario y operación (idempotencia.js),
+// validación del cuerpo, permisos, confirmación del producto en ms-catalogo y la transacción con el motor (stockService). No
+// sabe nada de HTTP: recibe el cuerpo, el valor de la cabecera Idempotency-Key y la identidad como datos. El SQL vive en los
+// repositorios.
 //
 // Las dependencias llegan en `deps` = { db, clients, logger } y se leen en cada llamada (no al construir), como en el resto de
 // servicios: rutasDeclaradas() se puede llamar sin dependencias.
 
-// La cabecera Idempotency-Key, sin espacios en los extremos, tiene de 1 a 200 caracteres (D25): con el prefijo `<id_usuario>:`
-// (hasta 11 caracteres) y los sufijos `#<n>` de las claves derivadas (D5, hasta 11 más) cabe en varchar(255).
-const LARGO_MAXIMO_CLAVE = 200;
-
 // Largos exactos de las columnas de `movimientos` (migración 20261103000100): un texto más largo sería un 22001 (un 500).
 const LARGOS = { documento_referencia: 100, observacion: 500 };
-
-/**
- * La clave tal como se guarda en movimientos.clave_idempotencia: `<id_usuario>:<clave>` (D25). Es inyectiva porque el id solo
- * tiene dígitos: el primer `:` separa siempre el usuario de su clave, así que el usuario 1 con la clave «2:x» («1:2:x») y el
- * usuario 12 con la clave «x» («12:x») nunca coinciden. Una sola función para que las Tareas 9–13 armen sus claves igual
- * (las derivadas de D5 añaden su sufijo `#<n>` a este resultado).
- * @param {number} idUsuario entero positivo (X-User-Id ya validado)
- * @param {string} clave la cabecera ya validada (leerClaveIdempotencia)
- * @returns {string}
- * @throws {TypeError} si los argumentos no son un id y un texto no vacío (error de programación)
- */
-function claveAlmacenada(idUsuario, clave) {
-  if (!Number.isSafeInteger(idUsuario) || idUsuario < 1) throw new TypeError('idUsuario debe ser un entero positivo');
-  if (typeof clave !== 'string' || clave === '') throw new TypeError('La clave de idempotencia debe ser un texto no vacío');
-  return `${idUsuario}:${clave}`;
-}
-
-/**
- * Valor de la cabecera Idempotency-Key, sin espacios en los extremos. Node une con «, » los valores de una cabecera repetida;
- * el resultado se trata como una sola clave con la misma regla de largo.
- * @param {string|undefined} valor
- * @returns {string} la clave recortada, de 1 a 200 caracteres
- * @throws 400 PETICION_MAL_FORMADA si falta, está vacía (o solo tiene espacios) o supera los 200 caracteres
- */
-function leerClaveIdempotencia(valor) {
-  const clave = typeof valor === 'string' ? valor.trim() : '';
-  if (clave === '') throw e.malFormada('Falta la cabecera Idempotency-Key');
-  if (clave.length > LARGO_MAXIMO_CLAVE) {
-    throw e.malFormada(`La cabecera Idempotency-Key debe tener como máximo ${LARGO_MAXIMO_CLAVE} caracteres`);
-  }
-  return clave;
-}
 
 // Texto opcional de una columna nullable: ausente o null → null; cualquier otro valor pasa por `texto` (422 si no cabe).
 const textoOpcional = (valor, campo) => (valor === undefined || valor === null ? null : texto(valor, campo, { max: LARGOS[campo] }));
@@ -169,7 +135,7 @@ async function evaluarUmbral({ db, clients, logger }, { tipo, idProducto, idBode
 /**
  * Registra un movimiento por POST /movimientos. Orden (cada paso decide antes que el siguiente):
  * 1. requireUser: sin X-User-Id → 401 (D8, D22).
- * 2. Idempotency-Key: falta, vacía o más de 200 caracteres → 400.
+ * 2. Idempotency-Key: falta, vacía, más de 200 caracteres o con «#» → 400. Se guarda con la operación `mov` (D25b).
  * 3. Repetición: si este usuario ya usó la clave se devuelve el movimiento original (replayed) SIN validar el cuerpo, sin
  *    permisos y sin catálogo: un reintento tras un éxito debe dar 200 aunque ms-catalogo esté caído (D7, D25).
  * 4. Cuerpo: 422 (y 403 para los tipos reservados, D4).
@@ -185,7 +151,7 @@ async function evaluarUmbral({ db, clients, logger }, { tipo, idProducto, idBode
 async function registrarMovimiento(deps, { body, claveIdempotencia, identity }) {
   const { db, clients } = deps;
   requireUser(identity);
-  const almacenada = claveAlmacenada(identity.idUsuario, leerClaveIdempotencia(claveIdempotencia));
+  const almacenada = claveAlmacenada(identity.idUsuario, OPERACIONES.MOVIMIENTO, leerClaveIdempotencia(claveIdempotencia));
 
   const repetido = await movimientoRepository.findByClave(db, almacenada);
   if (repetido) return { movimiento: repetido, replayed: true };
@@ -217,6 +183,4 @@ function crearMovimientoService(deps = {}) {
   };
 }
 
-module.exports = {
-  LARGO_MAXIMO_CLAVE, claveAlmacenada, leerClaveIdempotencia, registrarMovimiento, evaluarUmbral, crearMovimientoService,
-};
+module.exports = { registrarMovimiento, evaluarUmbral, crearMovimientoService };
