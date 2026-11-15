@@ -1,7 +1,7 @@
-const { TIPOS, TIPOS_PERMITIDOS_POR_API, evaluaUmbral } = require('../domain/tipos');
+const { TIPOS, TIPOS_PERMITIDOS_POR_API, delta, evaluaUmbral } = require('../domain/tipos');
 const { describirError, e } = require('../errors');
 const { headersDe } = require('../clients/propagacion');
-const { ENTERO_MAXIMO, cuerpoObjeto, entero, enumerado, texto, validarCampos } = require('../http/validate');
+const { ENTERO_MAXIMO, cuerpoObjeto, entero, enumerado, fecha, recoger, texto, validarCampos } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
 const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
@@ -18,7 +18,8 @@ const stockService = require('./stockService');
 // servicios: rutasDeclaradas() se puede llamar sin dependencias.
 
 // Largos exactos de las columnas de `movimientos` (migración 20261103000100): un texto más largo sería un 22001 (un 500).
-const LARGOS = { documento_referencia: 100, observacion: 500 };
+// lotes.codigo_lote es varchar(50).
+const LARGOS = { documento_referencia: 100, observacion: 500, codigo_lote: 50 };
 
 // Texto opcional de una columna nullable: ausente o null → null; cualquier otro valor pasa por `texto` (422 si no cabe).
 const textoOpcional = (valor, campo) => (valor === undefined || valor === null ? null : texto(valor, campo, { max: LARGOS[campo] }));
@@ -31,20 +32,44 @@ function leerCantidad(tipo, valor) {
   return cantidad;
 }
 
-/**
- * TODO(Tarea 8): los lotes (`id_lote`, `lote`) se habilitan en la Tarea 8, que BORRA esta función y su llamada. Hasta entonces
- * un cuerpo que los traiga es 422 (D26): ignorarlos en silencio dejaría un movimiento que no toca los lotes mientras el cliente
- * cree que sí. Cuenta la mera presencia del campo, también con null (que en la Tarea 8 significará «salida por FEFO»).
- */
-function rechazarLotes(datos) {
-  const presentes = ['id_lote', 'lote'].filter((campo) => datos[campo] !== undefined);
-  if (presentes.length > 0) {
-    throw e.datosNoValidos(presentes.map((campo) => ({ campo, mensaje: 'los lotes todavía no se admiten en los movimientos' })));
-  }
+const ausente = (valor) => valor === undefined || valor === null;
+const rechazoLote = (mensaje) => e.datosNoValidos([{ campo: 'lote', mensaje }]);
+
+/** `id_lote` (D27): ausente o null → null; si no, un entero positivo dentro del INTEGER. */
+const leerIdLote = (valor) => (ausente(valor) ? null : entero(valor, 'id_lote'));
+
+// ¿El movimiento BAJA el saldo? Solo se sabe con un tipo de la API y una cantidad entera ≠ 0; si no, ya hay un 422 sobre esos
+// campos y no se añade otro aquí. AJUSTE baja con cantidad negativa; SALIDA y DEVOLUCION_PROVEEDOR siempre (D3).
+function bajaElSaldo(tipo, cantidad) {
+  if (!TIPOS_PERMITIDOS_POR_API.includes(tipo) || !Number.isSafeInteger(cantidad) || cantidad === 0) return false;
+  if (Math.abs(cantidad) > ENTERO_MAXIMO) return false;
+  if (tipo === 'AJUSTE') return cantidad < 0;
+  return cantidad > 0 && delta(tipo, cantidad) < 0;
 }
 
 /**
- * Cuerpo de POST /movimientos: {tipo, id_producto, id_bodega, cantidad, documento_referencia?, observacion?} (Tabla 9).
+ * `lote` (D27): ausente o null → null. Si viene, debe ser un objeto { codigo_lote, fecha_vencimiento? } (los demás campos del
+ * objeto se descartan), no puede ir junto con un `id_lote` y solo vale en un movimiento que SUBE el saldo (al retirar no se crea
+ * un lote). `codigo_lote`: texto recortado de 1 a 50 caracteres; `fecha_vencimiento`: fecha real YYYY-MM-DD, null o ausente.
+ * Informa a la vez el código y la fecha inválidos.
+ * @returns {{codigoLote: string, fechaVencimiento: string|null}|null} la forma que recibe el motor
+ */
+function leerLote(datos) {
+  const { lote } = datos;
+  if (ausente(lote)) return null;
+  if (!ausente(datos.id_lote)) throw rechazoLote('no se puede enviar junto con id_lote');
+  if (typeof lote !== 'object' || Array.isArray(lote)) throw rechazoLote('debe ser un objeto { codigo_lote, fecha_vencimiento? }');
+  if (bajaElSaldo(datos.tipo, datos.cantidad)) throw rechazoLote('solo se admite en un movimiento que sube el saldo');
+  const detalles = [];
+  const codigoLote = recoger(detalles, () => texto(lote.codigo_lote, 'lote.codigo_lote', { max: LARGOS.codigo_lote }));
+  const fechaVencimiento = recoger(detalles, () => (ausente(lote.fecha_vencimiento) ? null : fecha(lote.fecha_vencimiento, 'lote.fecha_vencimiento')));
+  if (detalles.length > 0) throw e.datosNoValidos(detalles);
+  return { codigoLote, fechaVencimiento };
+}
+
+/**
+ * Cuerpo de POST /movimientos: {tipo, id_producto, id_bodega, cantidad, id_lote?, lote?: {codigo_lote, fecha_vencimiento?},
+ * documento_referencia?, observacion?} (Tabla 9).
  * Orden: cuerpo que no es un objeto (422 «cuerpo») → tipo reservado (403, D4) → todos los campos a la vez (422). Un tipo
  * válido pero reservado es un permiso, no un dato inválido: se rechaza antes de mirar el resto del cuerpo. Cualquier otro
  * campo (`id_usuario`, `saldo_resultante`, `fecha`…) se descarta: los fija el servidor.
@@ -54,17 +79,16 @@ function leerCuerpo(cuerpo) {
   if (TIPOS.includes(datos.tipo) && !TIPOS_PERMITIDOS_POR_API.includes(datos.tipo)) {
     throw e.sinPermiso(`El tipo ${datos.tipo} no se puede registrar por esta ruta`);
   }
-  const valores = validarCampos({
+  return validarCampos({
     tipo: () => enumerado(datos.tipo, 'tipo', TIPOS_PERMITIDOS_POR_API),
     idProducto: () => entero(datos.id_producto, 'id_producto'),
     idBodega: () => entero(datos.id_bodega, 'id_bodega'),
     cantidad: () => leerCantidad(datos.tipo, datos.cantidad),
+    idLote: () => leerIdLote(datos.id_lote),
+    lote: () => leerLote(datos),
     documentoReferencia: () => textoOpcional(datos.documento_referencia, 'documento_referencia'),
     observacion: () => textoOpcional(datos.observacion, 'observacion'),
-    lotes: () => rechazarLotes(datos), // TODO(Tarea 8): borrar esta línea junto con rechazarLotes
   });
-  const { lotes: _sinUso, ...movimiento } = valores;
-  return movimiento;
 }
 
 // Un logger roto no puede hacer que el aviso de stock bajo lance: nunca debe cambiar la respuesta del movimiento.

@@ -161,6 +161,22 @@ describe('loteRepository.bloquearPorId', () => {
     });
   });
 
+  it('con { idBodega, idProducto } solo encuentra el lote si es de ese par, y uno ajeno NO queda bloqueado', async () => {
+    /* El motor nunca toma un lote cuyo saldo no tiene (evita un ciclo de esperas con un traslado). Control: el par correcto. */
+    const { id_lote: id } = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', cantidad: 3 });
+    await conTransaccionAbierta(async (trx) => [
+      await loteRepository.bloquearPorId(trx, id, { idBodega: b2, idProducto: 5 }),
+      await loteRepository.bloquearPorId(trx, id, { idBodega: b1, idProducto: 6 }),
+    ], async (ajenos) => {
+      expect(ajenos).toEqual([undefined, undefined]);
+      expect(await estaBloqueado(id)).toBe(false);
+    });
+    await conTransaccionAbierta((trx) => loteRepository.bloquearPorId(trx, id, { idBodega: b1, idProducto: 5 }), async (propio) => {
+      expect(propio).toMatchObject({ id_lote: id, cantidad_disponible: 3 });
+      expect(await estaBloqueado(id)).toBe(true);
+    });
+  });
+
   it('bloquea la fila (FOR UPDATE) hasta el fin de la transacción, y solo esa', async () => {
     /* Control: sin transacción abierta la fila está libre. */
     const uno = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', cantidad: 3 });
@@ -236,7 +252,7 @@ describe('loteRepository.ajustar', () => {
 promesasReales(loteRepository, {
   upsertEntrada: [{ idBodega: 1, idProducto: 5, codigoLote: 'P', fechaVencimiento: null, cantidad: 1 }],
   buscarPorCodigo: [{ idBodega: 1, idProducto: 5, codigoLote: 'P' }],
-  bloquearPorId: [1],
+  bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
   ajustar: [1, 0],
 }, { titulo: 'loteRepository', db: () => db });

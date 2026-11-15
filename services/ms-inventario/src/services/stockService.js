@@ -1,6 +1,7 @@
 const { delta } = require('../domain/tipos');
 const { e } = require('../errors');
 const bodegaRepository = require('../repositories/bodegaRepository');
+const loteRepository = require('../repositories/loteRepository');
 const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
 
@@ -14,6 +15,22 @@ const saldoRepository = require('../repositories/saldoRepository');
 // - Bloquea el saldo con SELECT … FOR UPDATE (saldoRepository.bloquear): dos movimientos simultáneos sobre el mismo
 //   (producto, bodega) se aplican uno detrás de otro y el segundo ve el saldo que dejó el primero, así que nunca queda negativo.
 // - Escribe `saldos.fecha_actualizacion` y `movimientos.fecha` con clock_timestamp() DESPUÉS de tomar el bloqueo (D24).
+// - Lotes (RF17, D27): las reglas van por el SIGNO del cambio, no por el tipo, así que los traslados, los conteos, la carga
+//   inicial y las devoluciones las heredan sin reglas propias.
+//   · Sube (delta > 0): sin lote → solo el saldo (stock «sin lote»); idLote → suma a ESE lote; lote {codigoLote,
+//     fechaVencimiento} → loteRepository.upsertEntrada (lo crea o le suma; 409 CONFLICTO si ya existe con otra fecha).
+//   · Baja (delta < 0): idLote → resta de ESE lote (409 STOCK_INSUFICIENTE con los datos del LOTE si no alcanza); sin idLote →
+//     FEFO (D6: planificarFefo sobre loteRepository.listarParaFefo) y lo que los lotes no cubren sale del stock sin lote.
+//   · El movimiento lleva id_lote = el lote al que entra, del que sale o el PRIMERO consumido por FEFO (o null).
+//   · Invariante (D27(c)): por (producto, bodega), la suma de los lotes nunca supera el saldo y ningún lote queda negativo. Se
+//     mantiene porque saldo y lotes cambian en la misma transacción: con idLote o lote, ambos con el mismo delta; en FEFO, los
+//     lotes se agotan ANTES de tocar el stock sin lote, así que si sobra algo (restante > 0) los lotes quedan en 0.
+//
+// ORDEN TOTAL DE BLOQUEO dentro de UN movimiento: bodega (lectura) → saldo (id_bodega, id_producto) con FOR UPDATE → lotes de
+// ESE mismo par con FOR UPDATE, en orden FEFO (fecha ASC NULLS LAST, id_lote ASC; listarParaFefo) o solo el lote pedido (por id,
+// filtrado por el par: nunca se bloquea un lote ajeno) o el del código (upsertEntrada). El saldo es el «candado maestro»: toda
+// operación que toque los lotes de un par bloquea antes su saldo, así que dos operaciones del mismo par nunca se esperan en
+// orden cruzado. Quien añada otra vía para tocar lotes debe respetar este orden.
 //
 // ORDEN DE BLOQUEO cuando una operación toma VARIOS saldos en una misma transacción (D25c): llamar a aplicarMovimiento (o a
 // bloquear) en orden de id_bodega ascendente y, dentro de la misma bodega, de id_producto ascendente.
@@ -25,10 +42,29 @@ const saldoRepository = require('../repositories/saldoRepository');
 
 const ENTERO_MAXIMO = 2147483647;
 const LARGO_CLAVE = 255; // movimientos.clave_idempotencia es varchar(255)
+const FORMATO_FECHA = /^\d{4}-\d{2}-\d{2}$/; // fechas `date` como texto (Ruling 15)
 
 const esId = (valor) => Number.isSafeInteger(valor) && valor >= 1 && valor <= ENTERO_MAXIMO;
 const esIdOpcional = (valor) => valor === null || esId(valor);
 const esTextoOpcional = (valor) => valor === null || typeof valor === 'string';
+const LARGO_CODIGO_LOTE = 50; // lotes.codigo_lote es varchar(50)
+
+// `lote` del motor: { codigoLote, fechaVencimiento? }, ya validado por quien llama (texto recortado de 1 a 50 caracteres y una
+// fecha YYYY-MM-DD o null). Devuelve el lote normalizado (fechaVencimiento null si falta) o lanza TypeError.
+function comprobarLote(lote) {
+  if (lote === null) return null;
+  const esObjeto = typeof lote === 'object' && !Array.isArray(lote);
+  const codigo = esObjeto ? lote.codigoLote : undefined;
+  const fecha = esObjeto ? (lote.fechaVencimiento ?? null) : undefined;
+  // Un código sin recortar («L1 ») o con NUL crearía en silencio otro lote distinto de «L1» (o un 22021): quien llama debe
+  // pasarlo por http/validate.texto, como POST /movimientos.
+  const codigoValido = typeof codigo === 'string' && codigo.length >= 1 && codigo === codigo.trim() && !codigo.includes('\u0000')
+    && [...codigo].length <= LARGO_CODIGO_LOTE;
+  if (!codigoValido || !(fecha === null || (typeof fecha === 'string' && FORMATO_FECHA.test(fecha)))) {
+    throw new TypeError(`lote debe ser { codigoLote: texto recortado de 1 a ${LARGO_CODIGO_LOTE} caracteres, fechaVencimiento?: YYYY-MM-DD o null }`);
+  }
+  return { codigoLote: codigo, fechaVencimiento: fecha };
+}
 
 /**
  * Comprueba los argumentos del motor y los devuelve con los opcionales en null. Llegan ya validados por quien llama (422 o 400
@@ -38,12 +74,9 @@ const esTextoOpcional = (valor) => valor === null || typeof valor === 'string';
 function comprobarArgumentos(trx, datos) {
   // Sin transacción el FOR UPDATE se soltaría al terminar cada sentencia y dos movimientos podrían dejar el saldo negativo.
   if (trx?.isTransaction !== true) throw new TypeError('aplicarMovimiento debe ejecutarse dentro de una transacción');
-  // TODO(Tarea 8): los lotes llegan con la Tarea 8, que añadirá idLote y lote. Hasta entonces se rechazan: ignorarlos dejaría
-  // un movimiento que no toca los lotes mientras quien llama cree que sí.
-  if (datos.idLote !== undefined || datos.lote !== undefined) throw new TypeError('aplicarMovimiento todavía no admite lotes');
   const {
     tipo, idProducto, idBodega, cantidad, claveIdempotencia, idUsuario,
-    idTraslado = null, idConteo = null, documentoReferencia = null, observacion = null,
+    idLote = null, lote = null, idTraslado = null, idConteo = null, documentoReferencia = null, observacion = null,
   } = datos;
   if (!esId(idProducto) || !esId(idBodega) || !esId(idUsuario)) {
     throw new TypeError('idProducto, idBodega e idUsuario deben ser enteros positivos dentro del INTEGER');
@@ -51,11 +84,71 @@ function comprobarArgumentos(trx, datos) {
   if (typeof claveIdempotencia !== 'string' || claveIdempotencia.length < 1 || claveIdempotencia.length > LARGO_CLAVE) {
     throw new TypeError(`claveIdempotencia debe ser un texto de 1 a ${LARGO_CLAVE} caracteres`);
   }
-  if (!esIdOpcional(idTraslado) || !esIdOpcional(idConteo)) throw new TypeError('idTraslado e idConteo deben ser null o enteros positivos');
+  if (!esIdOpcional(idTraslado) || !esIdOpcional(idConteo) || !esIdOpcional(idLote)) {
+    throw new TypeError('idLote, idTraslado e idConteo deben ser null o enteros positivos');
+  }
+  const loteNormalizado = comprobarLote(lote);
+  if (idLote !== null && loteNormalizado !== null) throw new TypeError('idLote y lote no pueden ir juntos (D27)');
   if (!esTextoOpcional(documentoReferencia) || !esTextoOpcional(observacion)) {
     throw new TypeError('documentoReferencia y observacion deben ser null o texto');
   }
-  return { tipo, idProducto, idBodega, cantidad, claveIdempotencia, idUsuario, idTraslado, idConteo, documentoReferencia, observacion };
+  return {
+    tipo, idProducto, idBodega, cantidad, claveIdempotencia, idUsuario, idLote, lote: loteNormalizado, idTraslado, idConteo,
+    documentoReferencia, observacion,
+  };
+}
+
+const loteNoExiste = () => e.noExiste('El lote no existe en esa bodega para ese producto');
+
+/** Toma el lote pedido por id SOLO si es del mismo par (bloqueado). 404 si no existe o es de otra bodega o producto. */
+async function bloquearLoteDelPar(trx, idLote, { idBodega, idProducto }) {
+  const lote = await loteRepository.bloquearPorId(trx, idLote, { idBodega, idProducto });
+  if (!lote) throw loteNoExiste();
+  return lote;
+}
+
+// Una resta o suma a un lote que ya se comprobó con la fila bloqueada no puede fallar; si falla, el invariante está roto y se
+// aborta TODO (un Error que no es AppError: 500, y la transacción se deshace con saldo y lotes).
+async function ajustarLote(trx, idLote, cambio) {
+  const lote = await loteRepository.ajustar(trx, idLote, cambio);
+  if (!lote) throw new Error(`No se pudo ajustar el lote ${idLote} en ${cambio}: el invariante de lotes está roto`);
+  return lote;
+}
+
+/** Entrada por código (D27(a)): crea o suma; 409 CONFLICTO si el lote ya existe con otra fecha de vencimiento (D27(d)). */
+async function entrarPorCodigo(trx, { idBodega, idProducto, cambio, lote }) {
+  const datosLote = { idBodega, idProducto, codigoLote: lote.codigoLote, fechaVencimiento: lote.fechaVencimiento, cantidad: cambio };
+  const resultado = await loteRepository.upsertEntrada(trx, datosLote);
+  if (resultado) return resultado;
+  const existente = await loteRepository.buscarPorCodigo(trx, datosLote);
+  const guardada = existente?.fecha_vencimiento ?? null;
+  throw e.conflicto('CONFLICTO', 'El lote ya existe con otra fecha de vencimiento', [{
+    campo: 'lote.fecha_vencimiento',
+    mensaje: guardada === null ? 'El lote ya existe sin fecha de vencimiento' : `El lote ya existe con fecha de vencimiento ${guardada}`,
+  }]);
+}
+
+/** Salida de un lote concreto (D27(b)): 409 STOCK_INSUFICIENTE con lo disponible y lo solicitado DEL LOTE si no alcanza. */
+async function salirDeLote(trx, lote, solicitado) {
+  const disponible = lote.cantidad_disponible;
+  if (disponible < solicitado) {
+    throw e.conflicto('STOCK_INSUFICIENTE', 'No hay stock suficiente en el lote para este movimiento', [
+      { campo: 'id_lote', mensaje: `Disponible en el lote: ${disponible}; solicitado: ${solicitado}`, disponible, solicitado },
+    ]);
+  }
+  await ajustarLote(trx, lote.id_lote, -solicitado);
+}
+
+/**
+ * Salida por FEFO (D6): bloquea los lotes del par con existencia en orden FEFO, los consume con planificarFefo y deja el
+ * `restante` al stock sin lote (que alcanza: el saldo ya se comprobó y la suma de los lotes no lo supera).
+ * @returns {Promise<number|null>} el id del PRIMER lote consumido, o null si no se consumió ninguno
+ */
+async function salirPorFefo(trx, { idBodega, idProducto, solicitado }) {
+  const lotes = await loteRepository.listarParaFefo(trx, { idBodega, idProducto });
+  const { asignaciones } = planificarFefo(lotes, solicitado);
+  for (const { id_lote: id, cantidad } of asignaciones) await ajustarLote(trx, id, -cantidad);
+  return asignaciones.length > 0 ? asignaciones[0].id_lote : null;
 }
 
 /**
@@ -69,6 +162,9 @@ function comprobarArgumentos(trx, datos) {
  * @param {number} datos.idProducto ya confirmado en ms-catalogo por quien llama
  * @param {number} datos.idBodega
  * @param {number} datos.cantidad entero > 0; en AJUSTE, ≠ 0 con su signo
+ * @param {number|null} [datos.idLote] lote al que entra o del que sale (D27); debe ser de la misma bodega y producto (404 si no)
+ * @param {{codigoLote: string, fechaVencimiento?: string|null}|null} [datos.lote] entrada a un lote por código (solo si el
+ *   movimiento SUBE el saldo); se crea si no existe. No va junto con idLote
  * @param {number|null} [datos.idTraslado] movimientos de un traslado (Tarea 9)
  * @param {number|null} [datos.idConteo] ajustes de la aprobación de un conteo (Tarea 11)
  * @param {string|null} [datos.documentoReferencia] ya validado (≤ 100 caracteres)
@@ -77,22 +173,30 @@ function comprobarArgumentos(trx, datos) {
  *   en las operaciones que generan varios movimientos, D5); única en la tabla
  * @param {number} datos.idUsuario autor del movimiento (RF10)
  * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia)
- * @throws 404 NO_EXISTE si la bodega no existe; 409 BODEGA_INACTIVA (D12); 409 STOCK_INSUFICIENTE si el saldo quedaría
- *   negativo; 422 DATOS_NO_VALIDOS (campo `cantidad`) si superaría el máximo del INTEGER; el 23505 de
+ * @throws 404 NO_EXISTE si la bodega no existe o si idLote no es un lote de esa bodega y producto; 409 BODEGA_INACTIVA (D12);
+ *   409 STOCK_INSUFICIENTE si el saldo quedaría negativo (campo `cantidad`) o si el lote pedido no alcanza (campo `id_lote`,
+ *   con lo disponible y lo solicitado del lote); 409 CONFLICTO si `lote` ya existe con otra fecha de vencimiento;
+ *   422 DATOS_NO_VALIDOS (campo `cantidad`) si superaría el máximo del INTEGER; el 23505 de
  *   `movimientos_clave_idempotencia_key` si la clave ya existe (quien llama relee con idempotencia.resolverFallo);
- *   TypeError ante argumentos imposibles
+ *   TypeError ante argumentos imposibles (también idLote y lote juntos, o lote en un movimiento que baja el saldo)
  */
 async function aplicarMovimiento(trx, datos) {
   const {
-    tipo, idProducto, idBodega, cantidad, claveIdempotencia, idUsuario, idTraslado, idConteo, documentoReferencia, observacion,
+    tipo, idProducto, idBodega, cantidad, claveIdempotencia, idUsuario, idLote, lote, idTraslado, idConteo, documentoReferencia,
+    observacion,
   } = comprobarArgumentos(trx, datos);
   const cambio = delta(tipo, cantidad); // TypeError si el tipo o la cantidad son imposibles
+  if (lote !== null && cambio < 0) throw new TypeError('lote solo se admite en un movimiento que sube el saldo (D27(b))');
+  const par = { idBodega, idProducto };
 
   const bodega = await bodegaRepository.findById(trx, idBodega);
   if (!bodega) throw e.noExiste('La bodega no existe');
   if (!bodega.activa) throw e.conflicto('BODEGA_INACTIVA', 'La bodega está inactiva: no admite movimientos');
 
-  const saldo = await saldoRepository.bloquear(trx, { idProducto, idBodega });
+  // Candado maestro: el saldo SIEMPRE antes que cualquier lote (ver ORDEN TOTAL DE BLOQUEO arriba).
+  const saldo = await saldoRepository.bloquear(trx, par);
+  // El lote pedido por id se toma (y se valida, 404) antes de mirar el stock: una referencia inválida se informa primero.
+  const lotePedido = idLote === null ? null : await bloquearLoteDelPar(trx, idLote, par);
   const disponible = saldo.cantidad_disponible;
   const resultante = disponible + cambio;
   if (resultante < 0) {
@@ -106,14 +210,23 @@ async function aplicarMovimiento(trx, datos) {
     throw e.datosNoValidos([{ campo: 'cantidad', mensaje: `el saldo resultante superaría el máximo permitido (${ENTERO_MAXIMO})` }]);
   }
 
+  let idLoteMovimiento = null;
+  if (cambio > 0) {
+    if (lotePedido) idLoteMovimiento = (await ajustarLote(trx, lotePedido.id_lote, cambio)).id_lote;
+    else if (lote) idLoteMovimiento = (await entrarPorCodigo(trx, { ...par, cambio, lote })).id_lote;
+  } else if (lotePedido) {
+    await salirDeLote(trx, lotePedido, -cambio);
+    idLoteMovimiento = lotePedido.id_lote;
+  } else {
+    idLoteMovimiento = await salirPorFefo(trx, { ...par, solicitado: -cambio });
+  }
+
   await saldoRepository.fijarCantidad(trx, saldo.id_saldo, resultante);
   return movimientoRepository.insert(trx, {
     tipo, idProducto, idBodega, cantidad, saldoResultante: resultante, idUsuario, claveIdempotencia,
-    idTraslado, idConteo, documentoReferencia, observacion,
+    idLote: idLoteMovimiento, idTraslado, idConteo, documentoReferencia, observacion,
   });
 }
-
-const FORMATO_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 
 // Orden FEFO (D6): fecha de vencimiento ascendente, los lotes sin fecha al final y, a igual fecha, id_lote ascendente. Las fechas
 // son texto YYYY-MM-DD (Ruling 15), cuyo orden lexicográfico es el cronológico. Es el mismo orden que el ORDER BY de

@@ -4,7 +4,9 @@ const { AppError } = require('../src/errors');
 const tipos = require('../src/domain/tipos');
 const stockService = require('../src/services/stockService');
 const { createTestDb, truncateAll } = require('./helpers/db');
-const { crearBodega, crearSaldo } = require('./helpers/fixtures');
+const loteRepository = require('../src/repositories/loteRepository');
+const saldoRepository = require('../src/repositories/saldoRepository');
+const { crearBodega, crearLote, crearSaldo } = require('./helpers/fixtures');
 
 // El motor de movimientos (stockService.aplicarMovimiento) y los tipos de movimiento (D3), contra PostgreSQL real y con
 // transacciones reales: es la pieza que reutilizan las Tareas 8–13, así que aquí se prueban el bloqueo del saldo, el signo de
@@ -257,9 +259,20 @@ describe('stockService.aplicarMovimiento', () => {
       ['un idUsuario 0', { idUsuario: 0 }],
       ['un idProducto de texto', { idProducto: '5' }],
       ['un idBodega fuera del INTEGER', { idBodega: MAXIMO + 1 }],
-      // TODO(Tarea 8): los lotes llegan con la Tarea 8; hasta entonces el motor no los acepta en silencio.
-      ['un idLote', { idLote: 1 }],
-      ['un lote', { lote: { codigo_lote: 'L1', fecha_vencimiento: '2027-01-01' } }],
+      // Lotes (D27): las combinaciones imposibles las rechaza quien llama con 422; aquí son errores de programación.
+      ['un idLote 0', { idLote: 0 }],
+      ['un idLote de texto', { idLote: '3' }],
+      ['idLote y lote a la vez', { idLote: 1, lote: { codigoLote: 'L1', fechaVencimiento: null } }],
+      ['un lote en un movimiento que BAJA el saldo (SALIDA)', { tipo: 'SALIDA', lote: { codigoLote: 'L1', fechaVencimiento: null } }],
+      ['un lote en un AJUSTE negativo', { tipo: 'AJUSTE', cantidad: -1, lote: { codigoLote: 'L1', fechaVencimiento: null } }],
+      ['un lote que no es un objeto', { lote: 'L1' }],
+      ['un lote con el código en snake_case (la forma del cuerpo HTTP, no la del motor)', { lote: { codigo_lote: 'L1' } }],
+      ['un lote con el código vacío', { lote: { codigoLote: '', fechaVencimiento: null } }],
+      ['un lote con el código sin recortar (sería otro lote distinto de «L1»)', { lote: { codigoLote: 'L1 ', fechaVencimiento: null } }],
+      ['un lote con el código con NUL', { lote: { codigoLote: 'L\u00001', fechaVencimiento: null } }],
+      ['un lote con un código de 51 caracteres (la columna es varchar(50))', { lote: { codigoLote: 'x'.repeat(51), fechaVencimiento: null } }],
+      ['un lote con la fecha como Date (Ruling 15)', { lote: { codigoLote: 'L1', fechaVencimiento: new Date('2027-01-31') } }],
+      ['un lote con la fecha en otro formato', { lote: { codigoLote: 'L1', fechaVencimiento: '2027-1-31' } }],
     ])('%s → TypeError y nada escrito', async (_caso, extra) => {
       await expect(aplicar(extra)).rejects.toBeInstanceOf(TypeError);
       expect(await filasSaldo()).toEqual([]);
@@ -343,3 +356,125 @@ describe('stockService.aplicarMovimiento', () => {
     });
   });
 });
+
+describe('stockService.aplicarMovimiento: lotes (D27)', () => {
+  // Las reglas por el SIGNO del delta, con los tipos que POST /movimientos no admite (los heredan las Tareas 9, 11 y 12) y las
+  // garantías internas del motor: orden de bloqueo, rollback total y que nunca bloquea un lote de otro par. La matriz por tipo
+  // de la API y la validación del cuerpo están en movimientosLotes.test.js.
+  afterEach(() => jest.restoreAllMocks());
+
+  const sembrarLote = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
+  const lotesDe = async () => Object.fromEntries((await db('lotes').select('codigo_lote', 'cantidad_disponible').orderBy('id_lote')).map((l) => [l.codigo_lote, l.cantidad_disponible]));
+
+  it('TRASLADO_SALIDA sin idLote sale por FEFO (Tarea 9) y el movimiento lleva el PRIMER lote consumido', async () => {
+    /* Saldo 10 = A 3 (vence antes) + B 3 + 4 sin lote; un traslado de 5 agota A y toma 2 de B. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const b = await sembrarLote('B', '2027-06-30', 3);
+    const a = await sembrarLote('A', '2027-01-31', 3);
+    const movimiento = await aplicar({ tipo: 'TRASLADO_SALIDA', cantidad: 5 });
+    expect(movimiento).toMatchObject({ id_lote: a.id_lote, saldo_resultante: 5 });
+    expect(await lotesDe()).toEqual({ B: 1, A: 0 });
+    expect(b.id_lote).toBeLessThan(a.id_lote); // control: el orden es por fecha, no por id
+  });
+
+  it('TRASLADO_SALIDA con idLote resta de ESE lote y TRASLADO_ENTRADA con lote lo crea en el destino con su fecha (Tarea 9)', async () => {
+    /* Así un traslado mueve un lote concreto: sale por id en el origen y entra por código y fecha en el destino. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 6 });
+    const a = await sembrarLote('A', '2027-01-31', 6);
+    expect(await aplicar({ tipo: 'TRASLADO_SALIDA', cantidad: 4, idLote: a.id_lote })).toMatchObject({ id_lote: a.id_lote, saldo_resultante: 2 });
+    const entrada = await aplicar({ tipo: 'TRASLADO_ENTRADA', idBodega: b2, cantidad: 4, lote: { codigoLote: 'A', fechaVencimiento: '2027-01-31' } });
+    const destino = await db('lotes').where({ id_bodega: b2 }).first();
+    expect(destino).toMatchObject({ codigo_lote: 'A', fecha_vencimiento: '2027-01-31', cantidad_disponible: 4, id_producto: 5 });
+    expect(entrada).toMatchObject({ id_lote: destino.id_lote, saldo_resultante: 4, id_bodega: b2 });
+    expect(await saldoDe(5, b1)).toBe(2);
+  });
+
+  it('CARGA_INICIAL con lote crea el lote y una segunda fila con el mismo código y fecha suma (Tarea 12); con fecha omitida también suma', async () => {
+    /* La carga inicial es una entrada como cualquier otra. */
+    await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 3, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
+    await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 2, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
+    const ultimo = await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 1, lote: { codigoLote: 'L1' } });
+    expect(ultimo.saldo_resultante).toBe(6);
+    expect(await db('lotes').select('codigo_lote', 'fecha_vencimiento', 'cantidad_disponible')).toEqual([{ codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 6 }]);
+  });
+
+  it('AJUSTE negativo con idConteo y sin idLote sale por FEFO (Tarea 11)', async () => {
+    /* Un faltante de conteo baja los lotes que vencen primero, no solo el saldo. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 4 });
+    const a = await sembrarLote('A', '2027-01-31', 4);
+    const [{ id_conteo: idConteo }] = await db('conteos').insert({ id_bodega: b1, estado: 'EN_REVISION', fecha_programada: '2026-11-15' }).returning('id_conteo');
+    expect(await aplicar({ tipo: 'AJUSTE', cantidad: -3, idConteo })).toMatchObject({ id_lote: a.id_lote, id_conteo: idConteo, saldo_resultante: 1 });
+    expect(await lotesDe()).toEqual({ A: 1 });
+  });
+
+  it('409 CONFLICTO (mismo código, otra fecha) informa la fecha guardada en lote.fecha_vencimiento y no cambia nada', async () => {
+    /* D27(d): una fecha ignorada en silencio podría sacar mercancía vencida antes de tiempo. */
+    await aplicar({ cantidad: 2, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
+    const error = await atrapar(aplicar({ cantidad: 5, lote: { codigoLote: 'L1', fechaVencimiento: '2027-02-01' } }));
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ status: 409, codigo: 'CONFLICTO' });
+    expect(error.detalles).toEqual([{ campo: 'lote.fecha_vencimiento', mensaje: expect.stringContaining('2027-01-31') }]);
+    expect(await saldoDe()).toBe(2);
+    expect(await lotesDe()).toEqual({ L1: 2 });
+    expect(await kardex()).toHaveLength(1);
+  });
+
+  it('orden de bloqueo: el saldo SIEMPRE antes que cualquier lote (por id, por FEFO o por código)', async () => {
+    /* D27(c): el saldo es el candado maestro; tomar un lote antes abriría un interbloqueo con otra operación del mismo par. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const a = await sembrarLote('A', '2027-01-31', 5);
+    const orden = [];
+    const espiar = (modulo, nombre) => {
+      const real = modulo[nombre];
+      jest.spyOn(modulo, nombre).mockImplementation(async (...args) => { orden.push(nombre); return real(...args); });
+    };
+    espiar(saldoRepository, 'bloquear');
+    for (const nombre of ['bloquearPorId', 'listarParaFefo', 'upsertEntrada']) espiar(loteRepository, nombre);
+    await aplicar({ tipo: 'SALIDA', cantidad: 1 });
+    await aplicar({ tipo: 'SALIDA', cantidad: 1, idLote: a.id_lote });
+    await aplicar({ cantidad: 1, idLote: a.id_lote });
+    await aplicar({ cantidad: 1, lote: { codigoLote: 'N', fechaVencimiento: null } });
+    expect(orden).toEqual(['bloquear', 'listarParaFefo', 'bloquear', 'bloquearPorId', 'bloquear', 'bloquearPorId', 'bloquear', 'upsertEntrada']);
+  });
+
+  it('un idLote de OTRO par (otra bodega) → 404 sin llegar a bloquear ese lote (no se toma un lote cuyo saldo no se tiene)', async () => {
+    /* Si lo bloqueara, un traslado que tuviera ese par y esperara el nuestro cerraría un ciclo (40P01). */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 5 });
+    const ajeno = await sembrarLote('X', null, 3, { idBodega: b2 });
+    const trx = await db.transaction();
+    try {
+      const error = await atrapar(stockService.aplicarMovimiento(trx, datos({ tipo: 'SALIDA', cantidad: 1, idLote: ajeno.id_lote })));
+      expect(error).toMatchObject({ status: 404, codigo: 'NO_EXISTE' });
+      // Con la transacción todavía abierta, otra puede tomar el lote ajeno al instante.
+      const libre = await db.transaction(async (otra) => {
+        await otra.raw("SET LOCAL lock_timeout = '150ms'");
+        return otra('lotes').where({ id_lote: ajeno.id_lote }).forUpdate().first();
+      });
+      expect(libre).toMatchObject({ cantidad_disponible: 3 });
+    } finally {
+      await trx.rollback();
+    }
+  });
+
+  it('el 404 del lote ajeno va antes que el 409 del saldo: la referencia inválida se informa aunque tampoco haya stock', async () => {
+    /* Una referencia que no existe es el primer error que el cliente debe corregir. */
+    const ajeno = await sembrarLote('X', null, 3, { idProducto: 6 });
+    expect(await atrapar(aplicar({ tipo: 'SALIDA', cantidad: 99, idLote: ajeno.id_lote }))).toMatchObject({ status: 404, codigo: 'NO_EXISTE' });
+  });
+
+  it('si un lote falla a mitad del FEFO (invariante roto), la transacción se deshace ENTERA: ni el saldo ni ningún lote cambian', async () => {
+    /* La segunda resta «no se aplica»: el motor no puede seguir con el plan a medias y lanza un error interno. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    await sembrarLote('A', '2027-01-31', 3);
+    await sembrarLote('B', '2027-02-28', 3);
+    const real = loteRepository.ajustar;
+    jest.spyOn(loteRepository, 'ajustar').mockImplementationOnce(real).mockImplementationOnce(async () => undefined);
+    const error = await atrapar(aplicar({ tipo: 'SALIDA', cantidad: 5 }));
+    expect(error).not.toBeInstanceOf(AppError);
+    expect(error).toBeInstanceOf(Error);
+    expect(await saldoDe()).toBe(10);
+    expect(await lotesDe()).toEqual({ A: 3, B: 3 });
+    expect(await kardex()).toEqual([]);
+  });
+});
+

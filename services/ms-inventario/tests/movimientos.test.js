@@ -287,19 +287,7 @@ describe('POST /movimientos: validación del cuerpo (422)', () => {
     expect(await movimientos()).toEqual([]);
   });
 
-  describe('lotes (D26: llegan en la Tarea 8)', () => {
-    it.each([
-      ['id_lote', { id_lote: 1 }, ['id_lote']],
-      ['id_lote null', { id_lote: null }, ['id_lote']],
-      ['lote', { lote: { codigo_lote: 'L1', fecha_vencimiento: '2027-01-01' } }, ['lote']],
-      ['id_lote y lote', { id_lote: 1, lote: { codigo_lote: 'L1', fecha_vencimiento: '2027-01-01' } }, ['id_lote', 'lote']],
-    ])('un cuerpo con %s → 422 DATOS_NO_VALIDOS sobre ese campo, sin llamar al catálogo ni escribir', async (_caso, extra, campos) => {
-      await control();
-      datosNoValidos(await post(entrada(extra)), campos);
-      catalogoSinLlamadas();
-      expect(await movimientos()).toHaveLength(1);
-    });
-  });
+  // Los lotes (id_lote, lote: D27) se prueban en movimientosLotes.test.js.
 
   it.each([
     ['__proto__ en el cuerpo', '{"__proto__":{"tipo":"ENTRADA"},"tipo":"ENTRADA","id_producto":5,"id_bodega":1,"cantidad":1}'],
@@ -457,7 +445,7 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
       const primera = await post(entrada(), ADM, 'k1');
       clients.catalogo.obtenerProducto.mockClear();
       await db('bodegas').where({ id_bodega: b1 }).update({ activa: false });
-      for (const cuerpo of [{}, entrada({ cantidad: -5 }), entrada({ tipo: 'CARGA_INICIAL' }), entrada({ id_lote: 1 }), [1]]) {
+      for (const cuerpo of [{}, entrada({ cantidad: -5 }), entrada({ tipo: 'CARGA_INICIAL' }), entrada({ id_lote: 0 }), [1]]) {
         const res = await post(cuerpo, ADM, 'k1');
         expect({ estado: res.status, cuerpo: res.body }).toEqual({ estado: 200, cuerpo: primera.body });
       }

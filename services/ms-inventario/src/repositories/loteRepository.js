@@ -54,12 +54,19 @@ async function buscarPorCodigo(dbOrTrx, { idBodega, idProducto, codigoLote }) {
 }
 
 /**
- * Toma un lote por su id con `SELECT … FOR UPDATE` (bloqueado hasta el fin de la transacción). No filtra por bodega ni producto:
- * el motor comprueba que sean los del movimiento (404 si no). Debe llamarse con una transacción.
- * @returns {Promise<Lote|undefined>}
+ * Toma un lote por su id con `SELECT … FOR UPDATE` (bloqueado hasta el fin de la transacción). Debe llamarse con una transacción.
+ * Con `idBodega` e `idProducto` solo encuentra (y solo BLOQUEA) el lote si es de ese par: el motor siempre los pasa. Así nunca
+ * toma un lote de otro (producto, bodega) cuyo saldo no tiene bloqueado; si lo hiciera, un traslado que ya tuviera ese par y
+ * esperara el saldo de este movimiento cerraría un ciclo de esperas (interbloqueo, 40P01). La pertenencia de un lote a su par
+ * nunca cambia (ninguna sentencia actualiza id_bodega ni id_producto), así que filtrar en el mismo SELECT es seguro.
+ * @param {{idBodega?: number, idProducto?: number}} [par] si se omite, no filtra
+ * @returns {Promise<Lote|undefined>} undefined si no existe o no es de ese par
  */
-async function bloquearPorId(trx, idLote) {
-  return trx(TABLA).select(COLUMNAS).where({ id_lote: idLote }).forUpdate().first();
+async function bloquearPorId(trx, idLote, { idBodega, idProducto } = {}) {
+  const consulta = trx(TABLA).select(COLUMNAS).where({ id_lote: idLote });
+  if (idBodega !== undefined) consulta.where({ id_bodega: idBodega });
+  if (idProducto !== undefined) consulta.where({ id_producto: idProducto });
+  return consulta.forUpdate().first();
 }
 
 /**
