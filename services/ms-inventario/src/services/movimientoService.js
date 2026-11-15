@@ -1,9 +1,11 @@
-const { TIPOS, TIPOS_PERMITIDOS_POR_API } = require('../domain/tipos');
-const { e } = require('../errors');
+const { TIPOS, TIPOS_PERMITIDOS_POR_API, evaluaUmbral } = require('../domain/tipos');
+const { describirError, e } = require('../errors');
 const { headersDe } = require('../clients/propagacion');
 const { ENTERO_MAXIMO, cuerpoObjeto, entero, enumerado, texto, validarCampos } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
 const movimientoRepository = require('../repositories/movimientoRepository');
+const saldoRepository = require('../repositories/saldoRepository');
+const umbralRepository = require('../repositories/umbralRepository');
 const stockService = require('./stockService');
 
 // Lógica de negocio de POST /movimientos (RF04, RF10, RNF17; RNF13): idempotencia por usuario, validación del cuerpo, permisos,
@@ -122,6 +124,48 @@ async function resolverFallo(db, almacenada, error) {
   throw error;
 }
 
+// Un logger roto no puede hacer que el aviso de stock bajo lance: nunca debe cambiar la respuesta del movimiento.
+function registrarFallo(logger, registro) {
+  try {
+    logger.error(registro);
+  } catch {
+    // se ignora: registrar es secundario
+  }
+}
+
+/**
+ * Aviso de stock bajo (D13; llamada 3 de la Tabla 2, «aviso»). Se llama DESPUÉS del commit, con la conexión normal (nunca con
+ * la transacción): lee el umbral del producto y el total de TODAS las bodegas y, si el total es ESTRICTAMENTE menor que la
+ * cantidad mínima, avisa a ms-notificaciones SIN esperar respuesta (el contrato lo dice así; esperar añadiría hasta 3 s al
+ * movimiento con ms-notificaciones colgado).
+ * - No se evalúa tras TRASLADO_SALIDA, TRASLADO_ENTRADA ni CARGA_INICIAL (tipos.evaluaUmbral).
+ * - NUNCA rechaza: un fallo de la lectura o del aviso (también síncrono, o una promesa que rechaza) solo se registra con
+ *   logger.error; el movimiento ya está guardado y su respuesta no cambia. Las Tareas 9–13 la llaman igual tras su commit
+ *   (p. ej. la aprobación de un conteo, una vez por AJUSTE).
+ * @param {{db: object, clients: {notificaciones: object}, logger: object}} deps
+ * @param {{tipo: string, idProducto: number, idBodega: number, identity: object}} movimiento la bodega es la del movimiento
+ *   (va en el aviso); el total es el de todas
+ * @returns {Promise<void>} se resuelve tras las lecturas, sin esperar el aviso
+ */
+async function evaluarUmbral({ db, clients, logger }, { tipo, idProducto, idBodega, identity }) {
+  const fallo = (mensaje) => (error) => registrarFallo(logger, { mensaje, id_producto: idProducto, id_bodega: idBodega, error: describirError(error) });
+  try {
+    if (!evaluaUmbral(tipo)) return;
+    const umbral = await umbralRepository.findByProducto(db, idProducto);
+    if (!umbral) return;
+    const cantidadTotal = await saldoRepository.totalPorProducto(db, idProducto);
+    if (!(cantidadTotal < umbral.cantidad_minima)) return;
+    const aviso = clients.notificaciones.notificarStockBajo(
+      { idProducto, idBodega, cantidadTotal, cantidadMinima: umbral.cantidad_minima },
+      headersDe(identity),
+    );
+    // Sin await. El cliente real nunca rechaza, pero un rechazo sin manejar tumbaría el proceso: el catch no sobra.
+    Promise.resolve(aviso).catch(fallo('No se pudo avisar el stock bajo a ms-notificaciones'));
+  } catch (error) {
+    fallo('No se pudo evaluar el umbral de stock tras el movimiento')(error);
+  }
+}
+
 /**
  * Registra un movimiento por POST /movimientos. Orden (cada paso decide antes que el siguiente):
  * 1. requireUser: sin X-User-Id → 401 (D8, D22).
@@ -133,11 +177,13 @@ async function resolverFallo(db, almacenada, error) {
  * 6. Catálogo: GET /productos/{id} (llamada 1); null → 404, sin respuesta → 503. Se llama SIN ninguna conexión tomada.
  * 7. Transacción con el motor (bloqueo, saldo, movimiento). Los errores no se guardan: no dejan clave y un reintento con la
  *    misma clave se vuelve a ejecutar.
+ * 8. Tras el commit, el umbral (evaluarUmbral), que nunca cambia el 201. Una repetición no vuelve a avisar.
  * @param {{db: object, clients: {catalogo: object}, logger: object}} deps
  * @param {{body: unknown, claveIdempotencia: string|undefined, identity: object}} peticion
  * @returns {Promise<{movimiento: Movimiento, replayed: boolean}>}
  */
-async function registrarMovimiento({ db, clients }, { body, claveIdempotencia, identity }) {
+async function registrarMovimiento(deps, { body, claveIdempotencia, identity }) {
+  const { db, clients } = deps;
   requireUser(identity);
   const almacenada = claveAlmacenada(identity.idUsuario, leerClaveIdempotencia(claveIdempotencia));
 
@@ -152,14 +198,16 @@ async function registrarMovimiento({ db, clients }, { body, claveIdempotencia, i
   // INACTIVO en el catálogo se acepta: el contrato solo exige que exista.
   if (!producto) throw e.noExiste('El producto no existe');
 
+  let movimiento;
   try {
-    const movimiento = await db.transaction((trx) => stockService.aplicarMovimiento(trx, {
+    movimiento = await db.transaction((trx) => stockService.aplicarMovimiento(trx, {
       ...datos, claveIdempotencia: almacenada, idUsuario: identity.idUsuario,
     }));
-    return { movimiento, replayed: false };
   } catch (error) {
     return { movimiento: await resolverFallo(db, almacenada, error), replayed: true };
   }
+  await evaluarUmbral(deps, { tipo: movimiento.tipo, idProducto: movimiento.id_producto, idBodega: movimiento.id_bodega, identity });
+  return { movimiento, replayed: false };
 }
 
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
@@ -169,4 +217,6 @@ function crearMovimientoService(deps = {}) {
   };
 }
 
-module.exports = { LARGO_MAXIMO_CLAVE, claveAlmacenada, leerClaveIdempotencia, registrarMovimiento, crearMovimientoService };
+module.exports = {
+  LARGO_MAXIMO_CLAVE, claveAlmacenada, leerClaveIdempotencia, registrarMovimiento, evaluarUmbral, crearMovimientoService,
+};

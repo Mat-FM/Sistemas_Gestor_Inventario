@@ -2,7 +2,8 @@ const tipos = require('../src/domain/tipos');
 const stockService = require('../src/services/stockService');
 const { buildTestApp } = require('./helpers/app');
 const { truncateAll } = require('./helpers/db');
-const { crearBodega, crearSaldo, fakeCatalogo, headers } = require('./helpers/fixtures');
+const umbralRepository = require('../src/repositories/umbralRepository');
+const { crearBodega, crearSaldo, crearUmbral, fakeCatalogo, headers } = require('./helpers/fixtures');
 const { ISO_8601, datosNoValidos, esError, recursoNoExiste } = require('./helpers/respuestas');
 
 // POST /movimientos de la Tabla 9 (RF04, RF10, RNF17) de punta a punta, contra PostgreSQL real y con clientes falsos. El motor
@@ -38,6 +39,8 @@ beforeEach(async () => {
   b2 = (await crearBodega(db, { codigo: 'B2' })).id_bodega;
   clients.catalogo.obtenerProducto.mockClear();
   catalogoCaido.obtenerProducto.mockClear();
+  // Cada prueba parte del doble por defecto: un aviso que se resuelve sin hacer nada.
+  clients.notificaciones.notificarStockBajo.mockReset().mockResolvedValue(undefined);
   logger.error.mockClear();
 });
 afterEach(() => jest.restoreAllMocks());
@@ -545,6 +548,117 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual(primera.body);
       expect(await saldoDe()).toBe(10); // la transacción que perdió deshizo su saldo
+    });
+  });
+});
+
+describe('POST /movimientos: aviso de stock bajo (D13)', () => {
+  const aviso = () => clients.notificaciones.notificarStockBajo;
+  const salida = (cantidad, idBodega = b1) => ({ tipo: 'SALIDA', id_producto: 5, id_bodega: idBodega, cantidad });
+
+  it('umbral 5: la SALIDA que deja el total en 5 no avisa; la que lo deja en 4 avisa UNA vez con los datos exactos y las cabeceras de propagación', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 5 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 6 });
+    expect((await post(salida(1))).status).toBe(201); // total 5 = mínimo: no es «por debajo»
+    expect(aviso()).not.toHaveBeenCalled();
+    const res = await post(salida(1), { ...ADM, 'X-Request-Id': 'req-aviso' });
+    expect(res.status).toBe(201);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+    expect(aviso()).toHaveBeenCalledWith(
+      { idProducto: 5, idBodega: b1, cantidadTotal: 4, cantidadMinima: 5 },
+      { 'X-Request-Id': 'req-aviso', 'X-User-Id': '7', 'X-User-Rol': 'ADMINISTRADOR' },
+    );
+  });
+
+  it('el umbral suma TODAS las bodegas: 3 + 3 y 3 + 2 contra mínimo 5 no avisan; 3 + 1 = 4 sí, con cantidadTotal 4', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 5 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 4 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 3 });
+    expect((await post(salida(1))).status).toBe(201); // 3 + 3 = 6
+    expect(aviso()).not.toHaveBeenCalled();
+    expect((await post(salida(1, b2))).status).toBe(201); // 3 + 2 = 5
+    expect(aviso()).not.toHaveBeenCalled();
+    expect((await post(salida(1, b2))).status).toBe(201); // 3 + 1 = 4 < 5, aunque la bodega b2 sola tenga 1
+    expect(aviso()).toHaveBeenCalledTimes(1);
+    expect(aviso().mock.calls[0][0]).toEqual({ idProducto: 5, idBodega: b2, cantidadTotal: 4, cantidadMinima: 5 });
+  });
+
+  it('sin umbral no avisa nunca, ni con el saldo en 0', async () => {
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 1 });
+    expect((await post(salida(1))).status).toBe(201);
+    expect(aviso()).not.toHaveBeenCalled();
+  });
+
+  it('un umbral de 0 no avisa nunca (nada es menor que 0)', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 0 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 1 });
+    expect((await post(salida(1))).status).toBe(201);
+    expect(aviso()).not.toHaveBeenCalled();
+  });
+
+  it('se evalúa tras CADA movimiento (D13): una ENTRADA o un AJUSTE que dejan el total aún bajo el mínimo también avisan', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 50 });
+    expect((await post(entrada({ cantidad: 10 }))).status).toBe(201);
+    expect((await post(entrada({ tipo: 'AJUSTE', cantidad: -1 }))).status).toBe(201);
+    expect(aviso().mock.calls.map(([datos]) => datos.cantidadTotal)).toEqual([10, 9]);
+  });
+
+  it('solo avisa del producto del movimiento: el umbral de otro producto no cuenta', async () => {
+    await crearUmbral(db, { idProducto: 6, cantidadMinima: 100 });
+    await crearSaldo(db, { idProducto: 6, idBodega: b1, cantidad: 1 });
+    expect((await post(entrada())).status).toBe(201);
+    expect(aviso()).not.toHaveBeenCalled();
+  });
+
+  it('una repetición (200) no vuelve a avisar, ni un rechazo (409)', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 50 });
+    await post(entrada(), ADM, 'k1');
+    expect(aviso()).toHaveBeenCalledTimes(1);
+    expect((await post(entrada(), ADM, 'k1')).status).toBe(200);
+    stockInsuficiente(await post(salida(99)), 10, 99);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+  });
+
+  it('el aviso NO se espera: con ms-notificaciones colgado (una promesa que nunca se resuelve) el movimiento responde 201', async () => {
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 50 });
+    aviso().mockReturnValue(new Promise(() => {}));
+    const res = await post(entrada());
+    expect(res.status).toBe(201);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+  });
+
+  describe('un fallo del aviso o de la lectura del umbral no cambia el 201 (se registra y nunca se propaga)', () => {
+    const descripcion = expect.objectContaining({ nombre: 'Error', mensaje: expect.any(String), pila: expect.any(String) });
+
+    beforeEach(() => crearUmbral(db, { idProducto: 5, cantidadMinima: 50 }));
+
+    it('ms-notificaciones RECHAZA → 201, el fallo queda registrado y el rechazo tiene manejador (ningún unhandledRejection)', async () => {
+      // Dentro del sandbox de Jest `process.on('unhandledRejection')` no recibe nada (Jest intercepta esos rechazos y hace
+      // fallar la prueba en curso). Por eso se comprueba directamente que la promesa rechazada recibe un manejador de rechazo.
+      const rechazada = Promise.reject(new Error('ms-notificaciones caído'));
+      const then = jest.spyOn(rechazada, 'then');
+      aviso().mockReturnValue(rechazada);
+      const res = await post(entrada());
+      expect(res.status).toBe(201);
+      await new Promise((resolver) => setImmediate(resolver));
+      expect(then.mock.calls.some(([, alRechazar]) => typeof alRechazar === 'function')).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ mensaje: expect.any(String), id_producto: 5, id_bodega: b1, error: expect.objectContaining({ mensaje: 'ms-notificaciones caído' }) }));
+      expect(await saldoDe()).toBe(10);
+    });
+
+    it('ms-notificaciones LANZA de forma síncrona → 201 y registrado', async () => {
+      aviso().mockImplementation(() => { throw new Error('fallo síncrono'); });
+      expect((await post(entrada())).status).toBe(201);
+      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ id_producto: 5, error: descripcion }));
+    });
+
+    it('la lectura del umbral falla → 201, registrado con { nombre, mensaje, pila } y sin aviso', async () => {
+      jest.spyOn(umbralRepository, 'findByProducto').mockRejectedValue(new Error('lectura rota'));
+      const res = await post(entrada());
+      expect(res.status).toBe(201);
+      expect(await saldoDe()).toBe(10);
+      expect(aviso()).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ mensaje: expect.any(String), id_producto: 5, id_bodega: b1, error: expect.objectContaining({ nombre: 'Error', mensaje: 'lectura rota', pila: expect.any(String) }) }));
     });
   });
 });

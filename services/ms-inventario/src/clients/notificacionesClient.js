@@ -1,3 +1,4 @@
+const { describirError } = require('../errors');
 const { logger: loggerPorDefecto } = require('../logger');
 const { soloPropagables } = require('./propagacion');
 
@@ -5,16 +6,6 @@ const { soloPropagables } = require('./propagacion');
 // el destino falla solo se anota en el registro: un fallo de notificaciones nunca debe impedir registrar un movimiento (D13).
 
 const MENSAJE_FALLO = 'No se pudo avisar el stock bajo a ms-notificaciones';
-
-/** Descripción de un error para el registro: un Error crudo saldría como {} al serializarlo a JSON. */
-function describir(err) {
-  if (err instanceof Error) return { nombre: err.name, mensaje: err.message, pila: err.stack };
-  try {
-    return { nombre: typeof err, mensaje: String(err) };
-  } catch {
-    return { nombre: typeof err, mensaje: 'no se pudo describir el error' };
-  }
-}
 
 function armarMensaje({ idProducto, idBodega, cantidadTotal, cantidadMinima }) {
   const queda = cantidadTotal === 1 ? 'queda 1 unidad' : `quedan ${cantidadTotal} unidades`;
@@ -62,7 +53,7 @@ function createNotificacionesClient(client, logger = loggerPorDefecto) {
         registrar({ mensaje: MENSAJE_FALLO, id_producto: datos.idProducto, id_bodega: datos.idBodega, estado: status });
       }
     } catch (err) {
-      registrar({ mensaje: MENSAJE_FALLO, id_producto: datos?.idProducto, id_bodega: datos?.idBodega, error: describir(err) });
+      registrar({ mensaje: MENSAJE_FALLO, id_producto: datos?.idProducto, id_bodega: datos?.idBodega, error: describirError(err) });
     }
   }
 

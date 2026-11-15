@@ -22,6 +22,17 @@ const TIPOS_PERMITIDOS_POR_API = Object.freeze([
   'ENTRADA', 'SALIDA', 'AJUSTE', 'DEVOLUCION_CLIENTE', 'ENTRADA_COMPRA', 'DEVOLUCION_PROVEEDOR',
 ]);
 
+/**
+ * Tipos tras los que NO se evalúa el umbral de stock mínimo (D13): en un traslado la mercancía está en tránsito y no es una baja
+ * real, y la carga inicial solo suma stock.
+ */
+const TIPOS_SIN_AVISO_DE_UMBRAL = Object.freeze(['TRASLADO_SALIDA', 'TRASLADO_ENTRADA', 'CARGA_INICIAL']);
+
+/** ¿Se evalúa el umbral tras un movimiento de este tipo? Un tipo desconocido no se evalúa. */
+function evaluaUmbral(tipo) {
+  return TIPOS.includes(tipo) && !TIPOS_SIN_AVISO_DE_UMBRAL.includes(tipo);
+}
+
 const SUMAN = Object.freeze(['ENTRADA', 'DEVOLUCION_CLIENTE', 'ENTRADA_COMPRA', 'TRASLADO_ENTRADA', 'CARGA_INICIAL']);
 const RESTAN = Object.freeze(['SALIDA', 'DEVOLUCION_PROVEEDOR', 'TRASLADO_SALIDA']);
 
@@ -45,4 +56,4 @@ function delta(tipo, cantidad) {
   throw new TypeError('El tipo de movimiento no es válido');
 }
 
-module.exports = { TIPOS, TIPOS_PERMITIDOS_POR_API, delta };
+module.exports = { TIPOS, TIPOS_PERMITIDOS_POR_API, TIPOS_SIN_AVISO_DE_UMBRAL, delta, evaluaUmbral };

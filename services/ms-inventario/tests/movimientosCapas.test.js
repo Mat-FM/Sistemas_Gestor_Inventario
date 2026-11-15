@@ -3,7 +3,8 @@ const movimientoRepository = require('../src/repositories/movimientoRepository')
 const movimientoService = require('../src/services/movimientoService');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
-const { crearBodega, fakeCatalogo } = require('./helpers/fixtures');
+const { TIPOS, TIPOS_PERMITIDOS_POR_API } = require('../src/domain/tipos');
+const { crearBodega, crearSaldo, crearUmbral, fakeCatalogo, fakeNotificaciones } = require('./helpers/fixtures');
 
 // Las capas de movimientos por separado (RNF13): el repositorio contra PostgreSQL real y el servicio llamado sin HTTP. El motor
 // está en stock.test.js y el comportamiento de punta a punta en movimientos.test.js.
@@ -215,5 +216,102 @@ describe('movimientoService', () => {
       expect(() => { resultado = movimientoService.registrarMovimiento(deps({ obtenerProducto: () => { throw falla; } }), peticion()); }).not.toThrow();
       await expect(resultado).rejects.toBe(falla);
     });
+  });
+});
+
+describe('movimientoService.evaluarUmbral (D13)', () => {
+  const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
+  let notificaciones;
+  let logger;
+  const deps = () => ({ db, clients: { notificaciones }, logger });
+  const evaluar = (tipo, extra = {}) => movimientoService.evaluarUmbral(deps(), { tipo, idProducto: 5, idBodega: b1, identity: IDENTIDAD, ...extra });
+
+  beforeEach(async () => {
+    notificaciones = fakeNotificaciones();
+    logger = { info: jest.fn(), error: jest.fn() };
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 10 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 4 });
+  });
+
+  it.each(TIPOS_PERMITIDOS_POR_API)('tras un %s con el total bajo el mínimo avisa con los datos exactos', async (tipo) => {
+    await expect(evaluar(tipo)).resolves.toBeUndefined();
+    expect(notificaciones.notificarStockBajo).toHaveBeenCalledWith(
+      { idProducto: 5, idBodega: b1, cantidadTotal: 4, cantidadMinima: 10 },
+      { 'X-Request-Id': 'r1', 'X-User-Id': '7', 'X-User-Rol': 'ADMINISTRADOR' },
+    );
+  });
+
+  it.each(['TRASLADO_SALIDA', 'TRASLADO_ENTRADA', 'CARGA_INICIAL'])('tras un %s NO se evalúa: ni lee la base ni avisa (mercancía en tránsito o solo suma)', async (tipo) => {
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      await evaluar(tipo);
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas).toEqual([]);
+    expect(notificaciones.notificarStockBajo).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('cubre los nueve tipos: los tres excluidos y los seis de la API', () => {
+    expect([...TIPOS_PERMITIDOS_POR_API, 'TRASLADO_SALIDA', 'TRASLADO_ENTRADA', 'CARGA_INICIAL'].sort()).toEqual([...TIPOS].sort());
+  });
+
+  it('un tipo desconocido no avisa', async () => {
+    await evaluar('REGALO');
+    expect(notificaciones.notificarStockBajo).not.toHaveBeenCalled();
+  });
+
+  it('compara con < estricto: total igual al mínimo no avisa', async () => {
+    await db('umbrales_producto').update({ cantidad_minima: 4 });
+    await evaluar('SALIDA');
+    expect(notificaciones.notificarStockBajo).not.toHaveBeenCalled();
+  });
+
+  it('usa el total de TODAS las bodegas, no el de la bodega del movimiento', async () => {
+    const b2 = (await crearBodega(db, { codigo: 'B2' })).id_bodega;
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 5 });
+    await evaluar('SALIDA');
+    expect(notificaciones.notificarStockBajo.mock.calls[0][0]).toMatchObject({ idBodega: b1, cantidadTotal: 9 });
+    await crearSaldo(db, { idProducto: 5, idBodega: (await crearBodega(db, { codigo: 'B3' })).id_bodega, cantidad: 1 });
+    notificaciones.notificarStockBajo.mockClear();
+    await evaluar('SALIDA');
+    expect(notificaciones.notificarStockBajo).not.toHaveBeenCalled(); // 4 + 5 + 1 = 10
+  });
+
+  it('no espera el aviso: resuelve aunque la promesa del aviso no termine nunca', async () => {
+    notificaciones.notificarStockBajo.mockReturnValue(new Promise(() => {}));
+    await expect(evaluar('SALIDA')).resolves.toBeUndefined();
+    expect(notificaciones.notificarStockBajo).toHaveBeenCalledTimes(1);
+  });
+
+  it('nunca rechaza: un fallo de la lectura se registra con { nombre, mensaje, pila }', async () => {
+    const roto = Object.assign(() => { throw new TypeError('db roto'); }, { raw: () => {} });
+    await expect(movimientoService.evaluarUmbral({ db: roto, clients: { notificaciones }, logger }, { tipo: 'SALIDA', idProducto: 5, idBodega: b1, identity: IDENTIDAD })).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({
+      mensaje: expect.any(String), id_producto: 5, id_bodega: b1, error: { nombre: 'TypeError', mensaje: 'db roto', pila: expect.any(String) },
+    }));
+    expect(notificaciones.notificarStockBajo).not.toHaveBeenCalled();
+  });
+
+  it('nunca rechaza: ni con un logger que también lanza', async () => {
+    const lanzador = { info() {}, error() { throw new Error('logger roto'); } };
+    notificaciones.notificarStockBajo.mockImplementation(() => { throw new Error('aviso roto'); });
+    await expect(movimientoService.evaluarUmbral({ db, clients: { notificaciones }, logger: lanzador }, { tipo: 'SALIDA', idProducto: 5, idBodega: b1, identity: IDENTIDAD })).resolves.toBeUndefined();
+  });
+
+  it('un aviso que rechaza se registra (sin unhandledRejection)', async () => {
+    notificaciones.notificarStockBajo.mockRejectedValue('texto rechazado');
+    await evaluar('SALIDA');
+    await new Promise((resolver) => setImmediate(resolver));
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ id_producto: 5, error: { nombre: 'string', mensaje: 'texto rechazado' } }));
+  });
+
+  it('lee después del commit con la conexión normal: ve el saldo confirmado', async () => {
+    await db('saldos').update({ cantidad_disponible: 2 });
+    await evaluar('SALIDA');
+    expect(notificaciones.notificarStockBajo.mock.calls[0][0].cantidadTotal).toBe(2);
   });
 });

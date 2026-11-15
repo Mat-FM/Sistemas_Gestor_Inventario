@@ -36,8 +36,8 @@ async function list(dbOrTrx, { idProducto, idBodega, limit, offset }) {
 }
 
 /**
- * Suma de `cantidad_disponible` de un producto en todas las bodegas. La usa el motor de movimientos (Tarea 7) para comparar con
- * el umbral tras escribir el saldo, dentro de su transacción.
+ * Suma de `cantidad_disponible` de un producto en todas las bodegas. La usa movimientoService.evaluarUmbral para comparar con
+ * el umbral DESPUÉS del commit del movimiento, con la conexión normal (D13).
  * @returns {Promise<number>} 0 si el producto no tiene ninguna fila de saldos
  */
 async function totalPorProducto(dbOrTrx, idProducto) {

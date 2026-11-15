@@ -1,4 +1,4 @@
-const { AppError, e } = require('../errors');
+const { AppError, describirError, e } = require('../errors');
 const { cuerpoError } = require('../http/cuerpoError');
 const { rutaDe } = require('../http/peticion');
 
@@ -30,16 +30,6 @@ function traducir(err) {
   return { status: 500, cuerpo: cuerpoError('ERROR_INTERNO', MENSAJE_500) };
 }
 
-// Descripción del error para el registro del servidor (nunca para la respuesta).
-function describir(err) {
-  if (err instanceof Error) return { nombre: err.name, mensaje: err.message, pila: err.stack };
-  try {
-    return { nombre: typeof err, mensaje: String(err) };
-  } catch {
-    return { nombre: typeof err, mensaje: 'no se pudo describir el error' };
-  }
-}
-
 /**
  * Manejador de errores de Express (4 parámetros). En Express 5 los rechazos de promesas de un handler llegan solos aquí.
  * Todo 5xx se registra con el request_id de la petición; los 4xx no (ya los cubre la línea de requestLog).
@@ -56,7 +46,7 @@ function crearErrorHandler({ logger }) {
         ruta: rutaDe(req),
         estado: status,
         codigo: cuerpo.error.codigo,
-        error: describir(err),
+        error: describirError(err),
       });
     }
 

@@ -30,4 +30,18 @@ const e = {
   noDisponible: (mensaje = 'El servicio no está disponible') => new AppError(503, 'SERVICIO_NO_DISPONIBLE', mensaje),
 };
 
-module.exports = { AppError, e };
+/**
+ * Descripción de un error para el REGISTRO del servidor (nunca para una respuesta): un Error crudo saldría como {} al
+ * serializarlo a JSON. Nunca lanza, ni con un valor cuyo String() lance.
+ * @returns {{nombre: string, mensaje: string, pila?: string}}
+ */
+function describirError(err) {
+  if (err instanceof Error) return { nombre: err.name, mensaje: err.message, pila: err.stack };
+  try {
+    return { nombre: typeof err, mensaje: String(err) };
+  } catch {
+    return { nombre: typeof err, mensaje: 'no se pudo describir el error' };
+  }
+}
+
+module.exports = { AppError, e, describirError };
