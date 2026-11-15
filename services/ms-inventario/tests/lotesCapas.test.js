@@ -5,6 +5,7 @@ const { esperarBloqueo } = require('./helpers/bloqueos');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote } = require('./helpers/fixtures');
+const { AGOTADO, esperarConPlazo } = require('./helpers/hijos');
 
 // Las capas de lotes por separado (RNF13): el repositorio contra PostgreSQL real (el SQL de las entradas a un lote (upsert), de
 // los bloqueos (FOR UPDATE), de las restas y de la consulta) y el servicio llamado sin HTTP. Las reglas (D27) están en el motor
@@ -433,8 +434,8 @@ describe('loteRepository.listarConExistencia (la lectura de la sugerencia: FEFO 
     const uno = await sembrar('L1', '2027-01-31', 3);
     await conTransaccionAbierta((trx) => loteRepository.listarParaFefo(trx, par()), async () => {
       expect(await estaBloqueado(uno.id_lote)).toBe(true); // control: de verdad están bloqueados
-      const lista = await Promise.race([loteRepository.listarConExistencia(db, par()), new Promise((resolver) => { setTimeout(() => resolver('esperó'), 2000); })]);
-      expect(lista).not.toBe('esperó');
+      const lista = await esperarConPlazo(loteRepository.listarConExistencia(db, par()), 2000);
+      expect(lista).not.toBe(AGOTADO); // si falla, el cierre de conTransaccionAbierta libera los candados y la lectura termina sola
       expect(lista.map((l) => l.id_lote)).toEqual([uno.id_lote]);
     });
   });

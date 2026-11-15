@@ -28,8 +28,8 @@ describe('base de pruebas real (PostgreSQL)', () => {
   describe('columnas date como texto YYYY-MM-DD (Ruling 15)', () => {
     // Sin el parser, `pg` crea un Date a medianoche LOCAL y JSON.stringify lo pasa a UTC: en un huso adelantado a UTC la fecha
     // retrocede un día. Se prueba en procesos hijos con el huso fijado, para no depender del de la máquina que corre la suite.
-    const { execFile } = require('node:child_process');
     const path = require('node:path');
+    const { ejecutarHijo } = require('./helpers/hijos');
     const HIJO = `
       const pg = require('pg');
       const { createTestDb } = require(${JSON.stringify(path.join(__dirname, 'helpers', 'db.js'))});
@@ -48,12 +48,8 @@ describe('base de pruebas real (PostgreSQL)', () => {
         }
       })().catch((error) => { process.stderr.write(String(error && error.stack)); process.exit(1); });
     `;
-    const enHuso = (tz) => new Promise((resolver, rechazar) => {
-      execFile(process.execPath, ['-e', HIJO], { env: { ...process.env, TZ: tz }, cwd: path.join(__dirname, '..') }, (error, stdout, stderr) => {
-        if (error) rechazar(new Error(`${error.message}\n${stderr}`));
-        else resolver(JSON.parse(stdout));
-      });
-    });
+    // Con plazo propio (ejecutarHijo): si la base no responde, el hijo muere a los 20 s y la prueba falla con un mensaje claro.
+    const enHuso = async (tz) => JSON.parse((await ejecutarHijo(['-e', HIJO], { env: { ...process.env, TZ: tz }, cwd: path.join(__dirname, '..') })).stdout);
 
     it('una columna date llega como el texto exacto de la base, no como Date (y null sigue siendo null)', async () => {
       const { rows: [fila] } = await db.raw("SELECT '2027-01-31'::date AS vence, NULL::date AS nula");

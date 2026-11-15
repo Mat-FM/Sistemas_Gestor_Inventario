@@ -3,6 +3,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { iniciar } = require('../src/server');
 const { entornoValido } = require('./helpers/app');
+const { PLAZO_HIJO_MS } = require('./helpers/hijos');
 
 // Arranque del servicio: la función iniciar (con `salir` inyectado) y el proceso real (node src/server.js).
 
@@ -156,18 +157,29 @@ describe('proceso real: node src/server.js', () => {
     ...extra,
   });
 
-  function lanzar(env) {
+  // Lanza `node src/server.js` con un plazo propio de `plazoMs` desde que nace (menos que el de las pruebas de Jest, 30 s): si
+  // el hijo no ha cerrado para entonces se le manda SIGKILL y `cierre` RECHAZA con un mensaje claro, en vez de dejar al proceso
+  // vivo y a la prueba esperando. El temporizador se cancela cuando el hijo cierra.
+  function lanzar(env, { plazoMs = PLAZO_HIJO_MS } = {}) {
     const hijo = spawn(process.execPath, ['src/server.js'], { cwd: RAIZ, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const resultado = { stdout: '', stderr: '', codigo: undefined, senal: undefined };
+    let agotado = false;
+    const temporizador = setTimeout(() => {
+      agotado = true;
+      hijo.kill('SIGKILL');
+    }, plazoMs);
     hijo.stdout.on('data', (trozo) => { resultado.stdout += trozo; });
     hijo.stderr.on('data', (trozo) => { resultado.stderr += trozo; });
-    resultado.cierre = new Promise((resolver) => {
+    resultado.cierre = new Promise((resolver, rechazar) => {
       hijo.on('close', (codigo, senal) => {
+        clearTimeout(temporizador);
         resultado.codigo = codigo;
         resultado.senal = senal;
-        resolver(resultado);
+        if (agotado) rechazar(new Error(`El proceso hijo no terminó en ${plazoMs} ms y se mató con SIGKILL. stdout: ${resultado.stdout} stderr: ${resultado.stderr}`));
+        else resolver(resultado);
       });
     });
+    resultado.cierre.catch(() => {}); // si nadie la espera cuando vence el plazo, no es un rechazo sin manejar
     resultado.hijo = hijo;
     return resultado;
   }
@@ -215,5 +227,17 @@ describe('proceso real: node src/server.js', () => {
     expect(proceso.stderr).toBe('');
     const lineas = lineasDe(proceso.stdout).map((linea) => JSON.parse(linea));
     expect(lineas).toEqual([expect.objectContaining({ mensaje: 'Servidor iniciado', nivel: 'info', servicio: 'ms-inventario' })]);
+  });
+
+  it('higiene: un servidor que no cierra en su plazo se MATA y `cierre` rechaza con un mensaje claro (no queda vivo ni la prueba esperando)', async () => {
+    // El servidor de control arranca y se queda escuchando: con un plazo de 1,5 s no llega a cerrar solo.
+    const proceso = lanzar(entornoDelHijo({ CALL_TIMEOUT_MS: '3000' }), { plazoMs: 1500 });
+    try {
+      await expect(proceso.cierre).rejects.toThrow(/El proceso hijo no terminó en 1500 ms y se mató con SIGKILL/);
+      expect(proceso.senal).toBe('SIGKILL');
+      expect(() => process.kill(proceso.hijo.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' })); // ya no existe
+    } finally {
+      proceso.hijo.kill('SIGKILL');
+    }
   });
 });

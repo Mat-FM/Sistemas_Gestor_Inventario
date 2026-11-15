@@ -1,6 +1,4 @@
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
 const supertest = require('supertest');
 const { createApp } = require('../src/app');
 const loteRepository = require('../src/repositories/loteRepository');
@@ -8,6 +6,7 @@ const { buildTestApp, entornoValido } = require('./helpers/app');
 const { esperarBloqueo } = require('./helpers/bloqueos');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote, crearSaldo, fakeCatalogo, fakeNotificaciones, headers } = require('./helpers/fixtures');
+const { AGOTADO, ejecutarHijo, esperarConPlazo } = require('./helpers/hijos');
 const { datosNoValidos, esError, rutaNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
 // Los lotes (RF17): las dos consultas de la Tabla 9 de la Entrega 2, GET /lotes y GET /lotes/sugerencia-salida, de punta a punta
@@ -18,7 +17,6 @@ const { datosNoValidos, esError, rutaNoExiste, stockInsuficiente } = require('./
 const ADM = headers('ADMINISTRADOR');
 const CLAVES_LOTE = ['id_lote', 'id_producto', 'id_bodega', 'codigo_lote', 'fecha_vencimiento', 'cantidad_disponible'];
 const RAIZ = path.resolve(__dirname, '..');
-const ejecutar = promisify(execFile);
 
 let request;
 let db;
@@ -79,8 +77,6 @@ async function conLotesBloqueados(comprobar) {
     if (espera) await espera;
   }
 }
-const AGOTADO = Symbol('plazo agotado');
-const plazo = (ms) => new Promise((resolver) => { setTimeout(() => resolver(AGOTADO), ms); });
 
 describe('GET /lotes', () => {
   describe('el listado', () => {
@@ -317,7 +313,8 @@ describe('GET /lotes', () => {
           }
         })();
       `;
-      const { stdout } = await ejecutar(process.execPath, ['-e', guion, RAIZ], { env: { ...process.env, TZ: zona }, encoding: 'utf8' });
+      // Con plazo propio: si la base no responde, el hijo muere a los 20 s y la prueba falla con un mensaje claro (no a los 60 s de Knex).
+      const { stdout } = await ejecutarHijo(['-e', guion, RAIZ], { env: { ...process.env, TZ: zona } });
       const { zona: zonaReal, comoDate, filas } = JSON.parse(stdout);
       expect(zonaReal).toBe(zona); // control del arnés: el proceso hijo de verdad corre en esa zona
       // En Auckland un Date a medianoche local caería en el 30 (en UTC y en Bogotá no se nota): ese es el fallo que se descarta.
@@ -480,7 +477,7 @@ describe('GET /lotes', () => {
       await conLotesBloqueados(async () => {
         for (const query of [{}, { id_producto: 5, id_bodega: b1, con_existencia: 'true' }]) {
           const pendiente = request.get('/lotes').query(query).set(ADM).then((res) => res);
-          const res = await Promise.race([pendiente, plazo(2000)]);
+          const res = await esperarConPlazo(pendiente, 2000);
           expect(res).not.toBe(AGOTADO); // si falla, el finally libera los candados y la petición termina sola
           expect(res.status).toBe(200);
           expect(res.body.meta.total).toBe(query.id_producto === undefined ? 7 : 3);
@@ -774,7 +771,7 @@ describe('GET /lotes/sugerencia-salida', () => {
       await conLotesBloqueados(async () => {
         for (const [cantidad, estado] of [[7, 200], [11, 409]]) {
           const pendiente = sugerir({ ...PAR(), cantidad }).then((res) => res);
-          const res = await Promise.race([pendiente, plazo(2000)]);
+          const res = await esperarConPlazo(pendiente, 2000);
           expect(res).not.toBe(AGOTADO); // si falla, el finally libera los candados y la petición termina sola
           expect(res.status).toBe(estado);
         }
