@@ -85,7 +85,8 @@ async function findByClave(dbOrTrx, claveAlmacenada) {
  * puede repetirse): sin él, dos páginas seguidas podrían repetir o saltar filas. Devuelve además el total de filas del filtro,
  * no de la página. El conteo y la página son dos consultas con el mismo WHERE (`count(*) over()` daría total 0 en una página
  * fuera de rango), y un movimiento que se confirme entre las dos puede desplazar una fila entre páginas: es la limitación de
- * toda paginación por desplazamiento sobre un kardex que sigue creciendo.
+ * toda paginación por desplazamiento sobre un kardex que sigue creciendo. Sin filtros, el orden lo sirve el índice
+ * `movimientos_fecha_id_idx (fecha DESC, id_movimiento DESC)` (migración 20261115000100); con `id_producto` o `id_bodega`, los suyos.
  * @param {{idProducto?: number, idBodega?: number, idUsuario?: number, tipo?: string, fechaDesde?: string, fechaHasta?: string,
  *   limit: number, offset: number}} opciones un filtro undefined no filtra; fechaDesde y fechaHasta son `YYYY-MM-DD` ya validadas
  *   y se interpretan como días UTC (D29)

@@ -3,6 +3,10 @@ const { configDePrueba, createTestDb, prepararBaseDePrueba, truncateAll } = requ
 const { crearBodega, crearSaldo, crearLote } = require('./helpers/fixtures');
 
 const MIGRACION = '20261103000100_esquema_inventario.js';
+// D30: las migraciones aplicadas son inmutables y todo cambio de esquema va en una NUEVA. Esta lista, en orden, es la única
+// que hay que ampliar cuando se añada otra: las pruebas de migración (deshacer, volver a aplicar, huella) la usan completa.
+const MIGRACION_INDICE_KARDEX = '20261115000100_indice_kardex_por_fecha.js';
+const MIGRACIONES = [MIGRACION, MIGRACION_INDICE_KARDEX];
 
 // Las ocho tablas del modelo de datos de ms-inventario (Entrega 2, Figura 5 + D1 y D5), en orden alfabético.
 const TABLAS = ['bodegas', 'conteos', 'detalles_conteo', 'lotes', 'movimientos', 'saldos', 'traslados', 'umbrales_producto'];
@@ -110,6 +114,8 @@ const INDICES = {
   movimientos_clave_idempotencia_key: 'UNIQUE movimientos(clave_idempotencia)',
   movimientos_id_producto_fecha_idx: 'movimientos(id_producto, fecha DESC)',
   movimientos_id_bodega_fecha_idx: 'movimientos(id_bodega, fecha DESC)',
+  // Migración 20261115000100 (D30): el kardex sin filtros, del más reciente al más antiguo (GET /movimientos).
+  movimientos_fecha_id_idx: 'movimientos(fecha DESC, id_movimiento DESC)',
   umbrales_producto_pkey: 'UNIQUE umbrales_producto(id_producto)',
 };
 
@@ -530,8 +536,8 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
         expect({ tabla, filas: (await db(tabla).count({ n: '*' }).first()).n }).toEqual({ tabla, filas: 0 });
       }
       expect((await crearBodega(db, {})).id_bodega).toBe(1);
-      const migraciones = await db('knex_migrations').pluck('name');
-      expect(migraciones).toContain(MIGRACION);
+      const migraciones = await db('knex_migrations').orderBy('id').pluck('name');
+      expect(migraciones).toEqual(MIGRACIONES);
     });
   });
 
@@ -549,22 +555,35 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
     beforeAll(eliminarBaseTemporal);
     afterAll(eliminarBaseTemporal);
 
-    // Se hace en una base propia: deshacer la migración en inventario_test dejaría sin tablas a las demás suites.
-    it('sobre una base vacía crea las ocho tablas; deshacerla las quita todas; volver a aplicarla funciona; repetir `latest` no hace nada', async () => {
+    // Todo el esquema como una lista de líneas (columnas, índices y restricciones), para compararlo antes y después.
+    const huella = async (conexion) => {
+      const { rows } = await conexion.raw(
+        `SELECT 'columna' AS clase, table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '') AS valor
+           FROM information_schema.columns WHERE table_schema = 'public'
+         UNION ALL SELECT 'indice', indexdef FROM pg_indexes WHERE schemaname = 'public'
+         UNION ALL SELECT 'restriccion', conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
+           FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+         ORDER BY 1, 2`,
+      );
+      return rows.map((fila) => `${fila.clase}: ${fila.valor}`);
+    };
+
+    // Se hace en una base propia: deshacer las migraciones en inventario_test dejaría sin tablas a las demás suites.
+    it('sobre una base vacía crea las ocho tablas; deshacer todas las migraciones las quita todas; volver a aplicarlas funciona; repetir `latest` no hace nada', async () => {
       await prepararBaseDePrueba(entorno());
       const temporal = createTestDb(entorno());
       try {
         expect(await tablasDeDatos(temporal)).toEqual(TABLAS);
-        expect((await temporal.migrate.list())[0].map((m) => m.name ?? m.file)).toContain(MIGRACION);
+        expect((await temporal.migrate.list())[0].map((m) => m.name ?? m.file)).toEqual(MIGRACIONES);
 
         await temporal.migrate.rollback(undefined, true);
         expect(await tablasDeDatos(temporal)).toEqual([]);
-        // Deshacer la migración no deja residuo: ni siquiera el índice funcional de bodegas.
+        // Deshacer las migraciones no deja residuo: ni siquiera el índice funcional de bodegas ni el del kardex por fecha.
         const { rows: indices } = await temporal.raw("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename NOT LIKE 'knex\\_%'");
         expect(indices).toEqual([]);
 
         const [, aplicadas] = await temporal.migrate.latest();
-        expect(aplicadas).toEqual([MIGRACION]);
+        expect(aplicadas).toEqual(MIGRACIONES);
         expect(await tablasDeDatos(temporal)).toEqual(TABLAS);
 
         const [, repetidas] = await temporal.migrate.latest();
@@ -580,26 +599,75 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
     it('tras deshacer y volver a aplicar, el esquema es el mismo (índices y claves foráneas incluidos)', async () => {
       const temporal = createTestDb(entorno());
       try {
-        const huella = async () => {
-          const { rows } = await temporal.raw(
-            `SELECT 'columna' AS clase, table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '') AS valor
-               FROM information_schema.columns WHERE table_schema = 'public'
-             UNION ALL SELECT 'indice', indexdef FROM pg_indexes WHERE schemaname = 'public'
-             UNION ALL SELECT 'restriccion', conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
-               FROM pg_constraint WHERE connamespace = 'public'::regnamespace
-             ORDER BY 1, 2`,
-          );
-          return rows.map((fila) => `${fila.clase}: ${fila.valor}`);
-        };
-        const antes = await huella();
+        const antes = await huella(temporal);
         await temporal.migrate.rollback(undefined, true);
         await temporal.migrate.latest();
-        const despues = await huella();
+        const despues = await huella(temporal);
         expect(antes.length).toBeGreaterThan(50);
         expect(despues).toEqual(antes);
       } finally {
         await temporal.destroy();
       }
+    });
+
+    describe('migración del índice del kardex (D30: una migración nueva, con su down)', () => {
+      const INDICE = 'movimientos_fecha_id_idx';
+      const definicion = async (conexion) => (await conexion.raw('SELECT indexdef FROM pg_indexes WHERE schemaname = ? AND indexname = ?', ['public', INDICE])).rows.map((fila) => fila.indexdef);
+      const pendientes = async (conexion) => (await conexion.migrate.list())[1].map((m) => m.name ?? m.file);
+      const DEFINICION = `CREATE INDEX ${INDICE} ON public.movimientos USING btree (fecha DESC, id_movimiento DESC)`;
+
+      it('`down` deshace SOLO el índice (las ocho tablas y los demás índices siguen); `up` lo vuelve a crear con fecha DESC, id_movimiento DESC y el esquema queda idéntico', async () => {
+        const temporal = createTestDb(entorno());
+        try {
+          // Control: con todas las migraciones aplicadas el índice existe con su definición exacta.
+          expect(await definicion(temporal)).toEqual([DEFINICION]);
+          expect(await pendientes(temporal)).toEqual([]);
+          const antes = await huella(temporal);
+
+          await temporal.migrate.down(); // deshace únicamente la última migración
+          expect(await definicion(temporal)).toEqual([]);
+          expect(await pendientes(temporal)).toEqual([MIGRACION_INDICE_KARDEX]);
+          expect(await tablasDeDatos(temporal)).toEqual(TABLAS);
+          const sinIndice = await huella(temporal);
+          expect(sinIndice).toEqual(antes.filter((linea) => !linea.includes(INDICE))); // lo único que falta es ese índice
+          expect(sinIndice.length).toBe(antes.length - 1);
+          expect(sinIndice.filter((linea) => linea.includes('movimientos_id_producto_fecha_idx') || linea.includes('movimientos_id_bodega_fecha_idx'))).toHaveLength(2);
+
+          await temporal.migrate.up(); // aplica la siguiente pendiente
+          expect(await definicion(temporal)).toEqual([DEFINICION]);
+          expect(await pendientes(temporal)).toEqual([]);
+          expect(await huella(temporal)).toEqual(antes);
+        } finally {
+          await temporal.destroy();
+        }
+      });
+
+      // Una comprobación del plan es frágil en general. Esta no lo es: con 30 000 filas y estadísticas recientes, un `ORDER BY … LIMIT`
+      // sin índice solo puede ser un Sort (el control lo prueba) y con el índice recorre el índice sin ordenar.
+      it('con 30 000 movimientos, ORDER BY fecha DESC, id_movimiento DESC LIMIT 20 recorre el índice sin ordenar; sin el índice, ordena (control)', async () => {
+        const temporal = createTestDb(entorno());
+        const plan = async () => (await temporal.raw('EXPLAIN SELECT id_movimiento FROM movimientos ORDER BY fecha DESC, id_movimiento DESC LIMIT 20')).rows.map((fila) => fila['QUERY PLAN']).join('\n');
+        try {
+          await temporal.raw("INSERT INTO bodegas (codigo, nombre, ciudad, direccion) VALUES ('K1', 'K1', 'M', 'D')");
+          await temporal.raw(
+            `INSERT INTO movimientos (tipo, id_producto, id_bodega, cantidad, saldo_resultante, fecha, id_usuario, clave_idempotencia)
+             SELECT 'ENTRADA', 1 + (g % 200), (SELECT min(id_bodega) FROM bodegas), 1, 1, now() - random() * interval '365 days', 7, 'plan-' || g
+               FROM generate_series(1, 30000) AS g`,
+          );
+          await temporal.raw('ANALYZE movimientos');
+          expect(await plan()).toContain(INDICE);
+          expect(await plan()).not.toMatch(/\bSort\b/);
+
+          await temporal.migrate.down();
+          await temporal.raw('ANALYZE movimientos');
+          expect(await plan()).toMatch(/\bSort\b/);
+          expect(await plan()).not.toContain(INDICE);
+        } finally {
+          await temporal.migrate.latest(); // deja la base como la encontró, aunque la prueba haya fallado a medias
+          await temporal.raw('TRUNCATE movimientos, bodegas RESTART IDENTITY CASCADE');
+          await temporal.destroy();
+        }
+      });
     });
   });
 });
