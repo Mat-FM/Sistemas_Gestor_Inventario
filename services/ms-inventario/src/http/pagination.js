@@ -1,19 +1,8 @@
-const { AppError, e } = require('../errors');
-const { enteroQuery } = require('./validate');
+const { e } = require('../errors');
+const { enteroQuery, recoger } = require('./validate');
 
 const POR_PAGINA_POR_DEFECTO = 20;
 const POR_PAGINA_MAXIMO = 100;
-
-// Ejecuta una validación y, si es un 422, anota sus detalles en vez de lanzar: así se informan todos los parámetros inválidos.
-function recoger(detalles, validar) {
-  try {
-    return validar();
-  } catch (error) {
-    if (!(error instanceof AppError) || error.codigo !== 'DATOS_NO_VALIDOS') throw error;
-    detalles.push(...error.detalles);
-    return undefined;
-  }
-}
 
 /**
  * Lee ?pagina=1&por_pagina=20 (D14): por defecto 1 y 20; pagina >= 1 y por_pagina entre 1 y 100, o 422 DATOS_NO_VALIDOS.
