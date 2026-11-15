@@ -239,6 +239,48 @@ describe('request_id por petición (D19)', () => {
     for (const linea of propias) expect(linea.request_id).toBe(ids[linea.ruta]);
   });
 
+  it('un registro con valores no serializables no cambia la respuesta: el 500 sigue siendo genérico (D18) y las líneas válidas', async () => {
+    const circular = { nombre: 'c' };
+    circular.yo = circular;
+    const { app, request } = miniApp((a) =>
+      a.get('/x', async () => {
+        logger.info({ mensaje: 'antes', circular, cantidad: 5n });
+        logger.error({ mensaje: 'imposible', detalle: { toJSON() { throw new Error('toJSON falla'); } } });
+        throw new Error('clave-secreta-123');
+      }),
+    );
+    app.set('env', 'development');
+    const res = await request.get('/x');
+    const id = res.headers['x-request-id'];
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual(CUERPO_500);
+    expect(res.text).not.toContain('clave-secreta-123');
+    expect(res.text).not.toMatch(/\bat \S/);
+
+    // Todas las líneas son JSON válido (capturarStdout las parsea) y llevan el request_id de la petición.
+    const antes = await stdout.esperar((linea) => linea.mensaje === 'antes');
+    expect(antes).toMatchObject({ request_id: id, circular: { nombre: 'c', yo: '[Circular]' }, cantidad: '5' });
+    const respaldo = await stdout.esperar((linea) => linea.aviso === 'registro_no_serializable');
+    expect(respaldo).toEqual({ aviso: 'registro_no_serializable', servicio: 'ms-inventario', nivel: 'error', request_id: id });
+    const error = await stdout.esperar((linea) => linea.mensaje === 'Error interno no controlado');
+    expect(error).toMatchObject({ nivel: 'error', request_id: id, estado: 500 });
+    await stdout.esperar((linea) => linea.metodo === 'GET' && linea.request_id === id && linea.estado === 500);
+  });
+
+  it('un registro no serializable en una petición que acaba bien no la rompe', async () => {
+    const { request } = miniApp((a) =>
+      a.get('/x', (_req, res) => {
+        logger.info({ detalle: { get explota() { throw new Error('getter falla'); } } });
+        res.json({ ok: true });
+      }),
+    );
+    const res = await request.get('/x');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    const respaldo = await stdout.esperar((linea) => linea.aviso === 'registro_no_serializable');
+    expect(respaldo.request_id).toBe(res.headers['x-request-id']);
+  });
+
   it('una línea emitida fuera de toda petición no lleva request_id', async () => {
     const { request } = miniApp((app) => app.get('/x', (_req, res) => { logger.info({ mensaje: 'dentro' }); res.json({}); }));
     const res = await request.get('/x');
