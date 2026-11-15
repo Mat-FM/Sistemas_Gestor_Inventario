@@ -4,6 +4,27 @@ const { truncateAll } = require('./helpers/db');
 const { headers } = require('./helpers/fixtures');
 const { miniApp } = require('./helpers/miniapp');
 
+// Una ruta con parámetro «oculta» a una estática declarada DESPUÉS: con el mismo método y el mismo número de segmentos, cada
+// segmento de A es un parámetro o igual al de B, y A tiene un parámetro donde B es estático (p. ej. GET /saldos/:id declarada
+// antes que GET /saldos/bajo-umbral). `idRuta` lanza 404 en vez de pasar a la siguiente ruta, así que la estática nunca
+// se alcanzaría. Devuelve una descripción por cada ruta oculta; una lista bien ordenada devuelve [].
+function rutasOcultas(rutas) {
+  const segmentos = (ruta) => ruta.split('/').filter(Boolean);
+  const esParametro = (segmento) => segmento.startsWith(':');
+  const ocultas = [];
+  rutas.forEach((posterior, indice) => {
+    const sb = segmentos(posterior.ruta);
+    for (const anterior of rutas.slice(0, indice)) {
+      const sa = segmentos(anterior.ruta);
+      if (anterior.metodo !== posterior.metodo || sa.length !== sb.length) continue;
+      const cubre = sa.every((segmento, k) => esParametro(segmento) || segmento === sb[k]);
+      const masGeneral = sa.some((segmento, k) => esParametro(segmento) && !esParametro(sb[k]));
+      if (cubre && masGeneral) ocultas.push(`${posterior.metodo} ${posterior.ruta} queda oculta por ${anterior.metodo} ${anterior.ruta}`);
+    }
+  });
+  return ocultas;
+}
+
 // Lista de rutas de negocio (rutasDeclaradas) y su montaje (registrarRutas). Estas pruebas recorren TODAS las rutas
 // declaradas, así que cubren solas las que añadan las tareas siguientes (saldos, movimientos, lotes, traslados, conteos).
 
@@ -64,6 +85,55 @@ describe('rutasDeclaradas', () => {
 
   it('las rutas internas (/internas/*) no usan el prefijo /api', () => {
     for (const { ruta } of rutasDeclaradas(deps)) expect(ruta).not.toMatch(/^\/api(\/|$)/);
+  });
+});
+
+describe('orden de las rutas (una estática antes que la /:id hermana)', () => {
+  const ruta = (metodo, direccion) => ({ metodo, ruta: direccion, handler() {} });
+
+  it('NINGUNA ruta declarada queda oculta por una más general declarada antes (las tareas siguientes la amplían sin tocar esto)', () => {
+    expect(rutasOcultas(rutasDeclaradas(deps))).toEqual([]);
+  });
+
+  describe('el detector (rutasOcultas)', () => {
+    it.each([
+      ['una estática después de /:id', [ruta('get', '/saldos/:id'), ruta('get', '/saldos/bajo-umbral')], ['get /saldos/bajo-umbral queda oculta por get /saldos/:id']],
+      ['una estática más profunda después de /:id/accion', [ruta('post', '/lotes/:id/cerrar'), ruta('post', '/lotes/sugerencia/cerrar')], ['post /lotes/sugerencia/cerrar queda oculta por post /lotes/:id/cerrar']],
+      ['con otra ruta de por medio', [ruta('get', '/a/:id'), ruta('get', '/b'), ruta('get', '/a/estatica')], ['get /a/estatica queda oculta por get /a/:id']],
+    ])('detecta %s', (_descripcion, rutas, esperado) => {
+      expect(rutasOcultas(rutas)).toEqual(esperado);
+    });
+
+    it.each([
+      ['la estática antes que /:id', [ruta('get', '/saldos/bajo-umbral'), ruta('get', '/saldos/:id')]],
+      ['otro método (Express enruta por método)', [ruta('put', '/saldos/:id'), ruta('get', '/saldos/bajo-umbral')]],
+      ['otro número de segmentos', [ruta('get', '/saldos/:id'), ruta('get', '/saldos/bajo-umbral/detalle')]],
+      ['otro recurso', [ruta('get', '/bodegas/:id'), ruta('get', '/saldos/bajo-umbral')]],
+      ['un parámetro intermedio distinto', [ruta('get', '/a/b/:id'), ruta('get', '/a/:x/c')]],
+      ['rutas con la misma forma (no es un caso de orden)', [ruta('get', '/a/:id'), ruta('get', '/a/:otro')]],
+      ['una lista vacía', []],
+    ])('no marca %s', (_descripcion, rutas) => {
+      expect(rutasOcultas(rutas)).toEqual([]);
+    });
+  });
+
+  it('por qué importa: idRuta lanza 404 y no pasa a la siguiente ruta, así que el orden decide (una estática tras /:id nunca responde)', async () => {
+    const { idRuta } = require('../src/http/validate');
+    const montar = (primero, segundo) => miniApp((app) => {
+      const porId = (req, res) => res.json({ id: idRuta(req.params.id) });
+      const estatica = (_req, res) => res.json({ estatica: true });
+      app.get(...primero === 'estatica' ? ['/cosas/resumen', estatica] : ['/cosas/:id', porId]);
+      app.get(...segundo === 'estatica' ? ['/cosas/resumen', estatica] : ['/cosas/:id', porId]);
+    }, { logger: { info() {}, error() {} } }).request;
+
+    const bien = montar('estatica', 'id');
+    expect((await bien.get('/cosas/resumen')).body).toEqual({ estatica: true });
+    expect((await bien.get('/cosas/7')).body).toEqual({ id: 7 });
+
+    const mal = montar('id', 'estatica');
+    const oculta = await mal.get('/cosas/resumen');
+    expect(oculta.status).toBe(404);
+    expect(oculta.body.error.codigo).toBe('NO_EXISTE');
   });
 });
 

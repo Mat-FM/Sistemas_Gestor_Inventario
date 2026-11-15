@@ -11,6 +11,11 @@ const { rutasBodegas } = require('./bodegas');
  * - ruta: en sintaxis de Express ('/bodegas/:id'); para el OpenAPI hay que convertir ':id' en '{id}'.
  * - handler: el controlador, sin envolver (la identidad la añade registrarRutas).
  * `deps` = { db, clients, logger }. No abre conexiones, así que se puede llamar sin dependencias (`rutasDeclaradas()`).
+ *
+ * ORDEN: Express prueba las rutas en el orden en que se montan y `idRuta` lanza 404 en vez de pasar a la siguiente ruta.
+ * Por eso una ruta ESTÁTICA (`/saldos/bajo-umbral`, `/lotes/sugerencia-salida`) debe declararse ANTES de su `/:id` hermana:
+ * si no, `/:id` la captura y responde 404 NO_EXISTE sin que la estática llegue a ejecutarse. routes.test.js falla si una
+ * ruta queda oculta así, para cualquier módulo de rutas que se añada aquí.
  */
 function rutasDeclaradas(deps = {}) {
   return [

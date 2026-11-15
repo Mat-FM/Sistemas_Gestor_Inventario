@@ -172,6 +172,55 @@ describe('bodegaRepository', () => {
   });
 });
 
+describe('bodegaRepository: promesas reales (Ruling 21)', () => {
+  // Un Knex sin `async` devuelve el builder (un thenable), no una Promise: un fallo síncrono lanza en vez de rechazar y cada
+  // `await` sobre el mismo valor ejecuta la consulta otra vez. Esta es la lista de las funciones asíncronas que exporta el
+  // repositorio; las tareas siguientes copian el patrón.
+  const FUNCIONES = {
+    findById: [1],
+    findByCodigo: ['MZL'],
+    list: [{ limit: 10, offset: 0 }],
+    insert: [DATOS],
+    update: [1, { nombre: 'N', ciudad: 'C', direccion: 'D' }],
+    setActiva: [1, false],
+  };
+
+  it('la lista de arriba cubre TODA función asíncrona exportada (esCodigoDuplicado es la única síncrona)', () => {
+    const exportadas = Object.entries(bodegaRepository).filter(([, valor]) => typeof valor === 'function').map(([nombre]) => nombre);
+    expect(exportadas.filter((nombre) => nombre !== 'esCodigoDuplicado').sort()).toEqual(Object.keys(FUNCIONES).sort());
+    expect(bodegaRepository.esCodigoDuplicado(undefined)).toBe(false); // síncrona: devuelve un booleano, no una promesa
+  });
+
+  it.each(Object.entries(FUNCIONES))('%s devuelve una Promise real, no el builder de Knex', async (nombre, argumentos) => {
+    const resultado = bodegaRepository[nombre](db, ...argumentos);
+    expect(resultado).toBeInstanceOf(Promise);
+    await resultado;
+  });
+
+  it.each(Object.entries(FUNCIONES))('%s: un fallo síncrono (db nulo) llega como RECHAZO, no como excepción síncrona', async (nombre, argumentos) => {
+    let resultado;
+    expect(() => { resultado = bodegaRepository[nombre](null, ...argumentos); }).not.toThrow();
+    expect(resultado).toBeInstanceOf(Promise);
+    await expect(resultado).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it.each(Object.entries(FUNCIONES))('%s: esperar dos veces la misma promesa NO ejecuta la consulta dos veces', async (nombre, argumentos) => {
+    const sql = [];
+    const registrar = (consulta) => sql.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      const resultado = bodegaRepository[nombre](db, ...argumentos);
+      await resultado;
+      const tras1 = sql.length;
+      expect(tras1).toBeGreaterThan(0);
+      await resultado;
+      expect(sql.length).toBe(tras1);
+    } finally {
+      db.removeListener('query', registrar);
+    }
+  });
+});
+
 describe('bodegaService', () => {
   // Repositorio real salvo lo que cada prueba reemplaza.
   const servicio = (repo = {}) => crearBodegaService({ db, repo: { ...bodegaRepository, ...repo } });
@@ -234,6 +283,15 @@ describe('bodegaService', () => {
   });
 
   describe('listar', () => {
+    it('devuelve una Promise real y un fallo síncrono del repositorio llega como rechazo, no como excepción', async () => {
+      const falla = new Error('fallo síncrono');
+      const s = servicio({ list: () => { throw falla; } });
+      let resultado;
+      expect(() => { resultado = s.listar({ limit: 1, offset: 0 }); }).not.toThrow();
+      expect(resultado).toBeInstanceOf(Promise);
+      await expect(resultado).rejects.toBe(falla);
+    });
+
     it('pasa activa, limit y offset al repositorio y devuelve { filas, total }', async () => {
       const list = jest.fn(async () => ({ filas: [], total: 7 }));
       expect(await servicio({ list }).listar({ activa: false, limit: 5, offset: 10 })).toEqual({ filas: [], total: 7 });

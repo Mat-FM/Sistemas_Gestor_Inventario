@@ -20,7 +20,7 @@ function crearBodegaService({ db, repo = bodegaRepository } = {}) {
 
   return {
     /** @returns {Promise<{filas: Bodega[], total: number}>} */
-    listar({ activa, limit, offset }) {
+    async listar({ activa, limit, offset }) {
       return repo.list(db, { activa, limit, offset });
     },
 

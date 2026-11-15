@@ -1,6 +1,11 @@
 // Acceso a datos de la tabla `bodegas` (RNF13): aquí vive todo el SQL de las bodegas y nada de lógica de negocio.
 // Todas las funciones reciben primero `dbOrTrx`, la instancia de Knex o una transacción, para poder componerse dentro de
 // una transacción más adelante. Una Bodega es { id_bodega, codigo, nombre, ciudad, direccion, activa }.
+//
+// Toda función que toca la base es `async` (Ruling 21): sin `async`, Knex devuelve su builder (un thenable, no una Promise):
+// un fallo síncrono (p. ej. un `db` nulo) saldría como excepción y no como rechazo, y esperar dos veces el mismo valor
+// ejecutaría la consulta dos veces. Quien añada una función a este repositorio debe declararla `async`;
+// bodegasCapas.test.js lo comprueba con la lista de las exportadas.
 
 const TABLA = 'bodegas';
 const COLUMNAS = ['id_bodega', 'codigo', 'nombre', 'ciudad', 'direccion', 'activa'];
@@ -14,7 +19,7 @@ const RESTRICCIONES_CODIGO = Object.freeze(['bodegas_codigo_key', 'bodegas_codig
 const VIOLACION_UNICA = '23505';
 
 /** @returns {Promise<Bodega|undefined>} */
-function findById(dbOrTrx, id) {
+async function findById(dbOrTrx, id) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ id_bodega: id }).first();
 }
 
@@ -22,7 +27,7 @@ function findById(dbOrTrx, id) {
  * Busca por código SIN distinguir mayúsculas, con el mismo criterio que la unicidad (lower(codigo)). No recorta: el código
  * se guarda ya recortado y quien busque debe pasarlo recortado. Encuentra también las inactivas.
  */
-function findByCodigo(dbOrTrx, codigo) {
+async function findByCodigo(dbOrTrx, codigo) {
   return dbOrTrx(TABLA).select(COLUMNAS).whereRaw('lower(codigo) = lower(?)', [codigo]).first();
 }
 
