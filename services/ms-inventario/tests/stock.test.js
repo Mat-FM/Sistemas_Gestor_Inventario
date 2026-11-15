@@ -366,15 +366,19 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
   const sembrarLote = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
   const lotesDe = async () => Object.fromEntries((await db('lotes').select('codigo_lote', 'cantidad_disponible').orderBy('id_lote')).map((l) => [l.codigo_lote, l.cantidad_disponible]));
 
-  it('TRASLADO_SALIDA sin idLote sale por FEFO (Tarea 9) y el movimiento lleva el PRIMER lote consumido', async () => {
-    /* Saldo 10 = A 3 (vence antes) + B 3 + 4 sin lote; un traslado de 5 agota A y toma 2 de B. */
+  it('contraste (D28(a)): en el MISMO estado, TRASLADO_SALIDA sin idLote no hace FEFO (409 con el stock sin lote) y SALIDA sí', async () => {
+    /* Saldo 10 = A 3 (vence antes) + B 3 + 4 sin lote. Un traslado de 5 no cabe en el stock sin lote; una salida de 5 agota A y toma 2 de B. */
     await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
     const b = await sembrarLote('B', '2027-06-30', 3);
     const a = await sembrarLote('A', '2027-01-31', 3);
-    const movimiento = await aplicar({ tipo: 'TRASLADO_SALIDA', cantidad: 5 });
+    const error = await atrapar(aplicar({ tipo: 'TRASLADO_SALIDA', cantidad: 5 }));
+    expect(error).toMatchObject({ status: 409, codigo: 'STOCK_INSUFICIENTE' });
+    expect(error.detalles).toEqual([{ campo: 'cantidad', mensaje: expect.any(String), disponible: 4, solicitado: 5 }]);
+    expect(await lotesDe()).toEqual({ B: 3, A: 3 });
+    const movimiento = await aplicar({ tipo: 'SALIDA', cantidad: 5 });
     expect(movimiento).toMatchObject({ id_lote: a.id_lote, saldo_resultante: 5 });
     expect(await lotesDe()).toEqual({ B: 1, A: 0 });
-    expect(b.id_lote).toBeLessThan(a.id_lote); // control: el orden es por fecha, no por id
+    expect(b.id_lote).toBeLessThan(a.id_lote); // control: el orden FEFO es por fecha, no por id
   });
 
   it('TRASLADO_SALIDA con idLote resta de ESE lote y TRASLADO_ENTRADA con lote lo crea en el destino con su fecha (Tarea 9)', async () => {
@@ -497,6 +501,110 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
     expect(await saldoDe()).toBe(10);
     expect(await lotesDe()).toEqual({ A: 3, B: 3 });
     expect(await kardex()).toEqual([]);
+  });
+});
+
+describe('stockService.aplicarMovimiento: TRASLADO_SALIDA sin FEFO (D28(a))', () => {
+  // Un traslado mueve 0 o 1 lote (traslados.id_lote): sin idLote saca SOLO stock sin lote (saldo − suma de los lotes del par).
+  const sembrarLote = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
+  const lotesDe = async () => Object.fromEntries((await db('lotes').select('codigo_lote', 'cantidad_disponible').orderBy('id_lote')).map((l) => [l.codigo_lote, l.cantidad_disponible]));
+  const traslado = (cantidad, extra) => aplicar({ tipo: 'TRASLADO_SALIDA', cantidad, ...extra });
+  const insuficiente = (error, disponible, solicitado) => {
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ status: 409, codigo: 'STOCK_INSUFICIENTE', message: expect.stringMatching(/sin lote.*id_lote/) });
+    expect(error.detalles).toEqual([{ campo: 'cantidad', mensaje: `Disponible sin lote: ${disponible}; solicitado: ${solicitado}`, disponible, solicitado }]);
+  };
+
+  it('con stock sin lote suficiente baja el saldo, NO toca ningún lote y el movimiento lleva id_lote null', async () => {
+    /* Saldo 10 = A 4 + 6 sin lote; un traslado de 6 los agota sin tocar A. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    await sembrarLote('A', '2027-01-31', 4);
+    expect(await traslado(6)).toMatchObject({ id_lote: null, saldo_resultante: 4 });
+    expect(await lotesDe()).toEqual({ A: 4 });
+  });
+
+  it('con lotes que cubren TODO el saldo (sin stock sin lote) → 409 con disponible 0; nada cambia', async () => {
+    /* Control: un traslado con idLote del mismo estado sí sale. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const a = await sembrarLote('A', '2027-01-31', 6);
+    await sembrarLote('B', null, 4);
+    expect(await traslado(1, { idLote: a.id_lote })).toMatchObject({ id_lote: a.id_lote, saldo_resultante: 9 });
+    insuficiente(await atrapar(traslado(1)), 0, 1);
+    expect(await saldoDe()).toBe(9);
+    expect(await lotesDe()).toEqual({ A: 5, B: 4 });
+    expect(await kardex()).toHaveLength(1);
+  });
+
+  it('lotes 5 y 5 con saldo 12 (2 sin lote): 3 → 409 con disponible 2 y sin cambios; 2 sí sale', async () => {
+    /* El límite exacto del stock sin lote. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 12 });
+    await sembrarLote('A', '2027-01-31', 5);
+    await sembrarLote('B', '2027-02-28', 5);
+    insuficiente(await atrapar(traslado(3)), 2, 3);
+    expect(await saldoDe()).toBe(12);
+    expect(await kardex()).toEqual([]);
+    expect(await traslado(2)).toMatchObject({ id_lote: null, saldo_resultante: 10 });
+    expect(await lotesDe()).toEqual({ A: 5, B: 5 });
+  });
+
+  it('con idLote resta de ESE lote aunque haya stock sin lote', async () => {
+    /* Saldo 10 = A 4 + 6 sin lote: el traslado de 3 del lote A no toca el stock sin lote. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const a = await sembrarLote('A', '2027-01-31', 4);
+    expect(await traslado(3, { idLote: a.id_lote })).toMatchObject({ id_lote: a.id_lote, saldo_resultante: 7 });
+    expect(await lotesDe()).toEqual({ A: 1 });
+  });
+
+  it('el saldo insuficiente se informa primero, con los datos del SALDO', async () => {
+    /* Saldo 3 sin lotes: un traslado de 4 no cabe ni en el saldo. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const error = await atrapar(traslado(4));
+    expect(error.detalles).toEqual([expect.objectContaining({ disponible: 3, solicitado: 4 })]);
+    expect(error.message).not.toMatch(/sin lote/);
+  });
+
+  it('la suma de los lotes se lee BAJO el candado del saldo: una entrada a un lote confirmada mientras el traslado espera cuenta', async () => {
+    /* Saldo 10 = A 10. T1 (sin confirmar) entra 5 al lote A; el traslado de 5 sin lote espera el saldo y, al obtenerlo, ve saldo 15 Y lotes 15 → 409 disponible 0. Si leyera la suma antes del candado vería lotes 10 y sacaría 5 «sin lote» que son del lote. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    await sembrarLote('A', '2027-01-31', 10);
+    const t1 = await db.transaction();
+    let pendiente;
+    try {
+      await stockService.aplicarMovimiento(t1, datos({ cantidad: 5, lote: { codigoLote: 'A', fechaVencimiento: '2027-01-31' } }));
+      pendiente = atrapar(traslado(5));
+      await new Promise((resolver) => setTimeout(resolver, 150)); // el traslado ya leyó lo que lea antes del candado y espera
+      await t1.commit();
+    } finally {
+      if (!t1.isCompleted()) await t1.rollback();
+    }
+    insuficiente(await pendiente, 0, 5);
+    expect(await saldoDe()).toBe(15);
+    expect(await lotesDe()).toEqual({ A: 15 });
+  });
+
+  it.each(['repeatable read', 'serializable'])('en una transacción %s → TypeError sin escribir nada (la suma sin FOR UPDATE exige READ COMMITTED)', async (isolationLevel) => {
+    /* Control: la misma operación en READ COMMITTED (el valor por defecto) sí sale. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    expect(await db.transaction((trx) => stockService.aplicarMovimiento(trx, datos({ tipo: 'TRASLADO_SALIDA', cantidad: 1 })), { isolationLevel: 'read committed' })).toMatchObject({ saldo_resultante: 9 });
+    const error = await atrapar(db.transaction((trx) => stockService.aplicarMovimiento(trx, datos({ tipo: 'TRASLADO_SALIDA', cantidad: 1 })), { isolationLevel }));
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error.message).toMatch(/READ COMMITTED/);
+    expect(await saldoDe()).toBe(9);
+    expect(await kardex()).toHaveLength(1);
+  });
+
+  it('concurrencia: 8 traslados sin lote de 3 a la vez con 10 sin lote (saldo 20, lote 10) → exactamente tres confirmados y cinco 409; el lote intacto', async () => {
+    /* El candado del saldo serializa los traslados: cada uno ve el stock sin lote que dejó el anterior. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 20 });
+    await sembrarLote('A', '2027-01-31', 10);
+    const resultados = await Promise.allSettled(Array.from({ length: 8 }, () => traslado(3)));
+    const confirmados = resultados.filter((r) => r.status === 'fulfilled');
+    const rechazados = resultados.filter((r) => r.status === 'rejected');
+    expect(confirmados).toHaveLength(3);
+    expect(rechazados.map((r) => [r.reason.status, r.reason.codigo])).toEqual(Array(5).fill([409, 'STOCK_INSUFICIENTE']));
+    expect(confirmados.every((r) => r.value.id_lote === null)).toBe(true);
+    expect(await saldoDe()).toBe(11);
+    expect(await lotesDe()).toEqual({ A: 10 });
   });
 });
 

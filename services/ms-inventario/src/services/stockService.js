@@ -21,6 +21,19 @@ const saldoRepository = require('../repositories/saldoRepository');
 //     fechaVencimiento} → loteRepository.upsertEntrada (lo crea o le suma; 409 CONFLICTO si ya existe con otra fecha).
 //   · Baja (delta < 0): idLote → resta de ESE lote (409 STOCK_INSUFICIENTE con los datos del LOTE si no alcanza); sin idLote →
 //     FEFO (D6: planificarFefo sobre loteRepository.listarParaFefo) y lo que los lotes no cubren sale del stock sin lote.
+//   · EXCEPCIÓN, TRASLADO_SALIDA sin idLote (D28(a)): un traslado mueve 0 o 1 lote (traslados.id_lote), así que NO hace FEFO:
+//     saca solo stock sin lote, sinLote = saldo − SUM(lotes del par), y si no alcanza es 409 STOCK_INSUFICIENTE con
+//     disponible = sinLote (el mensaje pide indicar id_lote). No toca ningún lote y el movimiento lleva id_lote null.
+//     La suma es una agregación SIN FOR UPDATE (PostgreSQL no lo admite con SUM) y es correcta porque se cumplen TRES
+//     condiciones, que quien toque este código debe mantener:
+//       (1) se calcula en una sentencia NUEVA ejecutada DESPUÉS de saldoRepository.bloquear: en READ COMMITTED cada sentencia
+//           toma su instantánea al empezar, así que ve todo lo que confirmó quien tuvo antes el candado del saldo;
+//       (2) todo escritor de lotes bloquea antes el saldo de su par (candado maestro, D27(c)): mientras tenemos el saldo,
+//           nadie cambia los lotes del par;
+//       (3) la transacción es READ COMMITTED: en REPEATABLE READ o SERIALIZABLE la instantánea sería la del inicio de la
+//           transacción, ANTERIOR al bloqueo, y la suma podría estar vieja. No es solo una convención: sumarDelPar devuelve el
+//           aislamiento real y el motor lanza TypeError si no es 'read committed' (también cubre un default_transaction_isolation
+//           cambiado en la base).
 //   · El movimiento lleva id_lote = el lote al que entra, del que sale o el PRIMERO consumido por FEFO (o null).
 //   · Invariante (D27(c)): por (producto, bodega), la suma de los lotes nunca supera el saldo y ningún lote queda negativo. Se
 //     mantiene porque saldo y lotes cambian en la misma transacción: con idLote o lote, ambos con el mismo delta; en FEFO, los
@@ -140,6 +153,23 @@ async function salirDeLote(trx, lote, solicitado) {
 }
 
 /**
+ * Salida de un traslado SIN idLote (D28(a)): solo stock sin lote. Debe llamarse con el saldo YA bloqueado (ver las tres
+ * condiciones en la cabecera del módulo).
+ */
+async function salirSinLote(trx, { idBodega, idProducto, saldo, solicitado }) {
+  const { enLotes, aislamiento } = await loteRepository.sumarDelPar(trx, { idBodega, idProducto });
+  if (aislamiento !== 'read committed') {
+    throw new TypeError(`La salida de un traslado sin lote exige una transacción READ COMMITTED (es ${aislamiento})`);
+  }
+  const disponible = saldo - enLotes;
+  if (disponible < solicitado) {
+    throw e.conflicto('STOCK_INSUFICIENTE', 'El stock sin lote no alcanza para el traslado: indique id_lote para trasladar un lote', [
+      { campo: 'cantidad', mensaje: `Disponible sin lote: ${disponible}; solicitado: ${solicitado}`, disponible, solicitado },
+    ]);
+  }
+}
+
+/**
  * Salida por FEFO (D6): bloquea los lotes del par con existencia en orden FEFO, los consume con planificarFefo y deja el
  * `restante` al stock sin lote (que alcanza: el saldo ya se comprobó y la suma de los lotes no lo supera).
  * @returns {Promise<number|null>} el id del PRIMER lote consumido, o null si no se consumió ninguno
@@ -217,6 +247,8 @@ async function aplicarMovimiento(trx, datos) {
   } else if (lotePedido) {
     await salirDeLote(trx, lotePedido, -cambio);
     idLoteMovimiento = lotePedido.id_lote;
+  } else if (tipo === 'TRASLADO_SALIDA') {
+    await salirSinLote(trx, { ...par, saldo: disponible, solicitado: -cambio }); // D28(a): nunca FEFO; id_lote null
   } else {
     idLoteMovimiento = await salirPorFefo(trx, { ...par, solicitado: -cambio });
   }

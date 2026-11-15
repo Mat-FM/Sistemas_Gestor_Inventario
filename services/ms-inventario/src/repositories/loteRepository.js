@@ -98,4 +98,19 @@ async function ajustar(trx, idLote, delta) {
   return filas[0];
 }
 
-module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, ajustar };
+/**
+ * Suma de `cantidad_disponible` de TODOS los lotes de un par (también los que están en 0) y el aislamiento de la transacción, en
+ * UNA consulta. Es una agregación: PostgreSQL no admite FOR UPDATE con SUM. El motor la usa para el stock sin lote de un traslado
+ * (D28(a)) y solo es correcta bajo las condiciones que documenta stockService (sentencia nueva tras bloquear el saldo, READ
+ * COMMITTED); por eso devuelve también `aislamiento` (current_setting('transaction_isolation'): 'read committed', 'repeatable
+ * read' o 'serializable') para que el motor lo compruebe sin otra ida y vuelta.
+ * @returns {Promise<{enLotes: number, aislamiento: string}>}
+ */
+async function sumarDelPar(trx, { idBodega, idProducto }) {
+  const [fila] = await trx(TABLA)
+    .where({ id_bodega: idBodega, id_producto: idProducto })
+    .select(trx.raw('COALESCE(SUM(cantidad_disponible), 0) AS en_lotes'), trx.raw("current_setting('transaction_isolation') AS aislamiento"));
+  return { enLotes: Number(fila.en_lotes), aislamiento: fila.aislamiento };
+}
+
+module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, ajustar, sumarDelPar };

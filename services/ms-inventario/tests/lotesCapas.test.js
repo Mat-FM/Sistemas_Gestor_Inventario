@@ -226,6 +226,28 @@ describe('loteRepository.listarParaFefo', () => {
   });
 });
 
+describe('loteRepository.sumarDelPar', () => {
+  it('suma la existencia de los lotes de ESE par (también los que están en 0), o 0 si no hay; e informa el aislamiento', async () => {
+    /* El motor la usa para el stock sin lote de un traslado (D28(a)). */
+    await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', cantidad: 4 });
+    await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'B', cantidad: 0 });
+    await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'C', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'A', cantidad: 50 });
+    await crearLote(db, { idBodega: b1, idProducto: 6, codigoLote: 'A', cantidad: 60 });
+    await db.transaction(async (trx) => {
+      expect(await loteRepository.sumarDelPar(trx, { idBodega: b1, idProducto: 5 })).toEqual({ enLotes: 7, aislamiento: 'read committed' });
+      expect(await loteRepository.sumarDelPar(trx, { idBodega: b2, idProducto: 6 })).toEqual({ enLotes: 0, aislamiento: 'read committed' });
+    });
+  });
+
+  it('informa el aislamiento REAL de la transacción', async () => {
+    /* Así el motor puede negarse a calcular con una instantánea anterior al candado. */
+    await db.transaction(async (trx) => {
+      expect((await loteRepository.sumarDelPar(trx, { idBodega: b1, idProducto: 5 })).aislamiento).toBe('repeatable read');
+    }, { isolationLevel: 'repeatable read' });
+  });
+});
+
 describe('loteRepository.ajustar', () => {
   it('suma y resta a la existencia y devuelve el Lote; puede dejarlo exactamente en 0', async () => {
     /* La cantidad ya la decidió el motor con el lote bloqueado. */
@@ -255,4 +277,5 @@ promesasReales(loteRepository, {
   bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
   ajustar: [1, 0],
+  sumarDelPar: [{ idBodega: 1, idProducto: 5 }],
 }, { titulo: 'loteRepository', db: () => db });
