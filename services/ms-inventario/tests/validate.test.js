@@ -1,6 +1,6 @@
 const { AppError } = require('../src/errors');
 const {
-  booleanoQuery, cuerpoObjeto, entero, enteroQuery, enumerado, fecha, idRuta, recoger, texto, validarCampos,
+  booleanoQuery, cuerpoObjeto, entero, enteroQuery, enumerado, esFechaValida, fecha, idRuta, recoger, texto, validarCampos,
 } = require('../src/http/validate');
 
 // Ejecuta la validación y devuelve el error que lanza; falla si no lanza ninguno.
@@ -90,6 +90,16 @@ describe('enteroQuery (valores de la cadena de consulta)', () => {
   it('acepta las opciones { min } igual que entero', () => {
     expect(enteroQuery('0', 'x', { min: 0 })).toBe(0);
     datosNoValidos(() => enteroQuery('0', 'x'), 'x');
+  });
+});
+
+describe('esFechaValida (la regla que comparten fecha() y el motor de lotes)', () => {
+  it('es un predicado: true para una fecha real YYYY-MM-DD y false para todo lo demás, sin lanzar', () => {
+    /* fecha() la usa para su 422 y stockService para su TypeError: una sola regla de calendario. */
+    for (const valor of ['2027-02-28', '2028-02-29', '0001-01-01']) expect(esFechaValida(valor)).toBe(true);
+    for (const valor of ['2027-02-30', '2027-13-01', '0000-01-01', '2027-2-3', new Date('2027-01-31'), null, undefined, 20270131]) {
+      expect(esFechaValida(valor)).toBe(false);
+    }
   });
 });
 

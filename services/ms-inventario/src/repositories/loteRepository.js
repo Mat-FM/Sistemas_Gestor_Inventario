@@ -14,6 +14,8 @@ const COLUMNAS = ['id_lote', 'id_producto', 'id_bodega', 'codigo_lote', 'fecha_v
 // (id_lote es único), el mismo que aplica stockService.planificarFefo.
 const ORDEN_FEFO = 'fecha_vencimiento ASC NULLS LAST, id_lote ASC';
 
+const esIdPositivo = (valor) => Number.isSafeInteger(valor) && valor >= 1;
+
 /**
  * Entrada a un lote por su código, en UNA sentencia atómica:
  * `INSERT … ON CONFLICT (id_bodega, id_producto, codigo_lote) DO UPDATE SET cantidad_disponible = lotes.cantidad_disponible +
@@ -23,10 +25,13 @@ const ORDEN_FEFO = 'fecha_vencimiento ASC NULLS LAST, id_lote ASC';
  * - Si existe y `fechaVencimiento` es IGUAL a la guardada, suma.
  * - Si existe y `fechaVencimiento` es DISTINTA de la guardada (también si la guardada es null), NO suma y devuelve undefined
  *   (el motor responde 409 CONFLICTO, D27(d)).
+ * EXIGE que quien llame tenga YA bloqueado, en la misma transacción, el saldo del par (candado maestro, D27(c)): todo escritor de
+ * lotes lo hace, y de eso dependen el invariante suma(lotes) ≤ saldo y el cálculo del stock sin lote de un traslado (D28(a),
+ * sumarDelPar), que lee los lotes sin FOR UPDATE confiando en que nadie los cambia mientras se tiene el saldo.
  * Por qué una sola sentencia y no «leer FOR UPDATE y después decidir»: la condición de la fecha se evalúa en el DO UPDATE sobre la
- * versión ya confirmada de la fila, que PostgreSQL deja bloqueada aunque no la actualice. Dos entradas simultáneas con el mismo
- * código nuevo no chocan (la segunda espera en el índice único y suma) y no hay ventana entre leer y escribir, aunque quien llame
- * no haya bloqueado antes el saldo. La comparación es de `date` contra `date` en SQL, nunca de objetos Date en JS.
+ * versión ya confirmada de la fila, que PostgreSQL deja bloqueada aunque no la actualice, sin una ida y vuelta más. La sentencia
+ * es atómica por sí misma (dos entradas simultáneas con el mismo código nuevo no chocan: la segunda espera en el índice único y
+ * suma), pero eso NO exime del candado del saldo. La comparación es de `date` contra `date` en SQL, nunca de objetos Date en JS.
  * No valida: `cantidad` > 0 y el código recortado los garantiza quien llama; el techo del INTEGER lo garantiza el invariante de
  * D27(c) (la suma de los lotes no supera el saldo, que el motor ya comprobó).
  * @param {{idBodega: number, idProducto: number, codigoLote: string, fechaVencimiento: string|null, cantidad: number}} datos
@@ -55,18 +60,20 @@ async function buscarPorCodigo(dbOrTrx, { idBodega, idProducto, codigoLote }) {
 
 /**
  * Toma un lote por su id con `SELECT … FOR UPDATE` (bloqueado hasta el fin de la transacción). Debe llamarse con una transacción.
- * Con `idBodega` e `idProducto` solo encuentra (y solo BLOQUEA) el lote si es de ese par: el motor siempre los pasa. Así nunca
+ * El par `{ idBodega, idProducto }` es OBLIGATORIO (Ruling 44; TypeError si falta o no son enteros positivos): solo encuentra (y
+ * solo BLOQUEA) el lote si es de ese par. Así nunca
  * toma un lote de otro (producto, bodega) cuyo saldo no tiene bloqueado; si lo hiciera, un traslado que ya tuviera ese par y
  * esperara el saldo de este movimiento cerraría un ciclo de esperas (interbloqueo, 40P01). La pertenencia de un lote a su par
  * nunca cambia (ninguna sentencia actualiza id_bodega ni id_producto), así que filtrar en el mismo SELECT es seguro.
- * @param {{idBodega?: number, idProducto?: number}} [par] si se omite, no filtra
+ * @param {{idBodega: number, idProducto: number}} par obligatorio
  * @returns {Promise<Lote|undefined>} undefined si no existe o no es de ese par
  */
-async function bloquearPorId(trx, idLote, { idBodega, idProducto } = {}) {
-  const consulta = trx(TABLA).select(COLUMNAS).where({ id_lote: idLote });
-  if (idBodega !== undefined) consulta.where({ id_bodega: idBodega });
-  if (idProducto !== undefined) consulta.where({ id_producto: idProducto });
-  return consulta.forUpdate().first();
+async function bloquearPorId(trx, idLote, par) {
+  const { idBodega, idProducto } = par ?? {};
+  if (!esIdPositivo(idBodega) || !esIdPositivo(idProducto)) {
+    throw new TypeError('bloquearPorId exige el par { idBodega, idProducto } con enteros positivos');
+  }
+  return trx(TABLA).select(COLUMNAS).where({ id_lote: idLote, id_bodega: idBodega, id_producto: idProducto }).forUpdate().first();
 }
 
 /**

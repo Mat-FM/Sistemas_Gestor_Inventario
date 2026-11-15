@@ -1,5 +1,6 @@
 const { delta } = require('../domain/tipos');
 const { e } = require('../errors');
+const { esFechaValida } = require('../http/validate');
 const bodegaRepository = require('../repositories/bodegaRepository');
 const loteRepository = require('../repositories/loteRepository');
 const movimientoRepository = require('../repositories/movimientoRepository');
@@ -63,7 +64,9 @@ const esTextoOpcional = (valor) => valor === null || typeof valor === 'string';
 const LARGO_CODIGO_LOTE = 50; // lotes.codigo_lote es varchar(50)
 
 // `lote` del motor: { codigoLote, fechaVencimiento? }, ya validado por quien llama (texto recortado de 1 a 50 caracteres y una
-// fecha YYYY-MM-DD o null). Devuelve el lote normalizado (fechaVencimiento null si falta) o lanza TypeError.
+// fecha YYYY-MM-DD que EXISTA, o null). Devuelve el lote normalizado (fechaVencimiento null si falta) o lanza TypeError. La fecha
+// se comprueba con la misma regla de calendario que el 422 de la API (validate.esFechaValida): una fecha imposible (2027-02-30)
+// que llegara a la base sería un 22008, un 500 sin causa clara.
 function comprobarLote(lote) {
   if (lote === null) return null;
   const esObjeto = typeof lote === 'object' && !Array.isArray(lote);
@@ -73,8 +76,8 @@ function comprobarLote(lote) {
   // pasarlo por http/validate.texto, como POST /movimientos.
   const codigoValido = typeof codigo === 'string' && codigo.length >= 1 && codigo === codigo.trim() && !codigo.includes('\u0000')
     && [...codigo].length <= LARGO_CODIGO_LOTE;
-  if (!codigoValido || !(fecha === null || (typeof fecha === 'string' && FORMATO_FECHA.test(fecha)))) {
-    throw new TypeError(`lote debe ser { codigoLote: texto recortado de 1 a ${LARGO_CODIGO_LOTE} caracteres, fechaVencimiento?: YYYY-MM-DD o null }`);
+  if (!codigoValido || !(fecha === null || esFechaValida(fecha))) {
+    throw new TypeError(`lote debe ser { codigoLote: texto recortado de 1 a ${LARGO_CODIGO_LOTE} caracteres, fechaVencimiento?: fecha real YYYY-MM-DD o null }`);
   }
   return { codigoLote: codigo, fechaVencimiento: fecha };
 }
@@ -202,7 +205,11 @@ async function salirPorFefo(trx, { idBodega, idProducto, solicitado }) {
  * @param {string} datos.claveIdempotencia la clave tal como se ALMACENA (idempotencia.claveAlmacenada, o idempotencia.derivada
  *   en las operaciones que generan varios movimientos, D5); única en la tabla
  * @param {number} datos.idUsuario autor del movimiento (RF10)
- * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia)
+ * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia). Solo lleva `id_lote`: NO devuelve el código ni
+ *   la fecha del lote. Para la Tarea 9: un traslado que saca un lote (idLote) debe leer ese lote de origen SIN bloqueo (por
+ *   ejemplo con una lectura simple por id) para recrearlo en el destino con `lote: { codigoLote, fechaVencimiento }`. Es seguro
+ *   porque `codigo_lote` y `fecha_vencimiento` de un lote existente son INMUTABLES: ninguna sentencia los actualiza (una fecha
+ *   distinta es 409 CONFLICTO, D27(d), nunca una actualización) y la pertenencia a su par tampoco cambia.
  * @throws 404 NO_EXISTE si la bodega no existe o si idLote no es un lote de esa bodega y producto; 409 BODEGA_INACTIVA (D12);
  *   409 STOCK_INSUFICIENTE si el saldo quedaría negativo (campo `cantidad`) o si el lote pedido no alcanza (campo `id_lote`,
  *   con lo disponible y lo solicitado del lote); 409 CONFLICTO si `lote` ya existe con otra fecha de vencimiento;

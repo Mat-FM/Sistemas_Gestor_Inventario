@@ -273,10 +273,21 @@ describe('stockService.aplicarMovimiento', () => {
       ['un lote con un código de 51 caracteres (la columna es varchar(50))', { lote: { codigoLote: 'x'.repeat(51), fechaVencimiento: null } }],
       ['un lote con la fecha como Date (Ruling 15)', { lote: { codigoLote: 'L1', fechaVencimiento: new Date('2027-01-31') } }],
       ['un lote con la fecha en otro formato', { lote: { codigoLote: 'L1', fechaVencimiento: '2027-1-31' } }],
+      // Ruling 44: la fecha debe EXISTIR (si no, PostgreSQL lanzaría 22008 y sería un 500 sin causa clara).
+      ['un lote con el 30 de febrero', { lote: { codigoLote: 'L1', fechaVencimiento: '2027-02-30' } }],
+      ['un lote con el mes 13', { lote: { codigoLote: 'L1', fechaVencimiento: '2027-13-01' } }],
+      ['un lote con el año 0000', { lote: { codigoLote: 'L1', fechaVencimiento: '0000-01-01' } }],
+      ['un lote con la fecha sin ceros a la izquierda', { lote: { codigoLote: 'L1', fechaVencimiento: '2027-2-3' } }],
     ])('%s → TypeError y nada escrito', async (_caso, extra) => {
       await expect(aplicar(extra)).rejects.toBeInstanceOf(TypeError);
       expect(await filasSaldo()).toEqual([]);
       expect(await kardex()).toEqual([]);
+    });
+
+    it.each([['2027-02-28'], ['2028-02-29'], [null]])('un lote con fechaVencimiento %p sí se acepta (control de las fechas imposibles)', async (fechaVencimiento) => {
+      /* Una fecha real o null (la carga inicial la deja opcional). */
+      expect(await aplicar({ lote: { codigoLote: 'L1', fechaVencimiento } })).toMatchObject({ saldo_resultante: 1 });
+      expect((await db('lotes').first()).fecha_vencimiento).toBe(fechaVencimiento);
     });
 
     it('una claveIdempotencia de 255 caracteres sí cabe', async () => {

@@ -154,11 +154,34 @@ describe('loteRepository.bloquearPorId', () => {
     /* El motor comprueba después que sea de la misma bodega y producto. */
     const { id_lote: id } = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 3 });
     await db.transaction(async (trx) => {
-      expect(await loteRepository.bloquearPorId(trx, id)).toEqual({
+      expect(await loteRepository.bloquearPorId(trx, id, { idBodega: b1, idProducto: 5 })).toEqual({
         id_lote: id, id_producto: 5, id_bodega: b1, codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 3,
       });
-      expect(await loteRepository.bloquearPorId(trx, 9999)).toBeUndefined();
+      expect(await loteRepository.bloquearPorId(trx, 9999, { idBodega: b1, idProducto: 5 })).toBeUndefined();
     });
+  });
+
+  it.each([
+    ['sin el par', undefined],
+    ['sin idProducto', { idBodega: 1 }],
+    ['sin idBodega', { idProducto: 5 }],
+    ['con idBodega de texto', { idBodega: '1', idProducto: 5 }],
+    ['con idProducto 0', { idBodega: 1, idProducto: 0 }],
+  ])('%s → TypeError (rechazo) sin consultar la base: el par es OBLIGATORIO (Ruling 44)', async (_caso, par) => {
+    /* Sin el par podría bloquearse un lote ajeno (riesgo de interbloqueo con un traslado). Control: con el par sí consulta. */
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      await db.transaction(async (trx) => {
+        await expect(loteRepository.bloquearPorId(trx, 1, { idBodega: 1, idProducto: 5 })).resolves.toBeUndefined();
+        const antes = consultas.length;
+        await expect(loteRepository.bloquearPorId(trx, 1, par)).rejects.toBeInstanceOf(TypeError);
+        expect(consultas.length).toBe(antes);
+      });
+    } finally {
+      db.removeListener('query', registrar);
+    }
   });
 
   it('con { idBodega, idProducto } solo encuentra el lote si es de ese par, y uno ajeno NO queda bloqueado', async () => {
@@ -182,7 +205,7 @@ describe('loteRepository.bloquearPorId', () => {
     const uno = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', cantidad: 3 });
     const otro = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L2', cantidad: 3 });
     expect(await estaBloqueado(uno.id_lote)).toBe(false);
-    await conTransaccionAbierta((trx) => loteRepository.bloquearPorId(trx, uno.id_lote), async () => {
+    await conTransaccionAbierta((trx) => loteRepository.bloquearPorId(trx, uno.id_lote, { idBodega: b1, idProducto: 5 }), async () => {
       expect(await estaBloqueado(uno.id_lote)).toBe(true);
       expect(await estaBloqueado(otro.id_lote)).toBe(false);
     });

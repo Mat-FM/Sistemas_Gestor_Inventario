@@ -46,15 +46,21 @@ function diasDelMes(anio, mes) {
 }
 
 /**
- * Fecha `YYYY-MM-DD` que exista en el calendario (no acepta el 30 de febrero, ni la hora, ni el año 0000). La devuelve tal cual.
- * Se valida con aritmética de calendario y no con `new Date()`, que corrige en silencio las fechas imposibles.
+ * ¿Es `valor` un texto `YYYY-MM-DD` que existe en el calendario? (no el 30 de febrero, ni la hora, ni el año 0000). Predicado
+ * puro que nunca lanza: es la ÚNICA regla de calendario del servicio. La usan `fecha` (422 para el cliente) y el motor de lotes
+ * (stockService, TypeError para un llamador interno). Aritmética de calendario y no `new Date()`, que corrige en silencio las
+ * fechas imposibles.
  */
-function fecha(valor, campo) {
+function esFechaValida(valor) {
   const partes = typeof valor === 'string' ? FORMATO_FECHA.exec(valor) : null;
-  if (partes) {
-    const [anio, mes, dia] = partes.slice(1).map(Number);
-    if (anio >= 1 && mes >= 1 && mes <= 12 && dia >= 1 && dia <= diasDelMes(anio, mes)) return valor;
-  }
+  if (!partes) return false;
+  const [anio, mes, dia] = partes.slice(1).map(Number);
+  return anio >= 1 && mes >= 1 && mes <= 12 && dia >= 1 && dia <= diasDelMes(anio, mes);
+}
+
+/** Fecha `YYYY-MM-DD` que exista en el calendario (esFechaValida). La devuelve tal cual; si no, 422. */
+function fecha(valor, campo) {
+  if (esFechaValida(valor)) return valor;
   throw rechazo(campo, 'debe ser una fecha válida con el formato AAAA-MM-DD');
 }
 
@@ -172,5 +178,5 @@ function validarCampos(validaciones) {
 }
 
 module.exports = {
-  ENTERO_MAXIMO, entero, enteroQuery, fecha, enumerado, booleanoQuery, texto, cuerpoObjeto, idRuta, recoger, validarCampos,
+  ENTERO_MAXIMO, entero, enteroQuery, esFechaValida, fecha, enumerado, booleanoQuery, texto, cuerpoObjeto, idRuta, recoger, validarCampos,
 };
