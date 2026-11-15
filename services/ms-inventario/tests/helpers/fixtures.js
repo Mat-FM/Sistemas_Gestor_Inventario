@@ -17,6 +17,17 @@ async function crearSaldo(db, { idProducto, idBodega, cantidad = 0 }) {
   return saldo;
 }
 
+/**
+ * Inserta el umbral de stock mínimo de un producto y devuelve la fila. Es una siembra directa con Knex: las pruebas de saldos
+ * no dependen del código de umbrales. `id_producto` es la clave primaria, así que un producto solo tiene un umbral.
+ */
+async function crearUmbral(db, { idProducto, cantidadMinima }) {
+  const [umbral] = await db('umbrales_producto')
+    .insert({ id_producto: idProducto, cantidad_minima: cantidadMinima })
+    .returning('*');
+  return umbral;
+}
+
 /** Inserta un lote y devuelve la fila. La columna `date` llega como Date a medianoche local (pg), no como texto. */
 async function crearLote(db, { idBodega, idProducto, codigoLote, fechaVencimiento = null, cantidad }) {
   const [lote] = await db('lotes')
@@ -61,4 +72,4 @@ function fakeNotificaciones() {
   return { notificarStockBajo: jest.fn().mockResolvedValue(undefined) };
 }
 
-module.exports = { crearBodega, crearSaldo, crearLote, headers, fakeCatalogo, fakeNotificaciones };
+module.exports = { crearBodega, crearSaldo, crearUmbral, crearLote, headers, fakeCatalogo, fakeNotificaciones };

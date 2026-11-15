@@ -1,7 +1,7 @@
 const { AppError } = require('../src/errors');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { buildTestApp } = require('./helpers/app');
-const { crearBodega, crearSaldo, crearLote, headers, fakeCatalogo, fakeNotificaciones } = require('./helpers/fixtures');
+const { crearBodega, crearSaldo, crearUmbral, crearLote, headers, fakeCatalogo, fakeNotificaciones } = require('./helpers/fixtures');
 
 describe('fixtures: datos en la base real', () => {
   let db;
@@ -56,6 +56,23 @@ describe('fixtures: datos en la base real', () => {
     it('sin cantidad el saldo empieza en 0', async () => {
       const { id_bodega: idBodega } = await crearBodega(db);
       expect((await crearSaldo(db, { idProducto: 5, idBodega })).cantidad_disponible).toBe(0);
+    });
+  });
+
+  describe('crearUmbral', () => {
+    it('guarda el umbral y devuelve la fila (no un arreglo)', async () => {
+      const umbral = await crearUmbral(db, { idProducto: 5, cantidadMinima: 10 });
+      expect(umbral).toMatchObject({ id_producto: 5, cantidad_minima: 10 });
+      expect(umbral.fecha_actualizacion).toBeInstanceOf(Date);
+      expect(Object.keys(umbral).sort()).toEqual(['cantidad_minima', 'fecha_actualizacion', 'id_producto']);
+      expect(await db('umbrales_producto').where({ id_producto: 5 }).first()).toEqual(umbral);
+    });
+
+    it('un producto solo tiene un umbral (clave primaria): repetirlo choca; otro producto convive', async () => {
+      await crearUmbral(db, { idProducto: 5, cantidadMinima: 10 });
+      await expect(crearUmbral(db, { idProducto: 5, cantidadMinima: 3 })).rejects.toMatchObject({ code: '23505' });
+      await crearUmbral(db, { idProducto: 6, cantidadMinima: 0 });
+      expect(await db('umbrales_producto').count({ total: '*' })).toEqual([{ total: 2 }]);
     });
   });
 

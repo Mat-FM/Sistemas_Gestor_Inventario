@@ -37,6 +37,10 @@ const BODEGAS = [
   ['post', '/bodegas/:id/inactivar'],
   ['post', '/bodegas/:id/activar'],
 ];
+const SALDOS = [
+  ['get', '/saldos/bajo-umbral'],
+  ['get', '/saldos'],
+];
 
 let request;
 let db;
@@ -68,6 +72,12 @@ describe('rutasDeclaradas', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => [metodo, ruta]);
     for (const esperada of BODEGAS) expect(rutas).toContainEqual(esperada);
     expect(new Set(rutas.map(([metodo, ruta]) => `${metodo} ${ruta}`)).size).toBe(rutas.length);
+  });
+
+  it('incluye las dos consultas de saldos de la Tabla 9 y ninguna repetida (el orden de las estáticas lo comprueba la prueba de orden)', () => {
+    const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
+    for (const [metodo, ruta] of SALDOS) expect(rutas).toContain(`${metodo} ${ruta}`);
+    expect(new Set(rutas).size).toBe(rutas.length);
   });
 
   it('excluye /health y /docs: no son rutas de negocio ni pasan por el Gateway', () => {
