@@ -5,6 +5,7 @@ const { logger: loggerPorDefecto } = require('./logger');
 const { crearErrorHandler, rutaNoEncontrada } = require('./middleware/errorHandler');
 const { identity } = require('./middleware/identity');
 const { crearRequestLog } = require('./middleware/requestLog');
+const { registrarRutas } = require('./routes');
 
 /**
  * Arma la aplicación Express.
@@ -34,6 +35,9 @@ function createApp({ db, clients, logger = loggerPorDefecto, env = process.env }
     }
     return res.json({ estado: 'ok', servicio: SERVICIO });
   });
+
+  // Rutas de negocio (routes/index.js): las lecturas aceptan llamadas internas sin X-User-Id y las escrituras lo exigen.
+  registrarRutas(app, { db, clients, logger });
 
   // ---- Fin de las rutas: no añadir rutas debajo de esta línea (nunca se alcanzarían). ----
 
