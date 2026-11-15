@@ -109,8 +109,9 @@ exports.up = async (knex) => {
     tabla.integer('id_lote');
     tabla.integer('id_traslado');
     tabla.integer('id_conteo');
-    // Con signo solo en AJUSTE (D3); nunca 0.
+    // Con signo solo en AJUSTE (D3); nunca 0. En los demás tipos el signo lo pone el tipo, no la cantidad.
     tabla.integer('cantidad').notNullable();
+    // Saldo de ese producto en esa bodega después del movimiento: nunca negativo (saldos.cantidad_disponible >= 0).
     tabla.integer('saldo_resultante').notNullable();
     marcaDeTiempo(knex, tabla, 'fecha');
     tabla.integer('id_usuario').notNullable();
@@ -124,6 +125,8 @@ exports.up = async (knex) => {
     tabla.foreign('id_conteo', 'movimientos_id_conteo_fkey').references('id_conteo').inTable('conteos');
     tabla.check(enLista('tipo', TIPOS_MOVIMIENTO), [], 'movimientos_tipo_valido');
     tabla.check('cantidad <> 0', [], 'movimientos_cantidad_no_cero');
+    tabla.check("tipo = 'AJUSTE' OR cantidad > 0", [], 'movimientos_cantidad_con_signo_solo_ajuste');
+    tabla.check('saldo_resultante >= 0', [], 'movimientos_saldo_resultante_no_negativo');
   });
   // Kardex de un producto y de una bodega, del más reciente al más antiguo. Knex no expresa DESC en un índice.
   await knex.raw('CREATE INDEX movimientos_id_producto_fecha_idx ON movimientos (id_producto, fecha DESC)');

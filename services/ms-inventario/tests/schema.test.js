@@ -279,7 +279,9 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
       ['traslado con estado fuera de la lista', conDosBodegas((c, o, d) => c('traslados').insert(filaTraslado(o.id_bodega, d.id_bodega, { estado: 'PERDIDO' }))), '23514', 'traslados_estado_valido'],
       ['conteo con estado fuera de la lista', conBodega((c, b) => c('conteos').insert(filaConteo(b.id_bodega, { estado: 'CERRADO' }))), '23514', 'conteos_estado_valido'],
       ['movimiento con tipo fuera de la lista', conBodega((c, b) => c('movimientos').insert(filaMovimiento(b.id_bodega, { tipo: 'VENTA' }))), '23514', 'movimientos_tipo_valido'],
-      ['movimiento con cantidad 0', conBodega((c, b) => c('movimientos').insert(filaMovimiento(b.id_bodega, { cantidad: 0 }))), '23514', 'movimientos_cantidad_no_cero'],
+      ['AJUSTE con cantidad 0', conBodega((c, b) => c('movimientos').insert(filaMovimiento(b.id_bodega, { tipo: 'AJUSTE', cantidad: 0 }))), '23514', 'movimientos_cantidad_no_cero'],
+      ['movimiento con saldo resultante negativo', conBodega((c, b) => c('movimientos').insert(filaMovimiento(b.id_bodega, { saldo_resultante: -1 }))), '23514', 'movimientos_saldo_resultante_no_negativo'],
+      ['AJUSTE con saldo resultante negativo', conBodega((c, b) => c('movimientos').insert(filaMovimiento(b.id_bodega, { tipo: 'AJUSTE', cantidad: -3, saldo_resultante: -5 }))), '23514', 'movimientos_saldo_resultante_no_negativo'],
       ['umbral negativo', inserta('umbrales_producto', { id_producto: 1, cantidad_minima: -1 }), '23514', 'umbrales_producto_cantidad_minima_no_negativa'],
 
       // --- claves foráneas propias (una bodega, un lote, un traslado o un conteo que no existen) ---
@@ -352,7 +354,13 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
       expect(movimiento.tipo).toBe(tipo);
     });
 
-    it.each([1, -1, 250, -250])('movimiento con cantidad %i (un AJUSTE puede restar)', async (cantidad) => {
+    it.each([0, 1, 5, 250])('movimiento con saldo resultante %i (el límite del CHECK es 0)', async (saldoResultante) => {
+      const bodega = await crearBodega(db, {});
+      const [movimiento] = await db('movimientos').insert(filaMovimiento(bodega.id_bodega, { saldo_resultante: saldoResultante })).returning('*');
+      expect(movimiento.saldo_resultante).toBe(saldoResultante);
+    });
+
+    it.each([1, -1, 3, -3, 250, -250])('movimiento con cantidad %i (un AJUSTE puede restar)', async (cantidad) => {
       const bodega = await crearBodega(db, {});
       const [movimiento] = await db('movimientos').insert(filaMovimiento(bodega.id_bodega, { tipo: 'AJUSTE', cantidad })).returning('*');
       expect(movimiento.cantidad).toBe(cantidad);
@@ -395,6 +403,40 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
       ]);
       expect(await db('movimientos').where({ id_traslado: traslado.id_traslado }).count({ n: '*' }).first()).toEqual({ n: 2 });
       expect(await db('movimientos').where({ id_conteo: conteo.id_conteo }).count({ n: '*' }).first()).toEqual({ n: 2 });
+    });
+  });
+
+  describe('signo de la cantidad en el kardex (D3)', () => {
+    // Solo AJUSTE lleva cantidad con signo; en los demás tipos el signo lo pone el tipo (suma o resta), nunca la cantidad.
+    const SIN_SIGNO = TIPOS_MOVIMIENTO.filter((tipo) => tipo !== 'AJUSTE');
+
+    it('control positivo: AJUSTE con -3 y con +3, y cualquier otro tipo con +3, se insertan', async () => {
+      const bodega = await crearBodega(db, {});
+      const filas = [
+        filaMovimiento(bodega.id_bodega, { tipo: 'AJUSTE', cantidad: -3 }),
+        filaMovimiento(bodega.id_bodega, { tipo: 'AJUSTE', cantidad: 3 }),
+        ...SIN_SIGNO.map((tipo) => filaMovimiento(bodega.id_bodega, { tipo, cantidad: 3 })),
+      ];
+      const guardadas = await db('movimientos').insert(filas).returning(['tipo', 'cantidad']);
+      expect(guardadas).toHaveLength(filas.length);
+      expect(guardadas.filter((m) => m.cantidad < 0)).toEqual([{ tipo: 'AJUSTE', cantidad: -3 }]);
+    });
+
+    it.each(SIN_SIGNO)('%s con cantidad -1 se rechaza: solo AJUSTE lleva signo', async (tipo) => {
+      const bodega = await crearBodega(db, {});
+      await expect(db('movimientos').insert(filaMovimiento(bodega.id_bodega, { tipo, cantidad: -1 }))).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'movimientos_cantidad_con_signo_solo_ajuste',
+      });
+      expect(await db('movimientos').count({ n: '*' }).first()).toEqual({ n: 0 });
+    });
+
+    it.each(TIPOS_MOVIMIENTO)('%s con cantidad 0 se rechaza (por <> 0 o por el signo, según el tipo)', async (tipo) => {
+      const bodega = await crearBodega(db, {});
+      const error = await db('movimientos').insert(filaMovimiento(bodega.id_bodega, { tipo, cantidad: 0 })).then(() => null, (e) => e);
+      expect(error).toMatchObject({ code: '23514' });
+      // PostgreSQL revisa los CHECK por orden alfabético: en un tipo sin signo salta primero el del signo.
+      expect(error.constraint).toBe(tipo === 'AJUSTE' ? 'movimientos_cantidad_no_cero' : 'movimientos_cantidad_con_signo_solo_ajuste');
     });
   });
 
