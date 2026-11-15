@@ -64,6 +64,14 @@ function fecha(valor, campo) {
   throw rechazo(campo, 'debe ser una fecha válida con el formato AAAA-MM-DD');
 }
 
+/**
+ * Fecha `YYYY-MM-DD` de la cadena de consulta. Parámetro ausente → undefined; uno repetido (arreglo), vacío o que no exista en
+ * el calendario es 422 (`fecha`). Como `enteroQuery` y `booleanoQuery`: un filtro opcional.
+ */
+function fechaQuery(valor, campo) {
+  return valor === undefined ? undefined : fecha(valor, campo);
+}
+
 /** Valor que debe estar en `lista` (comparación exacta, sensible a mayúsculas). */
 function enumerado(valor, campo, lista) {
   if (typeof valor !== 'string' || !lista.includes(valor)) {
@@ -178,5 +186,5 @@ function validarCampos(validaciones) {
 }
 
 module.exports = {
-  ENTERO_MAXIMO, entero, enteroQuery, esFechaValida, fecha, enumerado, booleanoQuery, texto, cuerpoObjeto, idRuta, recoger, validarCampos,
+  ENTERO_MAXIMO, entero, enteroQuery, esFechaValida, fecha, fechaQuery, enumerado, booleanoQuery, texto, cuerpoObjeto, idRuta, recoger, validarCampos,
 };

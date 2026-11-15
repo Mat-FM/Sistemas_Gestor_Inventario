@@ -16,6 +16,20 @@ const ORDEN_FEFO = 'fecha_vencimiento ASC NULLS LAST, id_lote ASC';
 
 const esIdPositivo = (valor) => Number.isSafeInteger(valor) && valor >= 1;
 
+// Una consulta sobre `lotes` restringida por los filtros presentes; un filtro undefined no restringe. El COUNT y la página de
+// `listar` la comparten (mismo WHERE), así que `total` es siempre el del filtro.
+// - venceAntesDe es una fecha `YYYY-MM-DD` ya validada y la comparación es ESTRICTA (`<`): el lote que vence ese día no entra, y
+//   uno sin fecha (NULL) tampoco, porque `NULL < fecha` no es verdadero. Es `date` contra `date`: no depende del huso de la
+//   sesión de PostgreSQL ni del proceso de Node.
+// - conExistencia solo filtra con `true` (omite los lotes en 0); con `false` o undefined no restringe.
+function filtrar(consulta, { idProducto, idBodega, venceAntesDe, conExistencia }) {
+  if (idProducto !== undefined) consulta.where({ id_producto: idProducto });
+  if (idBodega !== undefined) consulta.where({ id_bodega: idBodega });
+  if (venceAntesDe !== undefined) consulta.whereRaw('fecha_vencimiento < ?::date', [venceAntesDe]);
+  if (conExistencia === true) consulta.where('cantidad_disponible', '>', 0);
+  return consulta;
+}
+
 /**
  * Entrada a un lote por su código, en UNA sentencia atómica:
  * `INSERT … ON CONFLICT (id_bodega, id_producto, codigo_lote) DO UPDATE SET cantidad_disponible = lotes.cantidad_disponible +
@@ -92,6 +106,25 @@ async function listarParaFefo(trx, { idBodega, idProducto }) {
 }
 
 /**
+ * Una página de la consulta de lotes (RF17), en orden FEFO: `fecha_vencimiento ASC NULLS LAST, id_lote ASC` (el que vence primero
+ * primero, los lotes sin fecha al final). `id_lote` desempata a los que vencen el mismo día: es un orden total y estable, así
+ * que dos páginas seguidas nunca repiten ni saltan filas (ms-notificaciones y ms-reportes recorren todas las páginas). Devuelve
+ * además el total de filas del filtro, no de la página: el conteo y la página son dos consultas con el mismo WHERE (`count(*)
+ * over()` daría total 0 en una página fuera de rango), y un movimiento que se confirme entre las dos puede desplazar una fila
+ * entre páginas, como en toda paginación por desplazamiento. Es una LECTURA: sin FOR UPDATE, nunca espera a un movimiento en
+ * curso ni bloquea filas.
+ * @param {{idProducto?: number, idBodega?: number, venceAntesDe?: string, conExistencia?: boolean, limit: number, offset: number}}
+ *   opciones un filtro undefined no filtra; venceAntesDe es una fecha `YYYY-MM-DD` ya validada
+ * @returns {Promise<{filas: Lote[], total: number}>}
+ */
+async function listar(dbOrTrx, { idProducto, idBodega, venceAntesDe, conExistencia, limit, offset }) {
+  const filtro = { idProducto, idBodega, venceAntesDe, conExistencia };
+  const [resumen] = await filtrar(dbOrTrx(TABLA), filtro).count({ total: '*' });
+  const filas = await filtrar(dbOrTrx(TABLA).select(COLUMNAS), filtro).orderByRaw(ORDEN_FEFO).limit(limit).offset(offset);
+  return { filas, total: Number(resumen.total) };
+}
+
+/**
  * Suma `delta` (con signo) a la existencia de un lote, solo si no queda negativa: la condición va en el WHERE, así que nunca se
  * llega al 23514 del CHECK `lotes_cantidad_no_negativa`.
  * @returns {Promise<Lote|undefined>} el lote actualizado; undefined si no existe o si quedaría negativo (nada cambia)
@@ -120,4 +153,4 @@ async function sumarDelPar(trx, { idBodega, idProducto }) {
   return { enLotes: Number(fila.en_lotes), aislamiento: fila.aislamiento };
 }
 
-module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, ajustar, sumarDelPar };
+module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, listar, ajustar, sumarDelPar };

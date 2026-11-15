@@ -1,6 +1,6 @@
 const { AppError } = require('../src/errors');
 const {
-  booleanoQuery, cuerpoObjeto, entero, enteroQuery, enumerado, esFechaValida, fecha, idRuta, recoger, texto, validarCampos,
+  booleanoQuery, cuerpoObjeto, entero, enteroQuery, enumerado, esFechaValida, fecha, fechaQuery, idRuta, recoger, texto, validarCampos,
 } = require('../src/http/validate');
 
 // Ejecuta la validación y devuelve el error que lanza; falla si no lanza ninguno.
@@ -136,6 +136,22 @@ describe('fecha', () => {
       datosNoValidos(() => fecha(valor, 'fecha_vencimiento'), 'fecha_vencimiento');
     },
   );
+});
+
+describe('fechaQuery (una fecha de la cadena de consulta)', () => {
+  it('un parámetro ausente → undefined; presente y válido → el mismo texto', () => {
+    expect(fechaQuery(undefined, 'vence_antes_de')).toBeUndefined();
+    expect(fechaQuery('2027-01-31', 'vence_antes_de')).toBe('2027-01-31');
+  });
+
+  it.each(['', '2027-02-30', '2027-1-31', '2027-01-31T00:00:00Z', ' 2027-01-31'])('rechaza %p con 422 sobre el campo', (valor) => {
+    datosNoValidos(() => fechaQuery(valor, 'vence_antes_de'), 'vence_antes_de');
+  });
+
+  it('un parámetro repetido (arreglo) o null → 422, nunca se ignora en silencio', () => {
+    datosNoValidos(() => fechaQuery(['2027-01-31', '2027-02-01'], 'vence_antes_de'), 'vence_antes_de');
+    datosNoValidos(() => fechaQuery(null, 'vence_antes_de'), 'vence_antes_de');
+  });
 });
 
 describe('enumerado', () => {

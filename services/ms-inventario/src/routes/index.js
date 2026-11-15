@@ -1,5 +1,6 @@
 const { requireUser } = require('../middleware/identity');
 const { rutasBodegas } = require('./bodegas');
+const { rutasLotes } = require('./lotes');
 const { rutasMovimientos } = require('./movimientos');
 const { rutasSaldos } = require('./saldos');
 const { rutasUmbrales } = require('./umbrales');
@@ -26,6 +27,7 @@ function rutasDeclaradas(deps = {}) {
     ...rutasSaldos(deps),
     ...rutasUmbrales(deps),
     ...rutasMovimientos(deps),
+    ...rutasLotes(deps),
   ];
 }
 

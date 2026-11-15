@@ -1,11 +1,13 @@
 const loteRepository = require('../src/repositories/loteRepository');
+const loteService = require('../src/services/loteService');
 const { esperarBloqueo } = require('./helpers/bloqueos');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote } = require('./helpers/fixtures');
 
-// El repositorio de lotes (RNF13) contra PostgreSQL real: el SQL de las entradas a un lote (upsert), de los bloqueos (FOR UPDATE)
-// y de las restas. Las reglas (D27) están en el motor (stock.test.js) y la ruta en movimientosLotes.test.js.
+// Las capas de lotes por separado (RNF13): el repositorio contra PostgreSQL real (el SQL de las entradas a un lote (upsert), de
+// los bloqueos (FOR UPDATE), de las restas y de la consulta) y el servicio llamado sin HTTP. Las reglas (D27) están en el motor
+// (stock.test.js), la ruta de movimientos en movimientosLotes.test.js y las rutas de consulta en lotes.test.js.
 
 const CLAVES_LOTE = ['id_lote', 'id_producto', 'id_bodega', 'codigo_lote', 'fecha_vencimiento', 'cantidad_disponible'];
 
@@ -250,6 +252,137 @@ describe('loteRepository.listarParaFefo', () => {
   });
 });
 
+describe('loteRepository.listar (la consulta de lotes, RF17)', () => {
+  const claves = (filas) => filas.map((fila) => fila.id_lote);
+  // Los ids de las filas sembradas, para leerlos en la tabla de abajo.
+  //  id  bodega  producto  vence        existencia
+  //  1   b1      5         2027-01-31   5
+  //  2   b1      5         (sin fecha)  3
+  //  3   b1      6         2027-01-15   0
+  //  4   b2      5         2027-01-31   2     (misma fecha que el 1)
+  //  5   b1      5         2027-03-01   1
+  // Orden esperado, fecha ASC (sin fecha al final) e id_lote ASC: 3, 1, 4, 5, 2.
+  beforeEach(async () => {
+    const sembrar = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
+    await sembrar('A', '2027-01-31', 5);
+    await sembrar('B', null, 3);
+    await sembrar('C', '2027-01-15', 0, { idProducto: 6 });
+    await sembrar('D', '2027-01-31', 2, { idBodega: b2 });
+    await sembrar('E', '2027-03-01', 1);
+  });
+  const todos = { limit: 10, offset: 0 };
+
+  it('devuelve { filas, total } en orden FEFO (fecha ascendente, sin fecha al final, desempate por id_lote), con exactamente los 6 campos de un Lote', async () => {
+    /* Una SOLA lista ordenada: el consumidor recorre las páginas y necesita que el orden sea estable. */
+    const { filas, total } = await loteRepository.listar(db, todos);
+    expect(claves(filas)).toEqual([3, 1, 4, 5, 2]);
+    expect(total).toBe(5);
+    expect(Object.keys(filas[0]).sort()).toEqual([...CLAVES_LOTE].sort());
+    expect(filas[1]).toEqual({ id_lote: 1, id_producto: 5, id_bodega: b1, codigo_lote: 'A', fecha_vencimiento: '2027-01-31', cantidad_disponible: 5 });
+    expect(filas[4].fecha_vencimiento).toBeNull();
+    expect(filas[0]).toEqual({ id_lote: 3, id_producto: 6, id_bodega: b1, codigo_lote: 'C', fecha_vencimiento: '2027-01-15', cantidad_disponible: 0 });
+  });
+
+  it('el desempate por id_lote ordena las filas con la misma fecha aunque la fila física se haya movido (UPDATE)', async () => {
+    /* El UPDATE del lote 1 crea su nueva versión al final del montón: sin ORDER BY id_lote, el 4 saldría antes que el 1. */
+    await db('lotes').where({ id_lote: 1 }).update({ cantidad_disponible: 6 });
+    expect(claves((await loteRepository.listar(db, todos)).filas)).toEqual([3, 1, 4, 5, 2]);
+  });
+
+  it('total es numérico y cuenta TODAS las filas del filtro, no las de la página; limit y offset recortan solo las filas', async () => {
+    const { filas, total } = await loteRepository.listar(db, { limit: 2, offset: 2 });
+    expect(claves(filas)).toEqual([4, 5]);
+    expect(typeof total).toBe('number');
+    expect(total).toBe(5);
+  });
+
+  it('una página fuera de rango devuelve filas vacías y el total exacto, aun con un desplazamiento mayor que el INTEGER', async () => {
+    expect(await loteRepository.listar(db, { limit: 10, offset: 100 })).toEqual({ filas: [], total: 5 });
+    expect(await loteRepository.listar(db, { limit: 100, offset: 214748364600 })).toEqual({ filas: [], total: 5 });
+  });
+
+  // Cada filtro es una función porque el id de b2 lo fija el beforeEach de la suite.
+  it.each([
+    ['idProducto', () => ({ idProducto: 6 }), [3]],
+    ['idBodega', () => ({ idBodega: b2 }), [4]],
+    ['venceAntesDe (estricto: el 31 de enero no entra con el 31, y el lote sin fecha nunca entra)', () => ({ venceAntesDe: '2027-01-31' }), [3]],
+    ['venceAntesDe un día después (entran los del 31)', () => ({ venceAntesDe: '2027-02-01' }), [3, 1, 4]],
+    ['conExistencia: true', () => ({ conExistencia: true }), [1, 4, 5, 2]],
+  ])('%s filtra filas y total con el MISMO criterio (el COUNT y la página comparten el WHERE)', async (_filtro, filtro, esperados) => {
+    const pagina = await loteRepository.listar(db, { ...filtro(), limit: 1, offset: 0 });
+    expect(claves(pagina.filas)).toEqual(esperados.slice(0, 1)); // la página trae solo 1 fila…
+    expect(pagina.total).toBe(esperados.length); // …pero el total es el del filtro
+    expect(claves((await loteRepository.listar(db, { ...filtro(), ...todos })).filas)).toEqual(esperados);
+  });
+
+  it('conExistencia: false y conExistencia: undefined NO filtran (incluyen los lotes en 0)', async () => {
+    expect(claves((await loteRepository.listar(db, { conExistencia: true, ...todos })).filas)).not.toContain(3); // control: true sí lo omite
+    for (const conExistencia of [false, undefined]) {
+      const { filas, total } = await loteRepository.listar(db, { conExistencia, ...todos });
+      expect({ conExistencia, ids: claves(filas), total }).toEqual({ conExistencia, ids: [3, 1, 4, 5, 2], total: 5 });
+    }
+  });
+
+  it('los filtros se combinan con AND y un filtro undefined no restringe', async () => {
+    const lista = (filtro) => loteRepository.listar(db, { ...todos, ...filtro });
+    expect(claves((await lista({ idProducto: 5, idBodega: b1 })).filas)).toEqual([1, 5, 2]);
+    expect(claves((await lista({ idProducto: 5, venceAntesDe: '2027-02-01', conExistencia: true })).filas)).toEqual([1, 4]);
+    expect(await lista({ idProducto: 6, idBodega: b2 })).toEqual({ filas: [], total: 0 });
+    const sinFiltros = await lista({ idProducto: undefined, idBodega: undefined, venceAntesDe: undefined, conExistencia: undefined });
+    expect(sinFiltros.total).toBe(5);
+  });
+
+  it('los valores del filtro viajan como parámetros enlazados: ninguno se interpola en el texto de la consulta', async () => {
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta);
+    db.on('query', registrar);
+    try {
+      await loteRepository.listar(db, { idProducto: 54321, idBodega: 98765, venceAntesDe: '2031-11-30', conExistencia: true, limit: 77, offset: 33 });
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas.length).toBeGreaterThan(0);
+    for (const { sql } of consultas) expect(sql).not.toMatch(/54321|98765|2031-11|\b77\b|\b33\b/);
+    const enlazados = consultas.flatMap(({ bindings }) => bindings);
+    expect(enlazados).toEqual(expect.arrayContaining([54321, 98765, '2031-11-30', 77, 33]));
+  });
+
+  it('nunca usa SELECT *, y es una lectura: ni FOR UPDATE ni FOR SHARE', async () => {
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      await loteRepository.listar(db, todos);
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas.length).toBeGreaterThan(0);
+    for (const sql of consultas) expect(sql).not.toMatch(/\bfor\s+(update|share|no key update|key share)\b/i);
+    for (const sql of consultas.filter((texto) => /^select/i.test(texto) && !/count\(/i.test(texto))) expect(sql).not.toMatch(/\*/);
+  });
+
+  it('funciona dentro de una transacción (dbOrTrx): ve lo no confirmado y un rollback no deja nada', async () => {
+    await expect(db.transaction(async (trx) => {
+      await crearLote(trx, { idBodega: b1, idProducto: 77, codigoLote: 'NUEVO', cantidad: 1 });
+      expect((await loteRepository.listar(trx, { idProducto: 77, ...todos })).total).toBe(1);
+      expect((await loteRepository.listar(db, { idProducto: 77, ...todos })).total).toBe(0); // desde fuera no se ve
+      throw new Error('deshacer');
+    })).rejects.toThrow('deshacer');
+    expect((await loteRepository.listar(db, { idProducto: 77, ...todos })).total).toBe(0);
+  });
+
+  it('no toma bloqueos de fila: tras leer dentro de una transacción abierta, ningún lote queda bloqueado', async () => {
+    await conTransaccionAbierta((trx) => loteRepository.listar(trx, todos), async ({ filas }) => {
+      expect(filas).toHaveLength(5);
+      for (const { id_lote: idLote } of filas) expect(await estaBloqueado(idLote)).toBe(false);
+    });
+    // Control del arnés: con FOR UPDATE (listarParaFefo) sí quedarían bloqueados.
+    await conTransaccionAbierta((trx) => loteRepository.listarParaFefo(trx, { idBodega: b1, idProducto: 5 }), async () => {
+      expect(await estaBloqueado(1)).toBe(true);
+    });
+  });
+});
+
 describe('loteRepository.sumarDelPar', () => {
   it('suma la existencia de los lotes de ESE par (también los que están en 0), o 0 si no hay; e informa el aislamiento', async () => {
     /* El motor la usa para el stock sin lote de un traslado (D28(a)). */
@@ -294,12 +427,96 @@ describe('loteRepository.ajustar', () => {
   });
 });
 
+describe('loteService', () => {
+  const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
+  const OPERADOR = { idUsuario: 7, rol: 'OPERADOR_BODEGA', idBodega: 2, requestId: 'r1' };
+  const INTERNA = { idUsuario: null, rol: null, idBodega: null, requestId: 'r1' };
+  const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
+  afterEach(() => jest.restoreAllMocks());
+
+  describe('listarLotes', () => {
+    const consulta = (extra = {}) => ({ identity: IDENTIDAD, limit: 20, offset: 0, ...extra });
+    const deps = () => ({ db });
+    const espiar = () => jest.spyOn(loteRepository, 'listar').mockResolvedValue({ filas: [], total: 0 });
+
+    it('un operador con otra bodega → 403 SIN_PERMISO y NO consulta el repositorio', async () => {
+      const listar = espiar();
+      const error = await atrapar(loteService.listarLotes(deps(), consulta({ identity: OPERADOR, idBodega: 3 })));
+      expect(error).toMatchObject({ status: 403, codigo: 'SIN_PERMISO' });
+      expect(listar).not.toHaveBeenCalled();
+    });
+
+    it('un operador sin bodega asignada → 403 SIN_PERMISO, con y sin id_bodega, y NO consulta el repositorio', async () => {
+      const listar = espiar();
+      for (const idBodega of [undefined, 2]) {
+        const error = await atrapar(loteService.listarLotes(deps(), consulta({ identity: { ...OPERADOR, idBodega: null }, idBodega })));
+        expect(error).toMatchObject({ status: 403, codigo: 'SIN_PERMISO' });
+      }
+      expect(listar).not.toHaveBeenCalled();
+    });
+
+    it('un operador sin id_bodega recibe el filtro de SU bodega; con la propia también; el resto del filtro pasa intacto', async () => {
+      const listar = espiar();
+      const resto = { idProducto: 5, venceAntesDe: '2027-01-31', conExistencia: true, limit: 20, offset: 40 };
+      await loteService.listarLotes(deps(), consulta({ identity: OPERADOR, ...resto }));
+      await loteService.listarLotes(deps(), consulta({ identity: OPERADOR, idBodega: 2, ...resto }));
+      expect(listar).toHaveBeenNthCalledWith(1, db, { ...resto, idBodega: 2 });
+      expect(listar).toHaveBeenNthCalledWith(2, db, { ...resto, idBodega: 2 });
+    });
+
+    it.each([['un administrador', IDENTIDAD], ['una llamada interna', INTERNA]])('%s: el filtro pasa tal cual, con o sin id_bodega', async (_nombre, identity) => {
+      const listar = espiar();
+      const filtro = { idProducto: 5, idBodega: 3, venceAntesDe: '2027-01-31', conExistencia: false, limit: 100, offset: 200 };
+      await loteService.listarLotes(deps(), consulta({ identity, ...filtro }));
+      await loteService.listarLotes(deps(), consulta({ identity, limit: 20, offset: 0 }));
+      expect(listar).toHaveBeenNthCalledWith(1, db, filtro);
+      expect(listar).toHaveBeenNthCalledWith(2, db, { idProducto: undefined, idBodega: undefined, venceAntesDe: undefined, conExistencia: undefined, limit: 20, offset: 0 });
+    });
+
+    it('devuelve { filas, total } tal como los entrega el repositorio', async () => {
+      const filas = [{ id_lote: 3 }, { id_lote: 1 }];
+      jest.spyOn(loteRepository, 'listar').mockResolvedValue({ filas, total: 9 });
+      expect(await loteService.listarLotes(deps(), consulta())).toEqual({ filas, total: 9 });
+    });
+
+    it('con la base real: un operador recibe solo los lotes de su bodega y el total de ESA bodega', async () => {
+      await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', fechaVencimiento: '2027-01-31', cantidad: 1 });
+      await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'B', fechaVencimiento: '2027-02-01', cantidad: 2 });
+      await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'C', fechaVencimiento: '2027-01-15', cantidad: 3 });
+      const { filas, total } = await loteService.listarLotes(deps(), consulta({ identity: { ...OPERADOR, idBodega: b2 } }));
+      expect(filas.map((fila) => fila.id_lote)).toEqual([3, 2]);
+      expect(total).toBe(2);
+      expect((await loteService.listarLotes(deps(), consulta())).total).toBe(3); // control: el administrador ve los tres
+    });
+
+    it('un fallo síncrono del repositorio llega como rechazo, no como excepción', async () => {
+      const falla = new Error('fallo síncrono');
+      jest.spyOn(loteRepository, 'listar').mockImplementation(() => { throw falla; });
+      let resultado;
+      expect(() => { resultado = loteService.listarLotes(deps(), consulta()); }).not.toThrow();
+      expect(resultado).toBeInstanceOf(Promise);
+      await expect(resultado).rejects.toBe(falla);
+    });
+  });
+
+  describe('crearLoteService', () => {
+    it('lee las dependencias en cada llamada: el servicio se puede construir sin ellas', async () => {
+      const tardias = {};
+      const servicio = loteService.crearLoteService(tardias);
+      Object.assign(tardias, { db });
+      await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', cantidad: 1 });
+      expect((await servicio.listar({ identity: IDENTIDAD, limit: 20, offset: 0 })).total).toBe(1);
+    });
+  });
+});
+
 // Cada función que exporta el repositorio con sus argumentos: todas son asíncronas (Ruling 21).
 promesasReales(loteRepository, {
   upsertEntrada: [{ idBodega: 1, idProducto: 5, codigoLote: 'P', fechaVencimiento: null, cantidad: 1 }],
   buscarPorCodigo: [{ idBodega: 1, idProducto: 5, codigoLote: 'P' }],
   bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
+  listar: [{ limit: 10, offset: 0 }],
   ajustar: [1, 0],
   sumarDelPar: [{ idBodega: 1, idProducto: 5 }],
 }, { titulo: 'loteRepository', db: () => db });
