@@ -413,6 +413,51 @@ describe('createResilientClient: cortacircuitos (D15)', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
 
+  it.each([
+    ['5xx', r503],
+    ['error de red', caidaDeRed],
+  ])('la llamada de prueba es de UN SOLO intento aunque sea reintentable: un destino que sigue fallando (%s) recibe una llamada y ninguna espera', async (_caso, paso) => {
+    const { cliente, fetchImpl, sleep, avanzar } = crearCliente();
+    await fallar(cliente, 5);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+
+    avanzar(30_000);
+    fetchImpl.mockImplementation(async (...args) => paso(...args));
+    await esperarNoDisponible(cliente.request('GET', '/x', { reintentable: true }));
+    expect(fetchImpl).toHaveBeenCalledTimes(6); // exactamente una llamada de prueba, sin sus 3 reintentos
+    expect(sleep).not.toHaveBeenCalled();
+
+    // reabre el circuito otros openMs completos
+    await esperarNoDisponible(cliente.request('GET', '/x', { reintentable: true }));
+    avanzar(29_999);
+    await esperarNoDisponible(cliente.request('GET', '/x', { reintentable: true }));
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    avanzar(1);
+    await esperarNoDisponible(cliente.request('GET', '/x', { reintentable: true })); // nueva prueba: otra sola llamada
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('una sonda con éxito cierra el circuito y las llamadas siguientes vuelven a tener reintentos completos', async () => {
+    const { cliente, fetchImpl, sleep, avanzar } = crearCliente();
+    await fallar(cliente, 5);
+    avanzar(30_000);
+    fetchImpl.mockImplementation(async () => r200());
+    await expect(cliente.request('GET', '/x', { reintentable: true })).resolves.toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+
+    // control positivo: 503, 503, 200 → tres llamadas y esperas [200, 400]
+    fetchImpl.mockClear();
+    let n = 0;
+    fetchImpl.mockImplementation(async () => {
+      n += 1;
+      return n < 3 ? r503() : r200();
+    });
+    await expect(cliente.request('GET', '/x', { reintentable: true })).resolves.toEqual({ status: 200, body: { ok: true } });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[200], [400]]);
+  });
+
   it('un éxito intercalado reinicia el contador: 4 fallos + 1 éxito + 4 fallos no abren; el quinto sí', async () => {
     const { cliente, fetchImpl } = crearCliente();
     await fallar(cliente, 4);
@@ -458,13 +503,23 @@ describe('createResilientClient: cortacircuitos (D15)', () => {
   });
 
   it('un error inesperado durante la prueba libera el turno: no queda semiabierto para siempre', async () => {
-    const { cliente, fetchImpl, sleep, avanzar } = crearCliente();
+    let ahora = 1_000_000;
+    let relojRoto = false;
+    const now = () => {
+      if (relojRoto) throw new Error('reloj roto');
+      return ahora;
+    };
+    const { cliente, fetchImpl } = crearCliente({ now });
     await fallar(cliente, 5);
-    avanzar(30_000);
+    ahora += 30_000;
 
-    const roto = new Error('sleep roto');
-    sleep.mockRejectedValueOnce(roto);
-    await expect(cliente.request('GET', '/x', { reintentable: true })).rejects.toBe(roto); // no se disfraza de 503
+    // la prueba llama, falla, y al anotar el fallo el reloj lanza: la llamada se interrumpe sin decidir nada
+    fetchImpl.mockImplementationOnce(async () => {
+      relojRoto = true;
+      return r503();
+    });
+    await expect(cliente.request('GET', '/x')).rejects.toThrow('reloj roto'); // no se disfraza de 503
+    relojRoto = false;
     expect(fetchImpl).toHaveBeenCalledTimes(6);
 
     // el turno se liberó y el error no contó como fallo: la siguiente llamada hace de prueba

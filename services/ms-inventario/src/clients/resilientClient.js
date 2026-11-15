@@ -141,7 +141,7 @@ function createResilientClient({
   // ---- Estado del cortacircuitos (D15). Es POR INSTANCIA de cliente (un cliente por servicio destino, cada uno con su
   // circuito) y POR PROCESO: con varias copias del servicio (RNF05) cada una lleva su propio contador, y no hay ningún dato de
   // sesión ni de petición aquí. abiertoHasta es null con el circuito cerrado; pasado ese instante, solo UNA llamada
-  // (pruebaEnCurso) lo cierra si tiene éxito o lo reabre si falla, y mientras vuela las demás se rechazan sin llamar. ----
+  // (pruebaEnCurso), de un solo intento, lo cierra si tiene éxito o lo reabre si falla, y mientras vuela las demás se rechazan sin llamar. ----
   let fallosSeguidos = 0;
   let abiertoHasta = null;
   let pruebaEnCurso = false;
@@ -248,6 +248,10 @@ function createResilientClient({
    * @param {{headers?: object, body?: *, reintentable?: boolean}} [opciones]
    *   headers: SOLO estas cabeceras viajan (más Accept y, con body, Content-Type); body: se serializa a JSON.
    *   reintentable: true únicamente en operaciones que no se duplican (lecturas).
+   *
+   * Peor caso de una llamada reintentable contra un destino colgado: 4 intentos × timeoutMs (3 s) más las esperas de 0,2 + 0,4 +
+   * 0,8 s = 13,4 s antes del 503; una no reintentable tarda como máximo timeoutMs. La llamada de prueba del cortacircuitos
+   * semiabierto es de un solo intento (como máximo timeoutMs), sea o no reintentable.
    * @returns {Promise<{status: number, body: *}>} cualquier 2xx o 4xx; body es el JSON o null si no hay cuerpo.
    * @throws {TypeError} error de programación (ruta, cabeceras, cuerpo o método inválidos)
    * @throws {AppError} 503 SERVICIO_NO_DISPONIBLE ante red, plazo, 5xx, 3xx, respuesta defectuosa o circuito abierto
@@ -263,7 +267,9 @@ function createResilientClient({
 
     const esPrueba = admitir();
     try {
-      const maximoDeIntentos = reintentable ? backoffMs.length + 1 : 1;
+      // La llamada de prueba es de UN SOLO intento, aunque sea reintentable: contra un destino que sigue caído no gasta 4 plazos
+      // más las esperas (unos 13 s) y reabre el circuito enseguida. Su fallo cuenta igual para D15: ella no tiene reintentos que agotar.
+      const maximoDeIntentos = reintentable && !esPrueba ? backoffMs.length + 1 : 1;
       let intentos = 0;
       let resultado;
       do {
