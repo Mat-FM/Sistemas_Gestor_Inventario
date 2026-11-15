@@ -1,0 +1,511 @@
+openapi: 3.0.3
+
+info:
+  title: ms-catalogo
+  version: 1.0.0
+  description: |
+    Microservicio del catálogo: productos (RF01), categorías y subcategorías (RF02) y búsqueda de productos (RF12).
+    Implementa las operaciones de la Tabla 7 de la Entrega 2.
+
+    **Rutas internas.** Las rutas aquí descritas son las del servicio, **sin el prefijo `/api`**. Desde fuera del
+    clúster se llaman a través del API Gateway con ese prefijo (por ejemplo, `GET /api/productos` llega aquí como
+    `GET /productos`). El Gateway verifica el token y el rol antes de reenviar la petición; este servicio no
+    revisa roles. `POST /internas/productos/lote` no lo publica el Gateway: solo lo llama `ms-reportes`.
+
+    ## Convenciones
+
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista vacía salvo en los 422,
+      donde trae un elemento `{campo, mensaje}` por cada error de validación.
+    - Listados de productos: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con
+      `?pagina=1&por_pagina=20` (`por_pagina` máximo 100). Las categorías se devuelven en una lista simple, sin paginar.
+    - Fechas en ISO 8601 (UTC).
+    - Los productos no se borran: se inactivan y se activan. El `codigo` de un producto no se puede editar.
+    - Las categorías tienen dos niveles: categoría principal y subcategoría.
+
+    ## Llamada a ms-proveedores (RNF18)
+
+    El filtro `?id_proveedor` de `GET /productos` pide a `ms-proveedores` los productos de ese proveedor
+    (`GET /proveedores/{id}/productos`). Cada intento espera hasta 3 s; ante un fallo de conexión o un 5xx se
+    reintenta hasta 3 veces (0,2, 0,4 y 0,8 s). Tras 5 llamadas fallidas seguidas, el cortacircuitos se abre durante
+    30 s y responde 503 sin llamar. Si ms-proveedores no responde, el filtro responde 503 `SERVICIO_NO_DISPONIBLE`;
+    el resto de operaciones sigue funcionando.
+
+servers:
+  - url: /
+    description: Este mismo servicio
+
+tags:
+  - name: Productos
+  - name: Categorías
+  - name: Internas
+  - name: Operación
+
+paths:
+  /productos:
+    get:
+      tags: [Productos]
+      summary: Buscar productos
+      description: Todos los roles en el Gateway (RF12). Los filtros se combinan entre sí.
+      parameters:
+        - name: nombre
+          in: query
+          description: Parte del nombre (contiene el texto, sin distinguir mayúsculas).
+          schema: { type: string, maxLength: 150 }
+        - name: codigo
+          in: query
+          description: Parte del código (contiene el texto, sin distinguir mayúsculas).
+          schema: { type: string, maxLength: 30 }
+        - name: id_categoria
+          in: query
+          description: Productos de esa categoría y de sus subcategorías.
+          schema: { type: integer, minimum: 1 }
+        - name: id_proveedor
+          in: query
+          description: |
+            Productos asociados a ese proveedor en `ms-proveedores`. Si el proveedor no existe, la lista sale vacía.
+          schema: { type: integer, minimum: 1 }
+        - name: estado
+          in: query
+          schema: { $ref: '#/components/schemas/Estado' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: Listado paginado, ordenado por id_producto.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos:
+                    type: array
+                    items: { $ref: '#/components/schemas/Producto' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503':
+          description: Se filtró por `id_proveedor` y `ms-proveedores` no responde (`SERVICIO_NO_DISPONIBLE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: SERVICIO_NO_DISPONIBLE, mensaje: ms-proveedores no responde. Intente de nuevo más tarde., detalles: [] }
+    post:
+      tags: [Productos]
+      summary: Crear producto
+      description: Rol en el Gateway ADMINISTRADOR (RF01). El producto se crea en estado ACTIVO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoNuevo' }
+      responses:
+        '201':
+          description: Producto creado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404':
+          description: La categoría no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: NO_EXISTE, mensaje: La categoría no existe., detalles: [] }
+        '409':
+          description: Ya existe un producto con ese código (`CODIGO_DUPLICADO`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: CODIGO_DUPLICADO, mensaje: Ya existe un producto con ese código., detalles: [] }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+
+  /productos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdProducto'
+    get:
+      tags: [Productos]
+      summary: Consultar producto
+      description: Todos los roles en el Gateway. También la llama `ms-inventario` para confirmar que el producto existe.
+      responses:
+        '200':
+          description: Producto.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+    put:
+      tags: [Productos]
+      summary: Actualizar producto
+      description: |
+        Rol en el Gateway ADMINISTRADOR. Igual que el POST, sin `codigo`; si llega `codigo`, se ignora (no es editable).
+        Si no se envía `descripcion`, queda vacía.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoEditable' }
+      responses:
+        '200':
+          description: Producto actualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404':
+          description: El producto o la categoría no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+
+  /productos/{id}/inactivar:
+    parameters:
+      - $ref: '#/components/parameters/IdProducto'
+    post:
+      tags: [Productos]
+      summary: Inactivar producto
+      description: Rol en el Gateway ADMINISTRADOR. Pasa a INACTIVO (dar de baja, RF01). Si ya estaba INACTIVO, responde 200 sin cambios.
+      responses:
+        '200':
+          description: Producto inactivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+
+  /productos/{id}/activar:
+    parameters:
+      - $ref: '#/components/parameters/IdProducto'
+    post:
+      tags: [Productos]
+      summary: Activar producto
+      description: Rol en el Gateway ADMINISTRADOR. Pasa a ACTIVO. Si ya estaba ACTIVO, responde 200 sin cambios.
+      responses:
+        '200':
+          description: Producto activo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+
+  /categorias:
+    get:
+      tags: [Categorías]
+      summary: Listar categorías
+      description: |
+        Todos los roles en el Gateway. Lista simple ordenada por nombre, sin paginar. Sin filtros, todas las
+        categorías (principales y subcategorías). Con `arbol=true`, solo las principales, cada una con sus
+        `subcategorias`; en ese caso `id_categoria_padre` se ignora.
+      parameters:
+        - name: id_categoria_padre
+          in: query
+          description: Solo las subcategorías de esa categoría.
+          schema: { type: integer, minimum: 1 }
+        - name: arbol
+          in: query
+          schema: { type: string, enum: ['true', 'false', '1', '0'], default: 'false' }
+      responses:
+        '200':
+          description: Categorías.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CategoriaConSubcategorias' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+    post:
+      tags: [Categorías]
+      summary: Crear categoría o subcategoría
+      description: Rol en el Gateway ADMINISTRADOR (RF02). Sin `id_categoria_padre` se crea una categoría principal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaNueva' }
+      responses:
+        '201':
+          description: Categoría creada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Categoria' }
+        '404':
+          description: La categoría padre no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: NO_EXISTE, mensaje: La categoría padre no existe., detalles: [] }
+        '409': { $ref: '#/components/responses/NombreDuplicado' }
+        '422': { $ref: '#/components/responses/DatosNoValidosCategoria' }
+
+  /categorias/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdCategoria'
+    get:
+      tags: [Categorías]
+      summary: Consultar categoría
+      description: Todos los roles en el Gateway.
+      responses:
+        '200':
+          description: Categoría.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Categoria' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+    put:
+      tags: [Categorías]
+      summary: Actualizar categoría
+      description: Rol en el Gateway ADMINISTRADOR. Igual que el POST; reemplaza todos los datos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaNueva' }
+      responses:
+        '200':
+          description: Categoría actualizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Categoria' }
+        '404':
+          description: La categoría o la categoría padre no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409': { $ref: '#/components/responses/NombreDuplicado' }
+        '422': { $ref: '#/components/responses/DatosNoValidosCategoria' }
+    delete:
+      tags: [Categorías]
+      summary: Eliminar categoría
+      description: Rol en el Gateway ADMINISTRADOR. Borrado real, solo si no tiene productos ni subcategorías.
+      responses:
+        '204':
+          description: Categoría eliminada.
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '409':
+          description: La categoría tiene productos o subcategorías (`CATEGORIA_EN_USO`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: CATEGORIA_EN_USO, mensaje: La categoría tiene productos o subcategorías., detalles: [] }
+
+  /internas/productos/lote:
+    post:
+      tags: [Internas]
+      summary: Carga masiva de productos
+      description: |
+        Solo la llama `ms-reportes` dentro del clúster con las filas de un archivo de PRODUCTOS (RF16); el Gateway
+        no la publica. `ms-reportes` ya convirtió el nombre de la categoría en `id_categoria`. Éxito parcial: cada
+        fila se valida con las mismas reglas de `POST /productos` y se crea por separado. `fila` es la posición en
+        la lista, empezando en 1. Si un código se repite (en la base o dentro del mismo lote), gana la primera
+        aparición y las demás se rechazan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filas]
+              properties:
+                filas:
+                  type: array
+                  minItems: 1
+                  items: { $ref: '#/components/schemas/ProductoNuevo' }
+      responses:
+        '200':
+          description: Resultado de la carga.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  creados: { type: integer, description: Cantidad de productos creados., example: 2 }
+                  rechazados:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fila: { type: integer, example: 3 }
+                        motivo: { type: string, example: La categoría no existe. }
+        '422':
+          description: La lista `filas` falta o está vacía.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /health:
+    get:
+      tags: [Operación]
+      summary: Estado del servicio
+      description: RNF10. Comprueba que la base de datos responde; no consulta a `ms-proveedores`. No pasa por el Gateway.
+      responses:
+        '200':
+          description: El servicio puede atender peticiones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  servicio: { type: string, example: ms-catalogo }
+        '503':
+          description: La base de datos no responde (`SERVICIO_NO_DISPONIBLE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    IdProducto:
+      name: id
+      in: path
+      required: true
+      description: id_producto. Un valor no numérico responde 404.
+      schema: { type: integer, minimum: 1 }
+    IdCategoria:
+      name: id
+      in: path
+      required: true
+      description: id_categoria. Un valor no numérico responde 404.
+      schema: { type: integer, minimum: 1 }
+    Pagina:
+      name: pagina
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PorPagina:
+      name: por_pagina
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    Estado:
+      type: string
+      enum: [ACTIVO, INACTIVO]
+
+    ProductoEditable:
+      type: object
+      required: [nombre, id_categoria, unidad_medida, precio]
+      properties:
+        nombre: { type: string, maxLength: 150, example: Café molido 500 g }
+        descripcion: { type: string, maxLength: 500, nullable: true, example: Café tostado y molido de origen Caldas. }
+        id_categoria: { type: integer, minimum: 1, example: 2 }
+        unidad_medida: { type: string, maxLength: 20, example: UNIDAD }
+        precio: { type: number, minimum: 0, maximum: 9999999999.99, example: 18500.5 }
+
+    ProductoNuevo:
+      allOf:
+        - type: object
+          required: [codigo]
+          properties:
+            codigo: { type: string, maxLength: 30, example: CAF-500 }
+        - $ref: '#/components/schemas/ProductoEditable'
+
+    Producto:
+      type: object
+      properties:
+        id_producto: { type: integer, example: 1 }
+        codigo: { type: string, example: CAF-500 }
+        nombre: { type: string, example: Café molido 500 g }
+        descripcion: { type: string, nullable: true, example: Café tostado y molido de origen Caldas. }
+        id_categoria: { type: integer, example: 2 }
+        unidad_medida: { type: string, example: UNIDAD }
+        precio: { type: number, example: 18500.5 }
+        estado: { $ref: '#/components/schemas/Estado' }
+        fecha_creacion: { type: string, format: date-time, example: '2026-11-14T19:09:40Z' }
+        fecha_actualizacion: { type: string, format: date-time, example: '2026-11-14T19:09:40Z' }
+
+    CategoriaNueva:
+      type: object
+      required: [nombre]
+      properties:
+        nombre: { type: string, maxLength: 100, example: Café }
+        descripcion: { type: string, maxLength: 255, nullable: true, example: Café en grano y molido. }
+        id_categoria_padre:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Categoría principal a la que pertenece. Vacío para una categoría principal.
+          example: 1
+
+    Categoria:
+      type: object
+      properties:
+        id_categoria: { type: integer, example: 2 }
+        nombre: { type: string, example: Café }
+        descripcion: { type: string, nullable: true, example: Café en grano y molido. }
+        id_categoria_padre: { type: integer, nullable: true, example: 1 }
+
+    CategoriaConSubcategorias:
+      allOf:
+        - $ref: '#/components/schemas/Categoria'
+        - type: object
+          properties:
+            subcategorias:
+              type: array
+              description: Solo con `arbol=true`.
+              items: { $ref: '#/components/schemas/Categoria' }
+
+    Meta:
+      type: object
+      properties:
+        pagina: { type: integer, example: 1 }
+        por_pagina: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            codigo: { type: string }
+            mensaje: { type: string }
+            detalles:
+              type: array
+              items:
+                type: object
+                properties:
+                  campo: { type: string }
+                  mensaje: { type: string }
+
+  responses:
+    NoExiste:
+      description: El recurso no existe (`NO_EXISTE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { codigo: NO_EXISTE, mensaje: El producto no existe., detalles: [] }
+    NombreDuplicado:
+      description: Ya existe una categoría con ese nombre en el mismo nivel (`NOMBRE_DUPLICADO`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { codigo: NOMBRE_DUPLICADO, mensaje: Ya existe una categoría con ese nombre en el mismo nivel., detalles: [] }
+    DatosNoValidos:
+      description: Datos no válidos (`DATOS_NO_VALIDOS`), con un detalle por cada error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              codigo: DATOS_NO_VALIDOS
+              mensaje: Los datos enviados no son válidos.
+              detalles:
+                - { campo: codigo, mensaje: El campo codigo es obligatorio. }
+    DatosNoValidosCategoria:
+      description: |
+        Datos no válidos (`DATOS_NO_VALIDOS`). Además de los campos, se rechaza en `id_categoria_padre` una categoría
+        que sea su propia padre, un padre que sea subcategoría o una categoría con subcategorías que pase a ser
+        subcategoría (solo hay dos niveles).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              codigo: DATOS_NO_VALIDOS
+              mensaje: Los datos enviados no son válidos.
+              detalles:
+                - { campo: id_categoria_padre, mensaje: 'La categoría padre debe ser una categoría principal: solo hay dos niveles.' }
