@@ -250,6 +250,88 @@ describe('GET /saldos', () => {
     });
   });
 
+  // Fija lo que ya hace el código con parámetros que el cliente puede escribir «raro»: los repetidos, vacíos o con espacios son
+  // 422 (nunca se toma el primero ni se ignoran) y los nombres que Express no reconoce se ignoran. Ninguno deja a un operador
+  // de bodega fuera de su alcance. Siembra la de «alcance por rol»: producto 5 en las tres bodegas (3, 4, 20) y producto 6 en la 2.
+  describe('parámetros repetidos, vacíos o con nombre raro (no esquivan el alcance del operador)', () => {
+    let b1;
+    let b2;
+    let b3;
+    beforeEach(async () => {
+      [b1, b2, b3] = await sembrarBodegas();
+      await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+      await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 4 });
+      await crearSaldo(db, { idProducto: 5, idBodega: b3, cantidad: 20 });
+      await crearSaldo(db, { idProducto: 6, idBodega: b2, cantidad: 8 });
+    });
+
+    // Quien consulta: cada caso se prueba con el operador de la bodega b2 y con el administrador.
+    const LLAMADORES = [
+      ['un OPERADOR_BODEGA', () => headers('OPERADOR_BODEGA', { idBodega: b2 })],
+      ['un ADMINISTRADOR', () => ADM],
+    ];
+
+    // Cada caso es una cadena de consulta escrita a mano (así se ve exactamente lo que viaja) y los campos inválidos que informa.
+    const INVALIDOS = [
+      ['id_bodega repetido con una ajena primero', () => `id_bodega=${b1}&id_bodega=${b2}`, ['id_bodega']],
+      ['id_bodega repetido con la propia primero', () => `id_bodega=${b2}&id_bodega=${b1}`, ['id_bodega']],
+      ['id_bodega repetido con el mismo valor', () => `id_bodega=${b2}&id_bodega=${b2}`, ['id_bodega']],
+      ['id_bodega repetido, uno vacío', () => `id_bodega=&id_bodega=${b2}`, ['id_bodega']],
+      ['id_bodega vacío', () => 'id_bodega=', ['id_bodega']],
+      ['id_bodega con un espacio delante (%20)', () => `id_bodega=%20${b2}`, ['id_bodega']],
+      ['id_bodega con un espacio detrás (%20)', () => `id_bodega=${b2}%20`, ['id_bodega']],
+      ['id_bodega con un signo más (+)', () => `id_bodega=%2B${b2}`, ['id_bodega']],
+      ['pagina repetido', () => 'pagina=1&pagina=2', ['pagina']],
+      ['por_pagina repetido', () => 'por_pagina=1&por_pagina=2', ['por_pagina']],
+      ['pagina y por_pagina repetidos a la vez', () => 'pagina=1&pagina=2&por_pagina=1&por_pagina=2', ['pagina', 'por_pagina']],
+      ['id_producto repetido', () => 'id_producto=5&id_producto=6', ['id_producto']],
+      ['id_bodega repetido y pagina inválida', () => `id_bodega=${b1}&id_bodega=${b2}&pagina=0`, ['id_bodega', 'pagina']],
+    ];
+
+    describe.each(LLAMADORES)('%s', (_nombre, cabeceras) => {
+      it.each(INVALIDOS)('%s → 422 sobre los campos inválidos (no 403 ni 200), sin datos', async (_caso, consulta, campos) => {
+        // Control positivo: la misma persona, con una consulta válida, recibe 200.
+        expect((await request.get('/saldos').set(cabeceras())).status).toBe(200);
+        const res = await request.get(`/saldos?${consulta()}`).set(cabeceras());
+        datosNoValidos(res, campos);
+        expect(res.body).not.toHaveProperty('datos');
+      });
+    });
+
+    // Express 5 usa el analizador de consulta «simple»: los nombres con corchetes o con otras mayúsculas son OTRO parámetro y
+    // se ignoran. Si alguien activara el analizador extendido, `id_bodega[]=x` llegaría como arreglo y estas pruebas avisan.
+    const IGNORADOS = [
+      ['id_bodega[] (corchetes)', () => `id_bodega[]=${b1}`],
+      ['id_bodega[0] (índice)', () => `id_bodega[0]=${b1}`],
+      ['id_bodega[a] (clave)', () => `id_bodega[a]=${b1}`],
+      ['ID_BODEGA (mayúsculas)', () => `ID_BODEGA=${b1}`],
+      ['Id_Bodega (mayúsculas mixtas)', () => `Id_Bodega=${b1}`],
+      ['id_bodega con un espacio en el nombre', () => `id_bodega%20=${b1}`],
+    ];
+
+    it.each(IGNORADOS)('un operador que escribe %s con una bodega ajena sigue viendo SOLO la suya (200), no recibe 403 ni la ajena', async (_caso, consulta) => {
+      const operador = headers('OPERADOR_BODEGA', { idBodega: b2 });
+      // Control positivo: pedir la ajena con el nombre bueno SÍ es 403.
+      esError(await request.get(`/saldos?id_bodega=${b1}`).set(operador), 403, 'SIN_PERMISO');
+      const res = await request.get(`/saldos?${consulta()}`).set(operador);
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toEqual({ pagina: 1, por_pagina: 20, total: 2 });
+      expect(ids(res.body.datos)).toEqual([[5, b2], [6, b2]]);
+    });
+
+    it.each(IGNORADOS)('el administrador que escribe %s no filtra por bodega: el nombre se ignora y ve las cuatro filas', async (_caso, consulta) => {
+      const res = await request.get(`/saldos?${consulta()}`).set(ADM);
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toEqual({ pagina: 1, por_pagina: 20, total: 4 });
+    });
+
+    it('un nombre ignorado no impide validar el parámetro bueno: id_bodega=abc junto a ID_BODEGA=1 → 422 sobre id_bodega', async () => {
+      for (const [, cabeceras] of LLAMADORES) {
+        datosNoValidos(await request.get(`/saldos?ID_BODEGA=${b2}&id_bodega=abc`).set(cabeceras()), ['id_bodega']);
+      }
+    });
+  });
+
   describe('alcance por rol (restricción global 4: un operador nunca ve otra bodega)', () => {
     let b1;
     let b2;
