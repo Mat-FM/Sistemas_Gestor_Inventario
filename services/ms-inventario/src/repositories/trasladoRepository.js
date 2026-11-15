@@ -49,4 +49,29 @@ async function findById(dbOrTrx, id) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ id_traslado: id }).first();
 }
 
-module.exports = { insert, findById };
+/**
+ * Toma un traslado por su id con `SELECT … FOR UPDATE` (bloqueado hasta el fin de la transacción). Debe llamarse con una
+ * transacción. Es el PRIMER bloqueo de la recepción (D31(d)): dos recepciones del mismo traslado se ponen en fila aquí y la
+ * segunda, al obtener el bloqueo, lee el estado que dejó la primera (READ COMMITTED relee la versión confirmada de la fila).
+ * @returns {Promise<Traslado|undefined>}
+ */
+async function bloquearPorId(trx, id) {
+  return trx(TABLA).select(COLUMNAS).where({ id_traslado: id }).forUpdate().first();
+}
+
+/**
+ * Marca un traslado EN_TRANSITO como RECIBIDO, con `fecha_recepcion = clock_timestamp()` (el instante de la escritura, D24) y
+ * el usuario que lo recibe. Solo cambia un traslado que siga EN_TRANSITO (la condición va en el WHERE): sobre uno ya recibido no
+ * hace nada y devuelve undefined. Quien llama debe tener la fila bloqueada (bloquearPorId) y haber comprobado el estado.
+ * @param {{idUsuarioRecibe: number}} datos
+ * @returns {Promise<Traslado|undefined>} el traslado actualizado
+ */
+async function marcarRecibido(trx, id, { idUsuarioRecibe }) {
+  const [traslado] = await trx(TABLA)
+    .where({ id_traslado: id, estado: 'EN_TRANSITO' })
+    .update({ estado: 'RECIBIDO', fecha_recepcion: trx.raw('clock_timestamp()'), id_usuario_recibe: idUsuarioRecibe })
+    .returning(COLUMNAS);
+  return traslado;
+}
+
+module.exports = { insert, findById, bloquearPorId, marcarRecibido };

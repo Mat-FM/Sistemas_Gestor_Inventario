@@ -17,6 +17,19 @@ function crearTrasladoController({ trasladoService }) {
       });
       res.status(replayed ? 200 : 201).json({ ...traslado, movimiento });
     },
+
+    // POST /traslados/{id}/recepcion + Idempotency-Key → 200 { ...Traslado RECIBIDO, movimiento: TRASLADO_ENTRADA }, también
+    // cuando es la repetición de la misma recepción. El {id} lo valida el servicio, DESPUÉS de la clave (su orden es parte del
+    // contrato: una clave ausente es 400 aunque el id sea inválido).
+    async recibir(req, res) {
+      const { traslado, movimiento } = await trasladoService.recibir({
+        idTraslado: req.params.id,
+        body: req.body,
+        claveIdempotencia: req.headers['idempotency-key'],
+        identity: req.identity,
+      });
+      res.json({ ...traslado, movimiento });
+    },
   };
 }
 

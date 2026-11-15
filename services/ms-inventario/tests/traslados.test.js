@@ -1,21 +1,26 @@
+const knex = require('knex');
+const supertest = require('supertest');
+const { createApp } = require('../src/app');
+const { construirConfigKnex } = require('../src/config/db');
+const { delta } = require('../src/domain/tipos');
 const saldoRepository = require('../src/repositories/saldoRepository');
 const movimientoRepository = require('../src/repositories/movimientoRepository');
 const { OPERACIONES, claveAlmacenada } = require('../src/services/idempotencia');
 const stockService = require('../src/services/stockService');
-const { buildTestApp } = require('./helpers/app');
+const { buildTestApp, entornoValido } = require('./helpers/app');
 const { esperarBloqueo } = require('./helpers/bloqueos');
-const { truncateAll } = require('./helpers/db');
+const { configDePrueba, truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote, crearSaldo, fakeCatalogo, headers } = require('./helpers/fixtures');
 const { AGOTADO, esperarConPlazo } = require('./helpers/hijos');
 const { ISO_8601, datosNoValidos, esError, recursoNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
 // Traslados entre bodegas (RF04) de punta a punta, contra PostgreSQL real y con clientes falsos: POST /traslados (crear: saca del
-// origen y deja EN_TRANSITO). El motor (bloqueos, lotes, D28(a)) se prueba en stock.test.js; las capas por separado en
-// trasladosCapas.test.js.
+// origen y deja EN_TRANSITO) y POST /traslados/{id}/recepcion (recibir: suma al destino y deja RECIBIDO). El motor (bloqueos,
+// lotes, D28(a)) se prueba en stock.test.js; las capas por separado en trasladosCapas.test.js.
 //
 // Tras CADA prueba se comprueban en la base dos invariantes: por (producto, bodega) la suma de los lotes nunca supera el saldo
-// ni hay lotes negativos (D27(c)), y todo traslado tiene exactamente su movimiento TRASLADO_SALIDA (nunca uno sin el otro: la
-// transacción los escribe juntos, D31(e)).
+// ni hay lotes negativos (D27(c)), y todo traslado tiene exactamente su movimiento TRASLADO_SALIDA y, solo si está RECIBIDO,
+// exactamente un TRASLADO_ENTRADA (nunca un estado sin su movimiento: la transacción los escribe juntos, D31(e)).
 
 const ADM = headers('ADMINISTRADOR');
 const CLAVES_TRASLADO = [
@@ -84,9 +89,14 @@ async function comprobarInvariantes() {
     GROUP BY l.id_producto, l.id_bodega`);
   for (const fila of pares) expect({ ...fila, cumple: fila.en_lotes <= fila.saldo && fila.minimo >= 0 }).toEqual({ ...fila, cumple: true });
   const { rows: huerfanos } = await db.raw(`
-    SELECT t.id_traslado, COUNT(m.id_movimiento)::int AS salidas
-    FROM traslados t LEFT JOIN movimientos m ON m.id_traslado = t.id_traslado AND m.tipo = 'TRASLADO_SALIDA'
-    GROUP BY t.id_traslado HAVING COUNT(m.id_movimiento) <> 1`);
+    SELECT t.id_traslado, t.estado,
+           COUNT(m.id_movimiento) FILTER (WHERE m.tipo = 'TRASLADO_SALIDA')::int AS salidas,
+           COUNT(m.id_movimiento) FILTER (WHERE m.tipo = 'TRASLADO_ENTRADA')::int AS entradas
+    FROM traslados t LEFT JOIN movimientos m ON m.id_traslado = t.id_traslado
+    GROUP BY t.id_traslado, t.estado
+    HAVING COUNT(m.id_movimiento) FILTER (WHERE m.tipo = 'TRASLADO_SALIDA') <> 1
+        OR COUNT(m.id_movimiento) FILTER (WHERE m.tipo = 'TRASLADO_ENTRADA') <> (CASE WHEN t.estado = 'RECIBIDO' THEN 1 ELSE 0 END)
+        OR (t.estado = 'RECIBIDO') <> (t.fecha_recepcion IS NOT NULL AND t.id_usuario_recibe IS NOT NULL)`);
   expect(huerfanos).toEqual([]);
 }
 
@@ -503,5 +513,397 @@ describe('POST /traslados: concurrencia (PostgreSQL real)', () => {
     const res = await pendiente;
     expect(res.status).toBe(201);
     expect(res.body.id_lote).toBe(lote.id_lote);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// POST /traslados/{id}/recepcion
+// ---------------------------------------------------------------------------------------------------------------------------
+
+// POST /traslados/{id}/recepcion; `clave` null no envía la cabecera.
+function recibir(id, cuerpo = {}, { cabeceras = ADM, clave = nuevaClave(), cliente = request } = {}) {
+  const peticion = cliente.post(`/traslados/${id}/recepcion`).set(cabeceras);
+  if (clave !== null) peticion.set('Idempotency-Key', clave);
+  return peticion.send(cuerpo);
+}
+const OPE = (idBodega, idUsuario = 8) => headers('OPERADOR_BODEGA', { idUsuario, idBodega });
+
+// Un traslado EN_TRANSITO creado por la API (siembra antes en el origen el stock que necesita). Devuelve la respuesta (201).
+async function enTransito(extra = {}) {
+  const cuerpo = traslado(extra);
+  await db('saldos').insert({ id_producto: cuerpo.id_producto, id_bodega: cuerpo.id_bodega_origen, cantidad_disponible: 0 }).onConflict(['id_producto', 'id_bodega']).ignore();
+  if (cuerpo.id_lote === undefined) await db('saldos').where({ id_producto: cuerpo.id_producto, id_bodega: cuerpo.id_bodega_origen }).increment('cantidad_disponible', cuerpo.cantidad);
+  const res = await crear(cuerpo);
+  expect(res.status).toBe(201);
+  clients.catalogo.obtenerProducto.mockClear();
+  return res.body;
+}
+
+describe('POST /traslados/{id}/recepcion: recepción (200)', () => {
+  it('sin lote, por el OPERADOR del destino: 200 RECIBIDO con fecha_recepcion e id_usuario_recibe, y el movimiento TRASLADO_ENTRADA en el destino', async () => {
+    /* RF04: la mercancía en tránsito entra al destino; el origen no vuelve a cambiar. */
+    const creado = await enTransito();
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 4 });
+    const res = await recibir(creado.id_traslado, { observacion: '  Llegó completo  ' }, { cabeceras: OPE(b2), clave: 'k-rec' });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual([...CLAVES_TRASLADO, 'movimiento'].sort());
+    expect(res.body).toEqual({
+      ...creado, estado: 'RECIBIDO', fecha_recepcion: expect.stringMatching(ISO_8601), id_usuario_recibe: 8,
+      movimiento: {
+        id_movimiento: 2, tipo: 'TRASLADO_ENTRADA', id_producto: 5, id_bodega: b2, id_lote: null, id_traslado: creado.id_traslado, id_conteo: null,
+        cantidad: 3, saldo_resultante: 7, fecha: expect.stringMatching(ISO_8601), id_usuario: 8, documento_referencia: null, observacion: 'Llegó completo',
+      },
+    });
+    expect(res.body.fecha_recepcion >= res.body.fecha_envio).toBe(true);
+    expect(await saldoDe(b2)).toBe(7);
+    expect(await saldoDe(b1)).toBe(0);
+    const [fila] = await traslados();
+    expect(fila).toMatchObject({ estado: 'RECIBIDO', id_usuario_recibe: 8 });
+    expect(res.body.fecha_recepcion).toBe(fila.fecha_recepcion.toISOString());
+    expect((await movimientos()).map((m) => m.clave_idempotencia)).toEqual([expect.stringMatching(/^7:tras:kt-\d+#salida$/), '8:tras:k-rec#entrada']);
+    expect(res.body.movimiento).not.toHaveProperty('clave_idempotencia');
+  });
+
+  it('el destino SIN saldo previo nace con la cantidad; la observación es opcional (ausente, null o sin cuerpo)', async () => {
+    /* `{observacion?}`. */
+    for (const cuerpo of [{}, { observacion: null }, undefined]) {
+      const creado = await enTransito();
+      const res = await recibir(creado.id_traslado, cuerpo);
+      expect(res.status).toBe(200);
+      expect(res.body.movimiento.observacion).toBeNull();
+    }
+    expect(await saldoDe(b2)).toBe(9);
+  });
+
+  it('con lote: el destino recrea el MISMO codigo_lote con la MISMA fecha; el movimiento lleva el lote del DESTINO y el traslado conserva el de origen', async () => {
+    /* D28(a): un traslado mueve un lote entero de una bodega a otra. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const origen = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 10 });
+    const creado = await enTransito({ cantidad: 4, id_lote: origen.id_lote });
+    const res = await recibir(creado.id_traslado);
+    expect(res.status).toBe(200);
+    const destino = (await lotes()).find((l) => l.id_bodega === b2);
+    expect(destino).toMatchObject({ id_producto: 5, codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 4 });
+    expect(res.body).toMatchObject({ id_lote: origen.id_lote, movimiento: { id_lote: destino.id_lote, saldo_resultante: 4 } });
+    expect((await traslados())[0].id_lote).toBe(origen.id_lote);
+    expect(await saldoDe(b2)).toBe(4);
+  });
+
+  it('con lote que YA existe en el destino con la MISMA fecha: le SUMA (no crea otro)', async () => {
+    /* INSERT … ON CONFLICT del motor. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 6 });
+    const origen = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 10 });
+    const existente = await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 5 });
+    const creado = await enTransito({ cantidad: 4, id_lote: origen.id_lote });
+    const res = await recibir(creado.id_traslado);
+    expect(res.body.movimiento).toMatchObject({ id_lote: existente.id_lote, saldo_resultante: 10 });
+    expect((await lotes()).filter((l) => l.id_bodega === b2)).toEqual([expect.objectContaining({ id_lote: existente.id_lote, cantidad_disponible: 9 })]);
+  });
+
+  it('un lote de origen SIN fecha se recrea en el destino sin fecha', async () => {
+    /* La fecha nula también se conserva. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const origen = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'SF', fechaVencimiento: null, cantidad: 3 });
+    const creado = await enTransito({ id_lote: origen.id_lote });
+    expect((await recibir(creado.id_traslado)).status).toBe(200);
+    expect((await lotes()).find((l) => l.id_bodega === b2)).toMatchObject({ codigo_lote: 'SF', fecha_vencimiento: null, cantidad_disponible: 3 });
+  });
+
+  it('si DESPUÉS de crear el destino tiene ese lote con OTRA fecha (o con fecha, siendo el de origen sin fecha) → 409 CONFLICTO y sigue EN_TRANSITO', async () => {
+    /* Limitación documentada: la comprobación de la creación no puede impedir que el destino cree el lote después. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 6 });
+    const conFecha = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    const sinFecha = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'N', fechaVencimiento: null, cantidad: 3 });
+    const uno = await enTransito({ id_lote: conFecha.id_lote });
+    const dos = await enTransito({ id_lote: sinFecha.id_lote });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 2 });
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-12-31', cantidad: 1 });
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'N', fechaVencimiento: '2027-12-31', cantidad: 1 });
+    const antes = await foto();
+    expect((await recibir(uno.id_traslado)).body.error.codigo).toBe('CONFLICTO');
+    esError(await recibir(dos.id_traslado), 409, 'CONFLICTO', ['id_lote']);
+    expect(await foto()).toEqual(antes);
+    expect((await traslados()).map((t) => t.estado)).toEqual(['EN_TRANSITO', 'EN_TRANSITO']);
+  });
+
+  it('el ADMINISTRADOR recibe en cualquier bodega; el umbral NO se evalúa tras la recepción (D13)', async () => {
+    /* El administrador no tiene alcance de bodega; TRASLADO_ENTRADA no avisa. */
+    await db('umbrales_producto').insert({ id_producto: 5, cantidad_minima: 100 });
+    const creado = await enTransito();
+    expect((await recibir(creado.id_traslado, {}, { cabeceras: headers('ADMINISTRADOR', { idBodega: b3 }) })).status).toBe(200);
+    expect(clients.notificaciones.notificarStockBajo).not.toHaveBeenCalled();
+    expect(clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /traslados/{id}/recepcion: rechazos (nada cambia y el traslado sigue EN_TRANSITO)', () => {
+  it('el OPERADOR de otra bodega (también el del ORIGEN) o sin X-User-Bodega → 403 SIN_PERMISO; el del destino sí', async () => {
+    /* D31(g): «403 bodega de destino ajena». */
+    const creado = await enTransito();
+    const antes = await foto();
+    for (const cabeceras of [OPE(b1), OPE(b3), headers('OPERADOR_BODEGA', { idUsuario: 8 })]) {
+      esError(await recibir(creado.id_traslado, {}, { cabeceras }), 403, 'SIN_PERMISO');
+    }
+    expect(await foto()).toEqual(antes);
+    expect((await recibir(creado.id_traslado, {}, { cabeceras: OPE(b2) })).status).toBe(200);
+  });
+
+  it.each([['inexistente', '9999'], ['0', '0'], ['-1', '-1'], ['abc', 'abc'], ['fuera del INTEGER', '2147483648'], ['decimal', '1.5']])('id %s → 404 NO_EXISTE', async (_caso, id) => {
+    /* Control: el id real da 200. */
+    const creado = await enTransito();
+    recursoNoExiste(await recibir(id));
+    expect((await recibir(creado.id_traslado)).status).toBe(200);
+  });
+
+  it('bodega de destino INACTIVA → 409 BODEGA_INACTIVA y el traslado sigue EN_TRANSITO; al reactivarla se recibe (D31(f))', async () => {
+    /* Limitación documentada: la mercancía queda en tránsito hasta reactivar la bodega. */
+    const creado = await enTransito();
+    await db('bodegas').where({ id_bodega: b2 }).update({ activa: false });
+    const antes = await foto();
+    esError(await recibir(creado.id_traslado, {}, { clave: 'k-inactiva' }), 409, 'BODEGA_INACTIVA');
+    expect(await foto()).toEqual(antes);
+    await db('bodegas').where({ id_bodega: b2 }).update({ activa: true });
+    expect((await recibir(creado.id_traslado, {}, { clave: 'k-inactiva' })).status).toBe(200); // el 409 no guardó la clave
+  });
+
+  it('observacion de 501 caracteres → 422 sobre "observacion" (nunca el 22001); 500 sí; un arreglo como cuerpo → 422 sobre "cuerpo"', async () => {
+    /* Un caso inválido y su control positivo; la matriz de `texto` está en validate.test.js. */
+    const creado = await enTransito();
+    datosNoValidos(await recibir(creado.id_traslado, { observacion: 'x'.repeat(501) }), ['observacion']);
+    datosNoValidos(await recibir(creado.id_traslado, [{ observacion: 'x' }]), ['cuerpo']);
+    expect((await traslados())[0].estado).toBe('EN_TRANSITO');
+    const res = await recibir(creado.id_traslado, { observacion: 'x'.repeat(500) });
+    expect(res.status).toBe(200);
+    expect(res.body.movimiento.observacion).toHaveLength(500);
+  });
+
+  it('sin X-User-Id → 401; Idempotency-Key ausente, vacía, de 201 caracteres o con «#» → 400 (antes que el id: con un id inválido también es 400)', async () => {
+    /* Orden: identidad → clave → id. */
+    const creado = await enTransito();
+    esError(await request.post(`/traslados/${creado.id_traslado}/recepcion`).set('Idempotency-Key', 'k').send({}), 401, 'NO_AUTENTICADO');
+    for (const clave of [null, '', 'k'.repeat(201), 'a#b']) esError(await recibir(creado.id_traslado, {}, { clave }), 400, 'PETICION_MAL_FORMADA');
+    esError(await recibir('abc', {}, { clave: null }), 400, 'PETICION_MAL_FORMADA');
+    expect((await traslados())[0].estado).toBe('EN_TRANSITO');
+  });
+
+  it('un fallo del motor que no es de negocio → 500 ERROR_INTERNO genérico, sin movimiento y el traslado sigue EN_TRANSITO', async () => {
+    /* La recepción y su movimiento van en la misma transacción. */
+    const creado = await enTransito();
+    jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(new Error('fallo del motor'));
+    const antes = await foto();
+    esError(await recibir(creado.id_traslado), 500, 'ERROR_INTERNO');
+    expect(await foto()).toEqual(antes);
+  });
+});
+
+describe('POST /traslados/{id}/recepcion: Idempotency-Key (RNF17, D31)', () => {
+  it('misma clave → 200 con el MISMO traslado y movimiento, sin sumar dos veces', async () => {
+    /* D7: la repetición devuelve la respuesta original. */
+    const creado = await enTransito();
+    const primera = await recibir(creado.id_traslado, { observacion: 'uno' }, { clave: 'k-rec' });
+    const segunda = await recibir(creado.id_traslado, { observacion: 'otra', extra: 1 }, { clave: 'k-rec' });
+    expect([primera.status, segunda.status]).toEqual([200, 200]);
+    expect(segunda.body).toEqual(primera.body);
+    expect(await saldoDe(b2)).toBe(3);
+    expect((await movimientos()).filter((m) => m.tipo === 'TRASLADO_ENTRADA')).toHaveLength(1);
+  });
+
+  it('la repetición se responde antes que el alcance y el cuerpo: 200 aunque ahora el usuario tenga otra bodega o el cuerpo sea inválido', async () => {
+    /* Como en la creación (D7). */
+    const creado = await enTransito();
+    const primera = await recibir(creado.id_traslado, {}, { clave: 'k-rec', cabeceras: OPE(b2, 9) });
+    for (const [cuerpo, cabeceras] of [[{}, OPE(b3, 9)], [[1], OPE(b2, 9)], [{ observacion: 5 }, OPE(b2, 9)]]) {
+      const res = await recibir(creado.id_traslado, cuerpo, { clave: 'k-rec', cabeceras });
+      expect({ estado: res.status, cuerpo: res.body }).toEqual({ estado: 200, cuerpo: primera.body });
+    }
+  });
+
+  it('recibir otra vez con OTRA clave → 409 TRASLADO_YA_RECIBIDO; nada cambia', async () => {
+    /* Contrato: «409 ya recibido». */
+    const creado = await enTransito();
+    expect((await recibir(creado.id_traslado)).status).toBe(200);
+    const antes = await foto();
+    esError(await recibir(creado.id_traslado), 409, 'TRASLADO_YA_RECIBIDO');
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('D31(b): la MISMA clave de recepción sobre OTRO traslado → 409 CONFLICTO y el otro sigue EN_TRANSITO; con otra clave sí se recibe', async () => {
+    /* Devolver la recepción de otro traslado sería un error silencioso. */
+    const uno = await enTransito();
+    const dos = await enTransito();
+    expect((await recibir(uno.id_traslado, {}, { clave: 'k-rec' })).status).toBe(200);
+    const antes = await foto();
+    esError(await recibir(dos.id_traslado, {}, { clave: 'k-rec' }), 409, 'CONFLICTO');
+    expect(await foto()).toEqual(antes);
+    expect((await recibir(dos.id_traslado, {}, { clave: 'k-rec-2' })).status).toBe(200);
+  });
+
+  it('D31(b) en la carrera: si la búsqueda inicial no ve la clave y el INSERT choca con la de OTRO traslado → 409 CONFLICTO, nunca 200', async () => {
+    /* resolverFallo halla el movimiento por la clave, pero es de otro traslado. */
+    const uno = await enTransito();
+    const dos = await enTransito();
+    const primera = await recibir(uno.id_traslado, {}, { clave: 'k-rec' });
+    expect(primera.status).toBe(200);
+    const real = movimientoRepository.findByClave;
+    jest.spyOn(movimientoRepository, 'findByClave').mockImplementationOnce(async () => undefined).mockImplementation(real);
+    esError(await recibir(dos.id_traslado, {}, { clave: 'k-rec' }), 409, 'CONFLICTO');
+    expect((await traslados()).map((t) => t.estado)).toEqual(['RECIBIDO', 'EN_TRANSITO']);
+    expect(await saldoDe(b2)).toBe(3);
+  });
+
+  it('en la carrera con la MISMA clave y el MISMO traslado (la búsqueda inicial no la ve) → 200 con la recepción original', async () => {
+    /* La perdedora relee por la clave de entrada. */
+    const creado = await enTransito();
+    const primera = await recibir(creado.id_traslado, {}, { clave: 'k-rec' });
+    const real = movimientoRepository.findByClave;
+    jest.spyOn(movimientoRepository, 'findByClave').mockImplementationOnce(async () => undefined).mockImplementation(real);
+    const res = await recibir(creado.id_traslado, {}, { clave: 'k-rec' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(primera.body);
+  });
+
+  it('crear y recibir con la MISMA clave literal son operaciones distintas (sufijos #salida y #entrada): las dos se ejecutan', async () => {
+    /* D25d. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const creado = await crear(traslado(), { clave: 'misma' });
+    expect(creado.status).toBe(201);
+    const recibido = await recibir(creado.body.id_traslado, {}, { clave: 'misma' });
+    expect(recibido.status).toBe(200);
+    expect(recibido.body.movimiento.tipo).toBe('TRASLADO_ENTRADA');
+    expect((await movimientos()).map((m) => m.clave_idempotencia)).toEqual(['7:tras:misma#salida', '7:tras:misma#entrada']);
+  });
+
+  it('D31(c): repetir la CREACIÓN de un traslado ya recibido → 200 con el traslado en su estado ACTUAL (RECIBIDO) y el movimiento de salida original', async () => {
+    /* La repetición no congela el estado del traslado. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const creado = await crear(traslado(), { clave: 'k-c' });
+    const recibido = await recibir(creado.body.id_traslado);
+    const repeticion = await crear(traslado(), { clave: 'k-c' });
+    expect(repeticion.status).toBe(200);
+    const { movimiento: entrada, ...actual } = recibido.body;
+    expect(repeticion.body).toEqual({ ...actual, movimiento: creado.body.movimiento });
+    expect(entrada.tipo).toBe('TRASLADO_ENTRADA');
+  });
+
+  it('OTRO usuario con la misma clave sobre el mismo traslado no es una repetición: 409 TRASLADO_YA_RECIBIDO (D25)', async () => {
+    /* La clave se acota por usuario. */
+    const creado = await enTransito();
+    expect((await recibir(creado.id_traslado, {}, { clave: 'k-rec', cabeceras: OPE(b2, 8) })).status).toBe(200);
+    esError(await recibir(creado.id_traslado, {}, { clave: 'k-rec', cabeceras: OPE(b2, 9) }), 409, 'TRASLADO_YA_RECIBIDO');
+  });
+});
+
+describe('POST /traslados/{id}/recepcion: concurrencia (PostgreSQL real)', () => {
+  it('la recepción bloquea la fila del traslado ANTES de mirar el estado: si otra transacción la tiene y la deja RECIBIDO, la recepción espera y responde 409', async () => {
+    /* D31(d), determinista: la espera se comprueba con esperarBloqueo, sin tiempos fijos. */
+    const creado = await enTransito();
+    const otra = await db.transaction();
+    let pendiente;
+    try {
+      await otra('traslados').where({ id_traslado: creado.id_traslado }).forUpdate().first();
+      pendiente = recibir(creado.id_traslado).then((res) => res);
+      await esperarBloqueo(db);
+      await otra('traslados').where({ id_traslado: creado.id_traslado }).update({ estado: 'RECIBIDO', fecha_recepcion: db.fn.now(), id_usuario_recibe: 99 });
+      await otra('movimientos').insert({
+        tipo: 'TRASLADO_ENTRADA', id_producto: 5, id_bodega: b2, cantidad: 3, saldo_resultante: 3, id_usuario: 99, id_traslado: creado.id_traslado, clave_idempotencia: 'otra-recepcion',
+      });
+      await otra('saldos').insert({ id_producto: 5, id_bodega: b2, cantidad_disponible: 3 });
+      await otra.commit();
+    } catch (error) {
+      await otra.rollback().catch(() => {});
+      throw error;
+    }
+    esError(await pendiente, 409, 'TRASLADO_YA_RECIBIDO');
+    expect(await saldoDe(b2)).toBe(3);
+  });
+
+  it('6 recepciones simultáneas del MISMO traslado con 6 claves distintas → exactamente un 200 y cinco 409 TRASLADO_YA_RECIBIDO; el destino suma UNA vez', async () => {
+    /* La fila del traslado serializa las recepciones. */
+    const creado = await enTransito();
+    const respuestas = await Promise.all([1, 2, 3, 4, 5, 6].map((i) => recibir(creado.id_traslado, {}, { clave: `r${i}` })));
+    sinCincoXX(respuestas);
+    expect(respuestas.filter((res) => res.status === 200)).toHaveLength(1);
+    expect(respuestas.filter((res) => res.status === 409).map((res) => res.body.error.codigo)).toEqual(Array(5).fill('TRASLADO_YA_RECIBIDO'));
+    expect(await saldoDe(b2)).toBe(3);
+    expect((await movimientos()).filter((m) => m.tipo === 'TRASLADO_ENTRADA')).toHaveLength(1);
+  });
+
+  it('8 recepciones simultáneas con la MISMA clave → las 8 responden 200 con el mismo id_movimiento; el destino suma UNA vez', async () => {
+    /* Las perdedoras releen por la clave de entrada (resolverFallo). */
+    const creado = await enTransito();
+    const respuestas = await Promise.all(Array.from({ length: 8 }, () => recibir(creado.id_traslado, {}, { clave: 'k-igual' })));
+    sinCincoXX(respuestas);
+    expect(respuestas.map((res) => res.status)).toEqual(Array(8).fill(200));
+    expect(new Set(respuestas.map((res) => res.body.movimiento.id_movimiento)).size).toBe(1);
+    expect(await saldoDe(b2)).toBe(3);
+  });
+
+  it('mezcla adversarial de creaciones, recepciones y movimientos normales sobre los mismos saldos con un pool de 3 conexiones: sin 5xx, conservación (D31(e)) y kardex encadenado', async () => {
+    /* Ningún interbloqueo (40P01) ni fallo de serialización (40001); Σ saldos + Σ EN_TRANSITO solo cambia por los movimientos normales. */
+    const configuracion = construirConfigKnex(configDePrueba());
+    const dbChico = knex({ ...configuracion, pool: { min: 0, max: 3 } });
+    const errores = [];
+    const chico = supertest(createApp({ db: dbChico, clients, logger: { info() {}, error: (linea) => errores.push(linea) }, env: entornoValido() }));
+    try {
+      const inicial = { [b1]: 40, [b2]: 30, [b3]: 5 };
+      for (const [idBodega, cantidad] of Object.entries(inicial)) await crearSaldo(db, { idProducto: 5, idBodega: Number(idBodega), cantidad });
+      const loteA = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', fechaVencimiento: '2027-01-31', cantidad: 15 });
+      const loteB = await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'B', fechaVencimiento: '2027-03-31', cantidad: 10 });
+      // Traslados ya en tránsito para recibir durante la mezcla (dos con lote, en los dos sentidos).
+      const previos = [];
+      for (const cuerpo of [traslado({ cantidad: 2 }), traslado({ cantidad: 3, id_lote: loteA.id_lote }), traslado({ id_bodega_origen: b2, id_bodega_destino: b1, cantidad: 2, id_lote: loteB.id_lote }), traslado({ id_bodega_destino: b3, cantidad: 4 })]) {
+        const res = await crear(cuerpo);
+        expect(res.status).toBe(201);
+        previos.push(res.body.id_traslado);
+      }
+      const conservado = async () => {
+        const [{ total }] = await db('saldos').where({ id_producto: 5 }).sum({ total: 'cantidad_disponible' });
+        const [{ transito }] = await db('traslados').where({ id_producto: 5, estado: 'EN_TRANSITO' }).sum({ transito: 'cantidad' });
+        return Number(total) + Number(transito ?? 0);
+      };
+      const antes = await conservado();
+      expect(antes).toBe(75);
+
+      const post = (ruta, cuerpo, clave) => chico.post(ruta).set(ADM).set('Idempotency-Key', clave).send(cuerpo);
+      const mov = (tipo, idBodega, cantidad, extra = {}) => ({ tipo, id_producto: 5, id_bodega: idBodega, cantidad, ...extra });
+      const pedidos = [
+        ...previos.flatMap((id, i) => [post(`/traslados/${id}/recepcion`, {}, `rec-${i}`), post(`/traslados/${id}/recepcion`, {}, `rec-${i}`), post(`/traslados/${id}/recepcion`, {}, `rec-otra-${i}`)]),
+        ...Array.from({ length: 4 }, (_, i) => post('/traslados', traslado({ cantidad: 3 }), `c-ab-${i}`)),
+        ...Array.from({ length: 3 }, (_, i) => post('/traslados', traslado({ id_bodega_origen: b2, id_bodega_destino: b1, cantidad: 4 }), `c-ba-${i}`)),
+        ...Array.from({ length: 3 }, (_, i) => post('/traslados', traslado({ cantidad: 2, id_lote: loteA.id_lote }), `c-lote-${i}`)),
+        post('/traslados', traslado({ cantidad: 2, id_lote: loteA.id_lote }), 'c-lote-0'),
+        ...Array.from({ length: 2 }, (_, i) => post('/traslados', traslado({ id_bodega_origen: b3, id_bodega_destino: b2, cantidad: 2 }), `c-cb-${i}`)),
+        ...Array.from({ length: 4 }, (_, i) => post('/movimientos', mov('SALIDA', b1, 3), `m-s1-${i}`)),
+        ...Array.from({ length: 3 }, (_, i) => post('/movimientos', mov('SALIDA', b2, 4), `m-s2-${i}`)),
+        ...Array.from({ length: 3 }, (_, i) => post('/movimientos', mov('ENTRADA', b1, 2, { lote: { codigo_lote: 'A', fecha_vencimiento: '2027-01-31' } }), `m-e1-${i}`)),
+        ...Array.from({ length: 2 }, (_, i) => post('/movimientos', mov('ENTRADA', b2, 1, { id_lote: loteB.id_lote }), `m-e2-${i}`)),
+        post('/movimientos', mov('AJUSTE', b3, -1), 'm-aj'),
+        post('/movimientos', mov('SALIDA', b3, 2), 'm-s3'),
+      ];
+      const respuestas = await Promise.all(pedidos);
+      sinCincoXX(respuestas);
+      expect(errores).toEqual([]);
+      for (const res of respuestas) expect([200, 201, 409]).toContain(res.status);
+      for (const res of respuestas.filter((r) => r.status === 409)) expect(['STOCK_INSUFICIENTE', 'TRASLADO_YA_RECIBIDO']).toContain(res.body.error.codigo);
+      // Las cuatro recepciones previas quedaron RECIBIDAS una sola vez.
+      expect((await db('traslados').whereIn('id_traslado', previos).pluck('estado'))).toEqual(Array(4).fill('RECIBIDO'));
+
+      // Conservación (D31(e)): solo los movimientos normales cambian Σ saldos + Σ EN_TRANSITO.
+      const normales = await db('movimientos').whereNotIn('tipo', ['TRASLADO_SALIDA', 'TRASLADO_ENTRADA']).select('tipo', 'cantidad');
+      expect(await conservado()).toBe(antes + normales.reduce((suma, fila) => suma + delta(fila.tipo, fila.cantidad), 0));
+
+      // Kardex encadenado por bodega: desde el saldo sembrado, cada saldo_resultante es el anterior más su cambio.
+      for (const idBodega of [b1, b2, b3]) {
+        let saldo = inicial[idBodega];
+        for (const fila of await db('movimientos').where({ id_bodega: idBodega }).orderBy([{ column: 'fecha' }, { column: 'id_movimiento' }])) {
+          saldo += delta(fila.tipo, fila.cantidad);
+          expect({ idBodega, id: fila.id_movimiento, saldo: fila.saldo_resultante }).toEqual({ idBodega, id: fila.id_movimiento, saldo });
+        }
+        expect(await saldoDe(idBodega)).toBe(saldo);
+      }
+    } finally {
+      await dbChico.destroy();
+    }
   });
 });

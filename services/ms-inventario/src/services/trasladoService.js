@@ -1,6 +1,6 @@
 const { e } = require('../errors');
 const { headersDe } = require('../clients/propagacion');
-const { cuerpoObjeto, entero, recoger } = require('../http/validate');
+const { cuerpoObjeto, entero, idRuta, recoger, texto } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
 const bodegaRepository = require('../repositories/bodegaRepository');
 const loteRepository = require('../repositories/loteRepository');
@@ -24,7 +24,16 @@ const stockService = require('./stockService');
 // repositorios. Las dependencias llegan en `deps` = { db, clients, logger } y se leen en cada llamada.
 //
 // Claves (D25d, D31(a)): `base = claveAlmacenada(idUsuario, OPERACIONES.TRASLADO, clave)` de ESA petición; el movimiento
-// TRASLADO_SALIDA lleva derivada(base, SUFIJOS_TRASLADO.SALIDA) y la repetición de la creación se detecta releyéndola.
+// TRASLADO_SALIDA lleva derivada(base, SUFIJOS_TRASLADO.SALIDA) y el TRASLADO_ENTRADA derivada(base, SUFIJOS_TRASLADO.ENTRADA). La
+// repetición de la creación se detecta releyendo la de salida y la de la recepción, la de entrada; por eso crear y recibir con
+// la MISMA clave literal son operaciones distintas y las dos se ejecutan.
+//
+// Limitaciones documentadas (D31(f), D28(a)): con la bodega de destino inactiva, o si el destino creó después de la creación el
+// mismo lote con otra fecha de vencimiento, la recepción responde 409 y el traslado sigue EN_TRANSITO: la mercancía queda en
+// tránsito (contada en el invariante) hasta reactivar la bodega o corregir el lote.
+
+// Largo exacto de movimientos.observacion (migración 20261103000100): un texto más largo sería un 22001 (un 500).
+const LARGO_OBSERVACION = 500;
 
 /** Cuerpo de POST /traslados: {id_producto, id_bodega_origen, id_bodega_destino, cantidad, id_lote?} (Tabla 9). */
 function leerCuerpoCreacion(cuerpo) {
@@ -143,11 +152,115 @@ async function crear({ db, clients }, { body, claveIdempotencia, identity }) {
   }
 }
 
+/** Cuerpo de POST /traslados/{id}/recepcion: {observacion?}. Ausente o null → null; si viene, texto de 1 a 500 caracteres. */
+function leerCuerpoRecepcion(cuerpo) {
+  const { observacion } = cuerpoObjeto(cuerpo);
+  if (observacion === undefined || observacion === null) return null;
+  return texto(observacion, 'observacion', { max: LARGO_OBSERVACION });
+}
+
+// El {id} de la ruta: lo que no sea un entero positivo canónico dentro del INTEGER es 404 NO_EXISTE (idRuta). Admite el número
+// ya convertido para quien llame al servicio sin HTTP.
+const leerIdTraslado = (valor) => idRuta(typeof valor === 'number' ? String(valor) : valor);
+
+/**
+ * Respuesta de una recepción ya hecha con esta clave (RNF17, D31(b), D31(c)): el movimiento TRASLADO_ENTRADA hallado por la clave
+ * de entrada solo es una repetición si es de ESTE traslado; si es de OTRO, la clave ya se usó en otra operación y devolver la
+ * recepción de otro traslado sería un error silencioso → 409 CONFLICTO. Devuelve el traslado en su estado ACTUAL.
+ */
+async function repeticionDeRecepcion(db, movimiento, idTraslado) {
+  if (movimiento.id_traslado !== idTraslado) {
+    throw e.conflicto('CONFLICTO', 'La Idempotency-Key ya se usó en otra operación: la recepción de otro traslado');
+  }
+  return { traslado: await trasladoDe(db, movimiento), movimiento, replayed: true };
+}
+
+/**
+ * El lote que entra al destino: el MISMO código y la MISMA fecha que el lote de origen del traslado (D28(a)). El lote de origen
+ * se lee SIN bloqueo: su código y su fecha son inmutables (loteRepository.findById).
+ */
+async function loteDeEntrada(trx, idLote) {
+  const origen = await loteRepository.findById(trx, idLote);
+  if (!origen) throw new Error(`El lote ${idLote} del traslado no existe`); // los lotes no se borran: estado imposible, 500
+  return { codigoLote: origen.codigo_lote, fechaVencimiento: origen.fecha_vencimiento };
+}
+
+/**
+ * Tras la entrada, el lote del destino debe tener la fecha del de origen. El motor ya rechaza (409 CONFLICTO) una fecha
+ * DISTINTA de la guardada, pero con una fecha de origen NULA suma sin mirar la guardada (D27(d), lo necesita la carga inicial):
+ * mercancía sin vencimiento quedaría mezclada con mercancía que vence. La creación lo precomprueba; esto cubre el caso en que el
+ * destino creó ese lote con fecha después de la creación. Se lee con el saldo del destino ya bloqueado (nadie más cambia el lote).
+ */
+async function comprobarLoteDeDestino(trx, idLoteDestino, lote) {
+  const destino = await loteRepository.findById(trx, idLoteDestino);
+  if (destino?.fecha_vencimiento !== lote.fechaVencimiento) {
+    throw e.conflicto('CONFLICTO', 'La bodega de destino ya tiene ese lote con otra fecha de vencimiento', [{
+      campo: 'id_lote',
+      mensaje: `En la bodega de destino el lote ${lote.codigoLote} vence ${destino?.fecha_vencimiento ?? 'sin fecha'}; en el origen, ${lote.fechaVencimiento ?? 'sin fecha'}`,
+    }]);
+  }
+}
+
+/**
+ * Recibe un traslado (POST /traslados/{id}/recepcion). Orden (cada paso decide antes que el siguiente):
+ * 1. requireUser: sin X-User-Id → 401.
+ * 2. Idempotency-Key: falta, vacía, más de 200 caracteres o con «#» → 400.
+ * 3. {id} de la ruta: si no es un entero positivo dentro del INTEGER → 404.
+ * 4. Repetición: si este usuario ya usó la clave en una recepción (clave de ENTRADA): de ESTE traslado → 200 con el traslado
+ *    actual y el movimiento original; de OTRO traslado → 409 CONFLICTO (D31(b)).
+ * 5. Traslado inexistente → 404. 6. Alcance: el operador solo recibe en SU bodega (scopeBodega sobre el DESTINO) → 403.
+ * 7. Cuerpo: `observacion` (422).
+ * 8. Transacción. ORDEN DE BLOQUEO (D31(d)): fila del traslado (FOR UPDATE) → saldo del destino → lote del destino. El estado se
+ *    comprueba DESPUÉS de bloquear la fila: dos recepciones simultáneas se ponen en fila y la segunda ve RECIBIDO → 409
+ *    TRASLADO_YA_RECIBIDO (con la MISMA clave, resolverFallo encuentra el movimiento de la primera y responde 200). Con lote, el
+ *    destino recrea el código y la fecha del de origen (D28(a)); `traslados.id_lote` conserva el de origen y el movimiento lleva
+ *    el del destino. El motor aplica TRASLADO_ENTRADA (409 BODEGA_INACTIVA con el destino inactivo, D31(f)) y el traslado pasa a
+ *    RECIBIDO. Si algo falla, se deshace todo y el traslado sigue EN_TRANSITO. No llama al catálogo (el producto se confirmó al
+ *    crear) ni evalúa el umbral (D13).
+ * @param {{db: object}} deps
+ * @param {{idTraslado: string|number, body: unknown, claveIdempotencia: string|undefined, identity: object}} peticion
+ * @returns {Promise<{traslado: Traslado, movimiento: Movimiento, replayed: boolean}>}
+ */
+async function recibir({ db }, { idTraslado, body, claveIdempotencia, identity }) {
+  requireUser(identity);
+  const clave = leerClaveIdempotencia(claveIdempotencia);
+  const id = leerIdTraslado(idTraslado);
+  const claveEntrada = derivada(claveAlmacenada(identity.idUsuario, OPERACIONES.TRASLADO, clave), SUFIJOS_TRASLADO.ENTRADA);
+
+  const repetido = await movimientoRepository.findByClave(db, claveEntrada);
+  if (repetido) return repeticionDeRecepcion(db, repetido, id);
+
+  const actual = await trasladoRepository.findById(db, id);
+  if (!actual) throw e.noExiste('El traslado no existe');
+  scopeBodega(identity, actual.id_bodega_destino);
+  const observacion = leerCuerpoRecepcion(body);
+
+  try {
+    const resultado = await db.transaction(async (trx) => {
+      const traslado = await trasladoRepository.bloquearPorId(trx, id); // PRIMER bloqueo; el estado se mira después
+      if (traslado.estado !== 'EN_TRANSITO') throw e.conflicto('TRASLADO_YA_RECIBIDO', 'El traslado ya fue recibido');
+      const lote = traslado.id_lote === null ? null : await loteDeEntrada(trx, traslado.id_lote);
+      const movimiento = await stockService.aplicarMovimiento(trx, {
+        tipo: 'TRASLADO_ENTRADA', idProducto: traslado.id_producto, idBodega: traslado.id_bodega_destino, cantidad: traslado.cantidad,
+        lote, idTraslado: id, claveIdempotencia: claveEntrada, observacion, idUsuario: identity.idUsuario,
+      });
+      if (lote !== null) await comprobarLoteDeDestino(trx, movimiento.id_lote, lote);
+      const recibido = await trasladoRepository.marcarRecibido(trx, id, { idUsuarioRecibe: identity.idUsuario });
+      if (!recibido) throw new Error(`El traslado ${id} bloqueado y EN_TRANSITO no se pudo marcar como recibido`);
+      return { traslado: recibido, movimiento };
+    });
+    return { ...resultado, replayed: false };
+  } catch (error) {
+    return repeticionDeRecepcion(db, await resolverFallo(db, claveEntrada, error), id);
+  }
+}
+
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
 function crearTrasladoService(deps = {}) {
   return {
     crear: (peticion) => crear(deps, peticion),
+    recibir: (peticion) => recibir(deps, peticion),
   };
 }
 
-module.exports = { crear, crearTrasladoService };
+module.exports = { crear, recibir, crearTrasladoService };

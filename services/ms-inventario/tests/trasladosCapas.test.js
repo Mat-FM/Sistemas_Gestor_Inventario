@@ -82,9 +82,59 @@ describe('trasladoRepository', () => {
   });
 });
 
+describe('trasladoRepository: recepción', () => {
+  // ¿Está bloqueada la fila del traslado? Otra transacción intenta tomarla con un lock_timeout corto: 55P03 si alguien la tiene.
+  async function estaBloqueado(id) {
+    try {
+      await db.transaction(async (trx) => {
+        await trx.raw("SET LOCAL lock_timeout = '150ms'");
+        await trx('traslados').where({ id_traslado: id }).forUpdate().first();
+      });
+      return false;
+    } catch (error) {
+      if (error.code === '55P03') return true;
+      throw error;
+    }
+  }
+
+  it('bloquearPorId devuelve el Traslado (o undefined) y bloquea SU fila (FOR UPDATE) hasta el fin de la transacción, y solo esa', async () => {
+    /* D31(d): el primer bloqueo de la recepción. Control: sin transacción abierta la fila está libre. */
+    const uno = await trasladoRepository.insert(db, datos());
+    const otro = await trasladoRepository.insert(db, datos());
+    expect(await estaBloqueado(uno.id_traslado)).toBe(false);
+    const trx = await db.transaction();
+    try {
+      expect(await trasladoRepository.bloquearPorId(trx, uno.id_traslado)).toEqual(uno);
+      expect(await trasladoRepository.bloquearPorId(trx, 9999)).toBeUndefined();
+      expect(await estaBloqueado(uno.id_traslado)).toBe(true);
+      expect(await estaBloqueado(otro.id_traslado)).toBe(false);
+    } finally {
+      await trx.rollback();
+    }
+    expect(await estaBloqueado(uno.id_traslado)).toBe(false);
+  });
+
+  it('marcarRecibido pasa a RECIBIDO con fecha_recepcion = clock_timestamp() e id_usuario_recibe; sobre uno ya RECIBIDO (o inexistente) no hace nada', async () => {
+    /* La condición EN_TRANSITO va en el WHERE. */
+    const creado = await trasladoRepository.insert(db, datos());
+    await db.transaction(async (trx) => {
+      const { rows: [{ inicio }] } = await trx.raw('SELECT now() AS inicio');
+      await trx.raw('SELECT pg_sleep(0.05)');
+      const recibido = await trasladoRepository.marcarRecibido(trx, creado.id_traslado, { idUsuarioRecibe: 9 });
+      expect(recibido).toEqual({ ...creado, estado: 'RECIBIDO', fecha_recepcion: expect.any(Date), id_usuario_recibe: 9 });
+      expect(recibido.fecha_recepcion.getTime()).toBeGreaterThan(inicio.getTime());
+    });
+    expect(await trasladoRepository.marcarRecibido(db, creado.id_traslado, { idUsuarioRecibe: 10 })).toBeUndefined();
+    expect(await trasladoRepository.marcarRecibido(db, 9999, { idUsuarioRecibe: 10 })).toBeUndefined();
+    expect(await trasladoRepository.findById(db, creado.id_traslado)).toMatchObject({ estado: 'RECIBIDO', id_usuario_recibe: 9 });
+  });
+});
+
 promesasReales(trasladoRepository, {
   insert: [{ idProducto: 5, idBodegaOrigen: 1, idBodegaDestino: 2, idLote: null, cantidad: 1, idUsuarioEnvia: 7 }],
   findById: [1],
+  bloquearPorId: [1],
+  marcarRecibido: [1, { idUsuarioRecibe: 9 }],
 }, { titulo: 'trasladoRepository', db: () => db });
 
 describe('trasladoService', () => {
@@ -146,5 +196,50 @@ describe('trasladoService', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error).not.toHaveProperty('status');
     });
+  });
+});
+
+describe('trasladoService.recibir', () => {
+  const IDENTIDAD = { idUsuario: 8, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
+  const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
+  const deps = () => ({ db, clients: { catalogo: { obtenerProducto: jest.fn() } }, logger: { info() {}, error() {} } });
+  let creado;
+  beforeEach(async () => {
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    creado = await trasladoService.crear({ ...deps(), clients: { catalogo: fakeCatalogo() } }, {
+      body: { id_producto: 5, id_bodega_origen: b1, id_bodega_destino: b2, cantidad: 2 }, claveIdempotencia: 'k-c', identity: { ...IDENTIDAD, idUsuario: 7 },
+    });
+  });
+  const peticion = (extra = {}) => ({ idTraslado: String(creado.traslado.id_traslado), body: {}, claveIdempotencia: 'k1', identity: IDENTIDAD, ...extra });
+
+  it('devuelve { traslado RECIBIDO, movimiento TRASLADO_ENTRADA, replayed: false } y luego el mismo con replayed: true; no llama al catálogo', async () => {
+    /* El producto se confirmó al crear. */
+    const dependencias = deps();
+    const primera = await trasladoService.recibir(dependencias, peticion());
+    expect(primera).toMatchObject({ replayed: false, traslado: { estado: 'RECIBIDO', id_usuario_recibe: 8 }, movimiento: { tipo: 'TRASLADO_ENTRADA', id_bodega: b2 } });
+    expect(await trasladoService.recibir(dependencias, peticion())).toEqual({ ...primera, replayed: true });
+    expect(dependencias.clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
+  });
+
+  it('acepta el id ya convertido a número (llamada sin HTTP)', async () => {
+    /* leerIdTraslado. */
+    expect((await trasladoService.recibir(deps(), peticion({ idTraslado: creado.traslado.id_traslado }))).replayed).toBe(false);
+  });
+
+  it('orden: sin X-User-Id → 401 antes que la clave; sin clave → 400 antes que el id; id inválido → 404', async () => {
+    /* requireUser → clave → id. */
+    expect(await atrapar(trasladoService.recibir(deps(), peticion({ identity: { ...IDENTIDAD, idUsuario: null }, claveIdempotencia: undefined, idTraslado: 'x' })))).toMatchObject({ status: 401 });
+    expect(await atrapar(trasladoService.recibir(deps(), peticion({ claveIdempotencia: undefined, idTraslado: 'x' })))).toMatchObject({ status: 400 });
+    for (const idTraslado of ['x', 0, 1.5, -1, '2147483648']) {
+      expect(await atrapar(trasladoService.recibir(deps(), peticion({ idTraslado })))).toMatchObject({ status: 404, codigo: 'NO_EXISTE' });
+    }
+  });
+
+  it('crearTrasladoService expone recibir y lee las dependencias en cada llamada', async () => {
+    /* Como crear. */
+    const tardias = {};
+    const servicio = trasladoService.crearTrasladoService(tardias);
+    Object.assign(tardias, deps());
+    expect((await servicio.recibir(peticion())).traslado.estado).toBe('RECIBIDO');
   });
 });
