@@ -550,6 +550,54 @@ describe('createResilientClient: cortacircuitos (D15)', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it('el reloj por defecto es monótono: un salto atrás del reloj de pared (NTP) no deja el circuito abierto esa hora', async () => {
+    // Dos relojes controlados: performance.now (monótono) avanza con normalidad; Date.now (de pared) retrocede 1 h tras abrir el circuito.
+    let monotono = 5_000;
+    let pared = 1_700_000_000_000;
+    const espiaMonotono = jest.spyOn(performance, 'now').mockImplementation(() => monotono);
+    const espiaPared = jest.spyOn(Date, 'now').mockImplementation(() => pared);
+    try {
+      const fetchImpl = jest.fn(async () => r503());
+      // sin `now`: se usa el reloj por defecto
+      const cliente = createResilientClient({ baseUrl: BASE, nombre: 'ms-falso', timeoutMs: 1000, fetchImpl, sleep: jest.fn(async () => {}) });
+      await fallar(cliente, 5); // abre el circuito
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+
+      pared -= 3_600_000; // el reloj de pared retrocede 1 hora
+      monotono += 29_999;
+      await esperarNoDisponible(cliente.request('GET', '/x'));
+      expect(fetchImpl).toHaveBeenCalledTimes(5); // 29 999 ms monótonos: sigue abierto
+
+      monotono += 1; // 30 000 ms monótonos: pasa la llamada de prueba aunque el reloj de pared vaya una hora atrás
+      fetchImpl.mockImplementation(async () => r200());
+      await expect(cliente.request('GET', '/x')).resolves.toMatchObject({ status: 200 });
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+      expect(espiaMonotono).toHaveBeenCalled();
+
+      // y el reloj de pared que avanza de golpe tampoco abre ni cierra nada por su cuenta
+      pared += 10 * 3_600_000;
+      await expect(cliente.request('GET', '/x')).resolves.toMatchObject({ status: 200 });
+      expect(fetchImpl).toHaveBeenCalledTimes(7);
+    } finally {
+      espiaMonotono.mockRestore();
+      espiaPared.mockRestore();
+    }
+  });
+
+  it('un reloj inyectado reemplaza al de por defecto', async () => {
+    const espiaMonotono = jest.spyOn(performance, 'now');
+    try {
+      const { cliente, fetchImpl, avanzar } = crearCliente(); // inyecta su propio `now`
+      await fallar(cliente, 5);
+      avanzar(30_000);
+      fetchImpl.mockImplementation(async () => r200());
+      await expect(cliente.request('GET', '/x')).resolves.toMatchObject({ status: 200 });
+      expect(espiaMonotono).not.toHaveBeenCalled();
+    } finally {
+      espiaMonotono.mockRestore();
+    }
+  });
+
   it('registra la apertura (error, con los fallos seguidos) y el cierre (info) del circuito', async () => {
     const { cliente, fetchImpl, logger, avanzar } = crearCliente();
     await fallar(cliente, 5);

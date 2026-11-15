@@ -113,7 +113,9 @@ function leerJson(texto) {
  * @param {number} [opciones.failureThreshold] llamadas fallidas seguidas que abren el circuito
  * @param {number} [opciones.openMs] tiempo que el circuito abierto no llama al destino
  * @param {Function} [opciones.fetchImpl] reemplazo de fetch (pruebas)
- * @param {Function} [opciones.now] reloj en milisegundos (pruebas)
+ * @param {Function} [opciones.now] reloj en milisegundos; por defecto el MONÓTONO performance.now(). Con Date.now, un salto atrás
+ *   del reloj de pared (p. ej. una corrección de NTP de 1 h) dejaría el circuito abierto esa hora. Solo importan las diferencias:
+ *   abiertoHasta y todas las comparaciones usan este mismo reloj (nunca se mezclan dos). Inyectable en las pruebas.
  * @param {Function} [opciones.sleep] espera entre reintentos (pruebas)
  * @param {{info: Function, error: Function}} [opciones.logger]
  */
@@ -125,7 +127,7 @@ function createResilientClient({
   failureThreshold = 5,
   openMs = 30000,
   fetchImpl = globalThis.fetch,
-  now = Date.now,
+  now = () => performance.now(),
   sleep = dormirPorDefecto,
   logger,
 } = {}) {
