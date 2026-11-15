@@ -1,5 +1,6 @@
 const loteRepository = require('../src/repositories/loteRepository');
 const loteService = require('../src/services/loteService');
+const { planificarFefo } = require('../src/services/stockService');
 const { esperarBloqueo } = require('./helpers/bloqueos');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
@@ -383,6 +384,86 @@ describe('loteRepository.listar (la consulta de lotes, RF17)', () => {
   });
 });
 
+describe('loteRepository.listarConExistencia (la lectura de la sugerencia: FEFO sin bloqueo)', () => {
+  const sembrar = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
+  const par = () => ({ idBodega: b1, idProducto: 5 });
+
+  it('solo los lotes de esa bodega y producto CON existencia, en el MISMO orden FEFO que listarParaFefo (fecha ascendente, sin fecha al final, desempate por id_lote)', async () => {
+    /* Que ambas funciones coincidan es lo que impide que la sugerencia y la salida del motor se separen. */
+    const sinFecha = await sembrar('SF', null, 2);
+    const tarde = await sembrar('T', '2027-10-01', 2);
+    const tempranoB = await sembrar('E2', '2027-01-31', 2);
+    await sembrar('VACIO', '2026-01-01', 0);
+    const tempranoA = await sembrar('E1', '2027-01-31', 2);
+    await sembrar('OTRA-BODEGA', '2026-01-01', 9, { idBodega: b2 });
+    await sembrar('OTRO-PRODUCTO', '2026-01-01', 9, { idProducto: 6 });
+    await db('lotes').where({ id_lote: tempranoB.id_lote }).update({ cantidad_disponible: 2 }); // la fila física del primero se mueve
+    const lista = await loteRepository.listarConExistencia(db, par());
+    expect(lista.map((l) => l.id_lote)).toEqual([tempranoB, tempranoA, tarde, sinFecha].map((l) => l.id_lote));
+    expect(lista[0]).toEqual({ id_lote: tempranoB.id_lote, id_producto: 5, id_bodega: b1, codigo_lote: 'E2', fecha_vencimiento: '2027-01-31', cantidad_disponible: 2 });
+    expect(Object.keys(lista[0]).sort()).toEqual([...CLAVES_LOTE].sort());
+    expect(await db.transaction((trx) => loteRepository.listarParaFefo(trx, par()))).toEqual(lista);
+  });
+
+  it('sin lotes → []', async () => {
+    expect(await loteRepository.listarConExistencia(db, par())).toEqual([]);
+    await sembrar('VACIO', '2027-01-31', 0);
+    expect(await loteRepository.listarConExistencia(db, par())).toEqual([]);
+  });
+
+  it('NO bloquea: ni el texto de la consulta lleva FOR UPDATE/SHARE, ni queda fila alguna bloqueada tras leer en una transacción abierta', async () => {
+    const uno = await sembrar('L1', '2027-01-31', 3);
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      await loteRepository.listarConExistencia(db, par());
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas.length).toBeGreaterThan(0);
+    for (const sql of consultas) expect(sql).not.toMatch(/\bfor\s+(update|share|no key update|key share)\b/i);
+    await conTransaccionAbierta((trx) => loteRepository.listarConExistencia(trx, par()), async (lista) => {
+      expect(lista).toHaveLength(1);
+      expect(await estaBloqueado(uno.id_lote)).toBe(false);
+    });
+  });
+
+  it('no espera a quien tiene los lotes bloqueados con FOR UPDATE: responde al instante mientras otra transacción los retiene', async () => {
+    const uno = await sembrar('L1', '2027-01-31', 3);
+    await conTransaccionAbierta((trx) => loteRepository.listarParaFefo(trx, par()), async () => {
+      expect(await estaBloqueado(uno.id_lote)).toBe(true); // control: de verdad están bloqueados
+      const lista = await Promise.race([loteRepository.listarConExistencia(db, par()), new Promise((resolver) => { setTimeout(() => resolver('esperó'), 2000); })]);
+      expect(lista).not.toBe('esperó');
+      expect(lista.map((l) => l.id_lote)).toEqual([uno.id_lote]);
+    });
+  });
+
+  it('los valores viajan como parámetros enlazados y nunca usa SELECT *', async () => {
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta);
+    db.on('query', registrar);
+    try {
+      await loteRepository.listarConExistencia(db, { idBodega: 98765, idProducto: 54321 });
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas.length).toBeGreaterThan(0);
+    for (const { sql } of consultas) expect(sql).not.toMatch(/54321|98765|\*/);
+    expect(consultas.flatMap(({ bindings }) => bindings)).toEqual(expect.arrayContaining([54321, 98765]));
+  });
+
+  it('funciona dentro de una transacción (dbOrTrx): ve lo no confirmado y un rollback no deja nada', async () => {
+    await expect(db.transaction(async (trx) => {
+      const nuevo = await crearLote(trx, { idBodega: b1, idProducto: 77, codigoLote: 'NUEVO', cantidad: 1 });
+      expect((await loteRepository.listarConExistencia(trx, { idBodega: b1, idProducto: 77 })).map((l) => l.id_lote)).toEqual([nuevo.id_lote]);
+      expect(await loteRepository.listarConExistencia(db, { idBodega: b1, idProducto: 77 })).toEqual([]); // desde fuera no se ve
+      throw new Error('deshacer');
+    })).rejects.toThrow('deshacer');
+    expect(await loteRepository.listarConExistencia(db, { idBodega: b1, idProducto: 77 })).toEqual([]);
+  });
+});
+
 describe('loteRepository.sumarDelPar', () => {
   it('suma la existencia de los lotes de ESE par (también los que están en 0), o 0 si no hay; e informa el aislamiento', async () => {
     /* El motor la usa para el stock sin lote de un traslado (D28(a)). */
@@ -499,6 +580,97 @@ describe('loteService', () => {
     });
   });
 
+  describe('sugerirSalida', () => {
+    const peticion = (extra = {}) => ({ identity: IDENTIDAD, idProducto: 5, idBodega: 2, cantidad: 7, ...extra });
+    const deps = () => ({ db });
+    const lote = (id, codigo, fecha, cantidad) => ({ id_lote: id, id_producto: 5, id_bodega: 2, codigo_lote: codigo, fecha_vencimiento: fecha, cantidad_disponible: cantidad });
+    const espiar = (lista = []) => jest.spyOn(loteRepository, 'listarConExistencia').mockResolvedValue(lista);
+
+    it('un operador con otra bodega → 403 SIN_PERMISO y NO consulta el repositorio', async () => {
+      const leer = espiar();
+      const error = await atrapar(loteService.sugerirSalida(deps(), peticion({ identity: OPERADOR, idBodega: 3 })));
+      expect(error).toMatchObject({ status: 403, codigo: 'SIN_PERMISO' });
+      expect(leer).not.toHaveBeenCalled();
+    });
+
+    it('un operador sin bodega asignada → 403 SIN_PERMISO y NO consulta el repositorio', async () => {
+      const leer = espiar();
+      const error = await atrapar(loteService.sugerirSalida(deps(), peticion({ identity: { ...OPERADOR, idBodega: null } })));
+      expect(error).toMatchObject({ status: 403, codigo: 'SIN_PERMISO' });
+      expect(leer).not.toHaveBeenCalled();
+    });
+
+    it.each([['un operador con su bodega', OPERADOR], ['un administrador', IDENTIDAD], ['una llamada interna', INTERNA]])('%s: lee los lotes de ESE (producto, bodega) y de ningún otro', async (_nombre, identity) => {
+      const leer = espiar([lote(1, 'A', '2027-01-31', 9)]);
+      await loteService.sugerirSalida(deps(), peticion({ identity }));
+      expect(leer).toHaveBeenCalledTimes(1);
+      expect(leer).toHaveBeenCalledWith(db, { idBodega: 2, idProducto: 5 });
+    });
+
+    it('nunca toma el bloqueo FOR UPDATE de listarParaFefo: es una consulta, no una reserva', async () => {
+      espiar([lote(1, 'A', '2027-01-31', 9)]);
+      const bloqueante = jest.spyOn(loteRepository, 'listarParaFefo');
+      await loteService.sugerirSalida(deps(), peticion());
+      expect(bloqueante).not.toHaveBeenCalled();
+    });
+
+    it('arma [{ id_lote, codigo_lote, fecha_vencimiento, cantidad_sugerida }] con lo que asigna planificarFefo, en su orden', async () => {
+      espiar([lote(2, 'B', '2027-02-15', 5), lote(1, 'A', '2027-01-31', 5)]);
+      expect(await loteService.sugerirSalida(deps(), peticion({ cantidad: 7 }))).toEqual([
+        { id_lote: 1, codigo_lote: 'A', fecha_vencimiento: '2027-01-31', cantidad_sugerida: 5 },
+        { id_lote: 2, codigo_lote: 'B', fecha_vencimiento: '2027-02-15', cantidad_sugerida: 2 },
+      ]);
+    });
+
+    it('coincide, para cada cantidad, con planificarFefo (la regla del motor): mismos lotes, mismas cantidades, misma suma', async () => {
+      const lista = [lote(3, 'C', null, 2), lote(1, 'A', '2027-01-31', 3), lote(2, 'B', '2027-01-31', 4)];
+      espiar(lista);
+      for (let cantidad = 1; cantidad <= 9; cantidad += 1) {
+        const sugerida = await loteService.sugerirSalida(deps(), peticion({ cantidad }));
+        const { asignaciones, restante } = planificarFefo(lista, cantidad);
+        expect(restante).toBe(0);
+        expect(sugerida.map(({ id_lote: id, cantidad_sugerida: toma }) => ({ id_lote: id, cantidad: toma }))).toEqual(asignaciones);
+        expect(sugerida.reduce((total, item) => total + item.cantidad_sugerida, 0)).toBe(cantidad);
+      }
+    });
+
+    it('si los lotes no alcanzan → 409 STOCK_INSUFICIENTE con disponible = la suma de lo que hay en lotes y solicitado = lo pedido (números)', async () => {
+      espiar([lote(1, 'A', '2027-01-31', 5), lote(2, 'B', '2027-02-15', 3)]);
+      const error = await atrapar(loteService.sugerirSalida(deps(), peticion({ cantidad: 9 })));
+      expect(error).toMatchObject({
+        status: 409,
+        codigo: 'STOCK_INSUFICIENTE',
+        detalles: [{ campo: 'cantidad', mensaje: expect.stringMatching(/\S/), disponible: 8, solicitado: 9 }],
+      });
+      expect(error.message).toMatch(/lotes/i);
+      // Control: pedir exactamente lo que hay sí se sugiere.
+      expect(await loteService.sugerirSalida(deps(), peticion({ cantidad: 8 }))).toHaveLength(2);
+    });
+
+    it('sin lotes → 409 con disponible 0', async () => {
+      espiar([]);
+      const error = await atrapar(loteService.sugerirSalida(deps(), peticion({ cantidad: 1 })));
+      expect(error).toMatchObject({ status: 409, codigo: 'STOCK_INSUFICIENTE', detalles: [{ campo: 'cantidad', disponible: 0, solicitado: 1 }] });
+    });
+
+    it('con la base real: un operador recibe sugerencia solo de los lotes de su bodega', async () => {
+      await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', fechaVencimiento: '2027-01-31', cantidad: 4 });
+      await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'B', fechaVencimiento: '2027-01-01', cantidad: 4 });
+      const operador = { ...OPERADOR, idBodega: b1 };
+      expect(await loteService.sugerirSalida(deps(), peticion({ identity: operador, idBodega: b1, cantidad: 4 }))).toEqual([{ id_lote: 1, codigo_lote: 'A', fecha_vencimiento: '2027-01-31', cantidad_sugerida: 4 }]);
+      expect(await atrapar(loteService.sugerirSalida(deps(), peticion({ identity: operador, idBodega: b2, cantidad: 4 })))).toMatchObject({ status: 403 });
+    });
+
+    it('un fallo síncrono del repositorio llega como rechazo, no como excepción', async () => {
+      const falla = new Error('fallo síncrono');
+      jest.spyOn(loteRepository, 'listarConExistencia').mockImplementation(() => { throw falla; });
+      let resultado;
+      expect(() => { resultado = loteService.sugerirSalida(deps(), peticion()); }).not.toThrow();
+      expect(resultado).toBeInstanceOf(Promise);
+      await expect(resultado).rejects.toBe(falla);
+    });
+  });
+
   describe('crearLoteService', () => {
     it('lee las dependencias en cada llamada: el servicio se puede construir sin ellas', async () => {
       const tardias = {};
@@ -506,6 +678,7 @@ describe('loteService', () => {
       Object.assign(tardias, { db });
       await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'A', cantidad: 1 });
       expect((await servicio.listar({ identity: IDENTIDAD, limit: 20, offset: 0 })).total).toBe(1);
+      expect(await servicio.sugerirSalida({ identity: IDENTIDAD, idProducto: 5, idBodega: b1, cantidad: 1 })).toHaveLength(1);
     });
   });
 });
@@ -516,6 +689,7 @@ promesasReales(loteRepository, {
   buscarPorCodigo: [{ idBodega: 1, idProducto: 5, codigoLote: 'P' }],
   bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
+  listarConExistencia: [{ idBodega: 1, idProducto: 5 }],
   listar: [{ limit: 10, offset: 0 }],
   ajustar: [1, 0],
   sumarDelPar: [{ idBodega: 1, idProducto: 5 }],

@@ -52,6 +52,7 @@ const MOVIMIENTOS = [
 ];
 const LOTES = [
   ['get', '/lotes'],
+  ['get', '/lotes/sugerencia-salida'],
 ];
 
 let request;
@@ -104,7 +105,7 @@ describe('rutasDeclaradas', () => {
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
-  it('incluye las consultas de lotes de la Tabla 9 (GET /lotes) y ninguna repetida', () => {
+  it('incluye las dos consultas de lotes de la Tabla 9 (GET /lotes y GET /lotes/sugerencia-salida) y ninguna repetida', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of LOTES) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);

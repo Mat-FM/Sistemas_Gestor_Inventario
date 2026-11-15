@@ -27,10 +27,21 @@ function recursoNoExiste(res) {
   expect(res.body.error.mensaje).not.toBe('La ruta solicitada no existe');
 }
 
+/**
+ * 409 STOCK_INSUFICIENTE con el cuerpo exacto: un solo detalle {campo, mensaje, disponible, solicitado} (esError exige solo
+ * {campo, mensaje}); `disponible` y `solicitado` son números.
+ */
+function stockInsuficiente(res, campo, disponible, solicitado) {
+  expect(res.status).toBe(409);
+  expect(res.body).toEqual({
+    error: { codigo: 'STOCK_INSUFICIENTE', mensaje: expect.stringMatching(NO_VACIO), detalles: [{ campo, mensaje: expect.stringMatching(NO_VACIO), disponible, solicitado }] },
+  });
+}
+
 /** 404 NO_EXISTE de una ruta que el servicio no declara. */
 function rutaNoExiste(res) {
   esError(res, 404, 'NO_EXISTE');
   expect(res.body.error.mensaje).toBe('La ruta solicitada no existe');
 }
 
-module.exports = { ISO_8601, esError, datosNoValidos, recursoNoExiste, rutaNoExiste };
+module.exports = { ISO_8601, esError, datosNoValidos, recursoNoExiste, stockInsuficiente, rutaNoExiste };

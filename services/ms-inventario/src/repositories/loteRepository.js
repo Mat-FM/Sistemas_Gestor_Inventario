@@ -90,19 +90,33 @@ async function bloquearPorId(trx, idLote, par) {
   return trx(TABLA).select(COLUMNAS).where({ id_lote: idLote, id_bodega: idBodega, id_producto: idProducto }).forUpdate().first();
 }
 
+// Los lotes CON existencia (> 0) de un par (producto, bodega), en orden FEFO. La consulta que comparten listarParaFefo (que le
+// añade el bloqueo FOR UPDATE) y listarConExistencia (que no): así la sugerencia de salida y la salida del motor ven SIEMPRE los
+// mismos lotes en el mismo orden.
+const conExistenciaFefo = (dbOrTrx, { idBodega, idProducto }) => dbOrTrx(TABLA)
+  .select(COLUMNAS)
+  .where({ id_bodega: idBodega, id_producto: idProducto })
+  .andWhere('cantidad_disponible', '>', 0)
+  .orderByRaw(ORDEN_FEFO);
+
 /**
  * Lotes CON existencia (> 0) de un producto en una bodega, en orden FEFO (fecha ascendente, sin fecha al final, desempate por
  * id_lote), tomados con `FOR UPDATE`. PostgreSQL bloquea las filas a medida que salen del ORDER BY, así que el orden de bloqueo
  * es el orden FEFO (D27(c)). Debe llamarse con una transacción y DESPUÉS de bloquear el saldo del mismo par.
  * @returns {Promise<Lote[]>}
  */
-async function listarParaFefo(trx, { idBodega, idProducto }) {
-  return trx(TABLA)
-    .select(COLUMNAS)
-    .where({ id_bodega: idBodega, id_producto: idProducto })
-    .andWhere('cantidad_disponible', '>', 0)
-    .orderByRaw(ORDEN_FEFO)
-    .forUpdate();
+async function listarParaFefo(trx, par) {
+  return conExistenciaFefo(trx, par).forUpdate();
+}
+
+/**
+ * Los mismos lotes y en el mismo orden que listarParaFefo, SIN bloquearlos: es la lectura de la sugerencia de salida (RF17), una
+ * consulta que no reserva nada y por eso nunca espera a los movimientos en curso ni les estorba. Una sola sentencia: una foto
+ * coherente de los lotes del par. Sirve con la instancia de Knex o con una transacción.
+ * @returns {Promise<Lote[]>}
+ */
+async function listarConExistencia(dbOrTrx, par) {
+  return conExistenciaFefo(dbOrTrx, par);
 }
 
 /**
@@ -153,4 +167,4 @@ async function sumarDelPar(trx, { idBodega, idProducto }) {
   return { enLotes: Number(fila.en_lotes), aislamiento: fila.aislamiento };
 }
 
-module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, listar, ajustar, sumarDelPar };
+module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, listarConExistencia, listar, ajustar, sumarDelPar };

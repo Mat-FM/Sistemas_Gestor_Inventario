@@ -1,7 +1,7 @@
 const { buildTestApp } = require('./helpers/app');
 const { truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote, crearSaldo, crearUmbral, headers } = require('./helpers/fixtures');
-const { datosNoValidos, esError, recursoNoExiste } = require('./helpers/respuestas');
+const { datosNoValidos, esError, recursoNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
 // Lotes y salida FEFO en POST /movimientos (RF17; D6, D27) de punta a punta, contra PostgreSQL real. La regla va por el SIGNO del
 // movimiento: lo que sube entra sin lote, a un lote por id o a un lote por código; lo que baja sale de un lote por id o por FEFO.
@@ -57,13 +57,6 @@ async function comprobarInvariante() {
   for (const fila of rows) {
     expect({ ...fila, cumple: fila.en_lotes <= fila.saldo && fila.minimo >= 0 }).toEqual({ ...fila, cumple: true });
   }
-}
-
-function stockInsuficiente(res, campo, disponible, solicitado) {
-  expect(res.status).toBe(409);
-  expect(res.body).toEqual({
-    error: { codigo: 'STOCK_INSUFICIENTE', mensaje: expect.any(String), detalles: [{ campo, mensaje: expect.any(String), disponible, solicitado }] },
-  });
 }
 
 describe('casos del brief', () => {
