@@ -1,5 +1,5 @@
 // Tipos de movimiento del kardex y su efecto sobre el saldo (D3, D4). Dominio puro: sin Express, sin base de datos y sin
-// ningún otro módulo, para que lo usen por igual el motor de movimientos, los controladores y las Tareas 8–13.
+// ningún otro módulo, para que lo usen por igual el motor de movimientos, los controladores y las demás operaciones de stock.
 //
 // La lista debe coincidir con la restricción `movimientos_tipo_valido` de la migración (stock.test.js lo comprueba contra la
 // base). La migración repite los valores a propósito: es una instantánea y no importa este módulo.

@@ -10,7 +10,7 @@ const { esperarBloqueo } = require('./helpers/bloqueos');
 const { crearBodega, crearLote, crearSaldo } = require('./helpers/fixtures');
 
 // El motor de movimientos (stockService.aplicarMovimiento) y los tipos de movimiento (D3), contra PostgreSQL real y con
-// transacciones reales: es la pieza que reutilizan las Tareas 8–13, así que aquí se prueban el bloqueo del saldo, el signo de
+// transacciones reales: es la pieza que reutilizan las demás operaciones de stock, así que aquí se prueban el bloqueo del saldo, el signo de
 // cada tipo, el saldo negativo, el desbordamiento del INTEGER, la bodega y el orden del kardex (D24). La ruta HTTP
 // (POST /movimientos) está en movimientos.test.js y el repositorio en movimientosCapas.test.js.
 
@@ -156,7 +156,7 @@ describe('stockService.aplicarMovimiento', () => {
       expect(await saldoDe(5, b1)).toBe(4);
     });
 
-    it('guarda idTraslado e idConteo (los usarán las Tareas 9 y 11) y los opcionales nulos por defecto', async () => {
+    it('guarda idTraslado e idConteo (los usarán las Tareas 11 y 12) y los opcionales nulos por defecto', async () => {
       const [{ id_traslado: idTraslado }] = await db('traslados').insert({
         id_producto: 5, id_bodega_origen: b2, id_bodega_destino: b1, cantidad: 2, estado: 'EN_TRANSITO', id_usuario_envia: 7,
       }).returning('id_traslado');
@@ -370,7 +370,7 @@ describe('stockService.aplicarMovimiento', () => {
 });
 
 describe('stockService.aplicarMovimiento: lotes (D27)', () => {
-  // Las reglas por el SIGNO del delta, con los tipos que POST /movimientos no admite (los heredan las Tareas 9, 11 y 12) y las
+  // Las reglas por el SIGNO del delta, con los tipos que POST /movimientos no admite (los heredan las Tareas 11, 12 y 13) y las
   // garantías internas del motor: orden de bloqueo, rollback total y que nunca bloquea un lote de otro par. La matriz por tipo
   // de la API y la validación del cuerpo están en movimientosLotes.test.js.
   afterEach(() => jest.restoreAllMocks());
@@ -393,7 +393,7 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
     expect(b.id_lote).toBeLessThan(a.id_lote); // control: el orden FEFO es por fecha, no por id
   });
 
-  it('TRASLADO_SALIDA con idLote resta de ESE lote y TRASLADO_ENTRADA con lote lo crea en el destino con su fecha (Tarea 9)', async () => {
+  it('TRASLADO_SALIDA con idLote resta de ESE lote y TRASLADO_ENTRADA con lote lo crea en el destino con su fecha (Tarea 11)', async () => {
     /* Así un traslado mueve un lote concreto: sale por id en el origen y entra por código y fecha en el destino. */
     await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 6 });
     const a = await sembrarLote('A', '2027-01-31', 6);
@@ -405,7 +405,7 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
     expect(await saldoDe(5, b1)).toBe(2);
   });
 
-  it('CARGA_INICIAL con lote crea el lote y una segunda fila con el mismo código y fecha suma (Tarea 12); con fecha omitida también suma', async () => {
+  it('CARGA_INICIAL con lote crea el lote y una segunda fila con el mismo código y fecha suma (Tarea 13); con fecha omitida también suma', async () => {
     /* La carga inicial es una entrada como cualquier otra. */
     await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 3, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
     await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 2, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
@@ -414,7 +414,7 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
     expect(await db('lotes').select('codigo_lote', 'fecha_vencimiento', 'cantidad_disponible')).toEqual([{ codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 6 }]);
   });
 
-  it('AJUSTE negativo con idConteo y sin idLote sale por FEFO (Tarea 11)', async () => {
+  it('AJUSTE negativo con idConteo y sin idLote sale por FEFO (Tarea 12)', async () => {
     /* Un faltante de conteo baja los lotes que vencen primero, no solo el saldo. */
     await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 4 });
     const a = await sembrarLote('A', '2027-01-31', 4);
@@ -436,7 +436,7 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
   });
 
   // Movidas desde movimientosLotes.test.js (ronda de corrección 1, D28(b)): POST /movimientos ya exige la fecha con `lote`, así
-  // que estos caminos solo son alcanzables desde la carga inicial (Tarea 12), que llama al motor con fechaVencimiento nula.
+  // que estos caminos solo son alcanzables desde la carga inicial (Tarea 13), que llama al motor con fechaVencimiento nula.
   it('lote sin fecha (fechaVencimiento null u omitida) sobre un lote existente con fecha → suma sin tocar la fecha guardada', async () => {
     /* Sin fecha no hay nada que contradecir. */
     await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 4, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });

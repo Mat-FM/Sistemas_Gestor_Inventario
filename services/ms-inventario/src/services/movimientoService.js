@@ -52,7 +52,7 @@ function bajaElSaldo(tipo, cantidad) {
  * objeto se descartan), no puede ir junto con un `id_lote` y solo vale en un movimiento que SUBE el saldo (al retirar no se crea
  * un lote). `codigo_lote`: texto recortado de 1 a 50 caracteres; `fecha_vencimiento`: fecha real YYYY-MM-DD, OBLIGATORIA
  * (D28(b): en el contrato solo `lote` lleva «?»; ausente o null es 422). El motor sí admite la fecha nula, porque la carga
- * inicial (Tarea 12) la deja opcional. Informa a la vez el código y la fecha inválidos.
+ * inicial (Tarea 13) la deja opcional. Informa a la vez el código y la fecha inválidos.
  * @returns {{codigoLote: string, fechaVencimiento: string|null}|null} la forma que recibe el motor
  */
 function leerLote(datos) {
@@ -113,7 +113,7 @@ function registrarFallo(logger, registro) {
  * movimiento con ms-notificaciones colgado).
  * - No se evalúa tras TRASLADO_SALIDA, TRASLADO_ENTRADA ni CARGA_INICIAL (tipos.evaluaUmbral).
  * - NUNCA rechaza: un fallo de la lectura o del aviso (también síncrono, o una promesa que rechaza) solo se registra con
- *   logger.error; el movimiento ya está guardado y su respuesta no cambia. Las Tareas 9–13 la llaman igual tras su commit
+ *   logger.error; el movimiento ya está guardado y su respuesta no cambia. Las Tareas 11–13 la llaman igual tras su commit
  *   (p. ej. la aprobación de un conteo, una vez por AJUSTE).
  * @param {{db: object, clients: {notificaciones: object}, logger: object}} deps
  * @param {{tipo: string, idProducto: number, idBodega: number, identity: object}} movimiento la bodega es la del movimiento

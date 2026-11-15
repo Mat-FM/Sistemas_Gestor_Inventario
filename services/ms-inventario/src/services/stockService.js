@@ -7,8 +7,8 @@ const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
 
 // Motor de movimientos (RF04, RF10): la ÚNICA vía por la que cambia un saldo. Lo usan POST /movimientos (Tarea 7) y, dentro de
-// sus propias transacciones, los lotes (Tarea 8), los traslados (Tarea 9), la aprobación de conteos (Tarea 11), la carga
-// inicial (Tarea 12) y las recepciones y devoluciones de ms-compras (Tarea 13, por POST /movimientos).
+// sus propias transacciones, los lotes (Tarea 8), los traslados (Tarea 11), la aprobación de conteos (Tarea 12), la carga
+// inicial (Tarea 13) y las recepciones y devoluciones de ms-compras (por POST /movimientos).
 //
 // Qué hace y qué no:
 // - Trabaja SOLO con la transacción que recibe: no consulta ms-catalogo, no avisa a ms-notificaciones y no revisa la
@@ -48,11 +48,11 @@ const saldoRepository = require('../repositories/saldoRepository');
 //
 // ORDEN DE BLOQUEO cuando una operación toma VARIOS saldos en una misma transacción (D25c): llamar a aplicarMovimiento (o a
 // bloquear) en orden de id_bodega ascendente y, dentro de la misma bodega, de id_producto ascendente.
-// - Traslados (Tarea 9): primero el saldo de MENOR id_bodega, sea cual sea el origen y el destino. Si un traslado A→B
+// - Traslados (Tarea 11): primero el saldo de MENOR id_bodega, sea cual sea el origen y el destino. Si un traslado A→B
 //   bloqueara A y luego B mientras otro B→A bloquea B y luego A, cada uno esperaría al otro (interbloqueo, 40P01).
-// - Aprobación de conteos (Tarea 11): los AJUSTE de una misma bodega, por id_producto ascendente; así dos aprobaciones
+// - Aprobación de conteos (Tarea 12): los AJUSTE de una misma bodega, por id_producto ascendente; así dos aprobaciones
 //   concurrentes de conteos de la misma bodega que comparten productos no se interbloquean.
-// - Carga inicial (Tarea 12): sus filas, ordenadas igual antes de aplicarlas.
+// - Carga inicial (Tarea 13): sus filas, ordenadas igual antes de aplicarlas.
 
 const ENTERO_MAXIMO = 2147483647;
 const LARGO_CLAVE = 255; // movimientos.clave_idempotencia es varchar(255)
@@ -201,15 +201,15 @@ async function salirPorFefo(trx, { idBodega, idProducto, solicitado }) {
  * @param {number|null} [datos.idLote] lote al que entra o del que sale (D27); debe ser de la misma bodega y producto (404 si no)
  * @param {{codigoLote: string, fechaVencimiento?: string|null}|null} [datos.lote] entrada a un lote por código (solo si el
  *   movimiento SUBE el saldo); se crea si no existe. No va junto con idLote
- * @param {number|null} [datos.idTraslado] movimientos de un traslado (Tarea 9)
- * @param {number|null} [datos.idConteo] ajustes de la aprobación de un conteo (Tarea 11)
+ * @param {number|null} [datos.idTraslado] movimientos de un traslado (Tarea 11)
+ * @param {number|null} [datos.idConteo] ajustes de la aprobación de un conteo (Tarea 12)
  * @param {string|null} [datos.documentoReferencia] ya validado (≤ 100 caracteres)
  * @param {string|null} [datos.observacion] ya validada (≤ 500 caracteres)
  * @param {string} datos.claveIdempotencia la clave tal como se ALMACENA (idempotencia.claveAlmacenada, o idempotencia.derivada
  *   en las operaciones que generan varios movimientos, D5); única en la tabla
  * @param {number} datos.idUsuario autor del movimiento (RF10)
  * @returns {Promise<Movimiento>} el movimiento insertado (sin clave_idempotencia). Solo lleva `id_lote`: NO devuelve el código ni
- *   la fecha del lote. Para la Tarea 9: un traslado que saca un lote (idLote) debe leer ese lote de origen SIN bloqueo (por
+ *   la fecha del lote. Para la Tarea 11: un traslado que saca un lote (idLote) debe leer ese lote de origen SIN bloqueo (por
  *   ejemplo con una lectura simple por id) para recrearlo en el destino con `lote: { codigoLote, fechaVencimiento }`. Es seguro
  *   porque `codigo_lote` y `fecha_vencimiento` de un lote existente son INMUTABLES: ninguna sentencia los actualiza (una fecha
  *   distinta es 409 CONFLICTO, D27(d), nunca una actualización) y la pertenencia a su par tampoco cambia.

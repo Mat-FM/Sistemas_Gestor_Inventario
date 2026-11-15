@@ -141,7 +141,7 @@ describe('leerClaveIdempotencia', () => {
   });
 });
 
-describe('resolverFallo (D25c: relectura por clave tras un fallo, reutilizable por las Tareas 9, 11 y 12)', () => {
+describe('resolverFallo (D25c: relectura por clave tras un fallo, reutilizable por las Tareas 11, 12 y 13)', () => {
   let db;
   let b1;
   beforeAll(() => {

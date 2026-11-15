@@ -3,7 +3,7 @@ const movimientoRepository = require('../repositories/movimientoRepository');
 
 // Claves de idempotencia (RNF17): ÚNICA fuente de verdad de cómo se arma la clave que se guarda en
 // movimientos.clave_idempotencia (D25, D25b, D25c) y de cómo se relee tras un fallo (resolverFallo). La usan POST /movimientos
-// (Tarea 7) y los traslados, la aprobación de conteos y la carga inicial (Tareas 9, 11 y 12). Nadie arma una clave ni una
+// (Tarea 7) y los traslados, la aprobación de conteos y la carga inicial (Tareas 11, 12 y 13). Nadie arma una clave ni una
 // derivada a mano.
 //
 // Formato: `<id_usuario>:<operacion>:<clave>` y, para las operaciones que generan varios movimientos (D5),
@@ -16,11 +16,11 @@ const movimientoRepository = require('../repositories/movimientoRepository');
 //
 // Sufijos de las derivadas (D25d), fijos para que ninguna tarea los invente; `base` es siempre
 // claveAlmacenada(idUsuario, OPERACIONES.X, clave):
-// - Traslado (Tarea 9): el movimiento TRASLADO_SALIDA lleva derivada(base, SUFIJOS_TRASLADO.SALIDA) y el TRASLADO_ENTRADA
+// - Traslado (Tarea 11): el movimiento TRASLADO_SALIDA lleva derivada(base, SUFIJOS_TRASLADO.SALIDA) y el TRASLADO_ENTRADA
 //   derivada(base, SUFIJOS_TRASLADO.ENTRADA). La repetición de POST /traslados se detecta releyendo la PRIMERA, la de salida,
 //   con resolverFallo (o findByClave antes de la transacción).
-// - Aprobación de conteo (Tarea 11): derivada(base, <id_producto>) por cada línea con diferencia.
-// - Carga inicial (Tarea 12): derivada(base, <n>) por fila, con n desde 1 (la posición de la fila en la lista enviada).
+// - Aprobación de conteo (Tarea 12): derivada(base, <id_producto>) por cada línea con diferencia.
+// - Carga inicial (Tarea 13): derivada(base, <n>) por fila, con n desde 1 (la posición de la fila en la lista enviada).
 // Peor caso: 10 (id) + 1 + 4 (operación) + 1 + 200 (clave) + 1 + 10 (sufijo) = 227 ≤ varchar(255).
 
 /** Operaciones que registran movimientos con su propia Idempotency-Key. */
@@ -99,7 +99,7 @@ function derivada(almacenada, sufijo) {
  * - Si no hay movimiento, relanza el MISMO objeto de error original (nunca uno nuevo): un 40P01, un 40001 o una conexión
  *   cortada no se ocultan, y un 23505 de la clave sin movimiento llega al manejador como 500 con su causa registrada. Si la
  *   relectura también falla, se relanza el error original.
- * La usan registrarMovimiento (clave `mov`) y las Tareas 9, 11 y 12 con su clave base o la derivada que elijan.
+ * La usan registrarMovimiento (clave `mov`) y las Tareas 11, 12 y 13 con su clave base o la derivada que elijan.
  * @param {object} db instancia de Knex (no la transacción)
  * @param {string} almacenada la clave tal como se guardó (claveAlmacenada o derivada)
  * @param {unknown} error el error con el que falló la transacción
