@@ -73,6 +73,18 @@ async function buscarPorCodigo(dbOrTrx, { idBodega, idProducto, codigoLote }) {
 }
 
 /**
+ * Un lote por su id, SIN bloquear (cualquier bodega y producto: quien llama comprueba el par). La usan los traslados (RF04): al
+ * crear, para validar el lote de origen y precomprobar el destino (D28(a)), y al recibir, para recrear en el destino el código y
+ * la fecha del lote de origen. Leer sin bloqueo es seguro porque `codigo_lote`, `fecha_vencimiento`, `id_bodega` e
+ * `id_producto` de un lote existente son INMUTABLES (ninguna sentencia los actualiza) y los lotes no se borran; su
+ * `cantidad_disponible` sí cambia y nadie debe decidir con ella sin el candado del saldo.
+ * @returns {Promise<Lote|undefined>}
+ */
+async function findById(dbOrTrx, idLote) {
+  return dbOrTrx(TABLA).select(COLUMNAS).where({ id_lote: idLote }).first();
+}
+
+/**
  * Toma un lote por su id con `SELECT … FOR UPDATE` (bloqueado hasta el fin de la transacción). Debe llamarse con una transacción.
  * El par `{ idBodega, idProducto }` es OBLIGATORIO (Ruling 44; TypeError si falta o no son enteros positivos): solo encuentra (y
  * solo BLOQUEA) el lote si es de ese par. Así nunca
@@ -167,4 +179,4 @@ async function sumarDelPar(trx, { idBodega, idProducto }) {
   return { enLotes: Number(fila.en_lotes), aislamiento: fila.aislamiento };
 }
 
-module.exports = { upsertEntrada, buscarPorCodigo, bloquearPorId, listarParaFefo, listarConExistencia, listar, ajustar, sumarDelPar };
+module.exports = { upsertEntrada, buscarPorCodigo, findById, bloquearPorId, listarParaFefo, listarConExistencia, listar, ajustar, sumarDelPar };

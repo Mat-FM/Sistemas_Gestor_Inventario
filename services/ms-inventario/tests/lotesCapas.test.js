@@ -154,6 +154,22 @@ describe('loteRepository.buscarPorCodigo', () => {
   });
 });
 
+describe('loteRepository.findById', () => {
+  it('devuelve el Lote (fecha como texto) de CUALQUIER bodega y producto, o undefined; sin bloquearlo', async () => {
+    /* La usan los traslados para validar el lote de origen y recrearlo en el destino (D28(a)); el par lo comprueba quien llama. */
+    const propio = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    const ajeno = await crearLote(db, { idBodega: b2, idProducto: 6, codigoLote: 'L2', cantidad: 4 });
+    await conTransaccionAbierta(async (trx) => [
+      await loteRepository.findById(trx, propio.id_lote), await loteRepository.findById(trx, ajeno.id_lote), await loteRepository.findById(trx, 9999),
+    ], async ([uno, otro, ninguno]) => {
+      expect(uno).toEqual({ id_lote: propio.id_lote, id_producto: 5, id_bodega: b1, codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 3 });
+      expect(otro).toMatchObject({ id_lote: ajeno.id_lote, id_bodega: b2, id_producto: 6, fecha_vencimiento: null });
+      expect(ninguno).toBeUndefined();
+      expect(await estaBloqueado(propio.id_lote)).toBe(false);
+    });
+  });
+});
+
 describe('loteRepository.bloquearPorId', () => {
   it('devuelve el Lote (fecha como texto) o undefined si no existe', async () => {
     /* El motor comprueba después que sea de la misma bodega y producto. */
@@ -688,6 +704,7 @@ describe('loteService', () => {
 promesasReales(loteRepository, {
   upsertEntrada: [{ idBodega: 1, idProducto: 5, codigoLote: 'P', fechaVencimiento: null, cantidad: 1 }],
   buscarPorCodigo: [{ idBodega: 1, idProducto: 5, codigoLote: 'P' }],
+  findById: [1],
   bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
   listarConExistencia: [{ idBodega: 1, idProducto: 5 }],

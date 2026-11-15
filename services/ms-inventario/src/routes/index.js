@@ -3,6 +3,7 @@ const { rutasBodegas } = require('./bodegas');
 const { rutasLotes } = require('./lotes');
 const { rutasMovimientos } = require('./movimientos');
 const { rutasSaldos } = require('./saldos');
+const { rutasTraslados } = require('./traslados');
 const { rutasUmbrales } = require('./umbrales');
 
 // Rutas de negocio del servicio: una única fuente de verdad. registrarRutas las monta y la Tarea 14 comprueba contra ella
@@ -28,6 +29,7 @@ function rutasDeclaradas(deps = {}) {
     ...rutasUmbrales(deps),
     ...rutasMovimientos(deps),
     ...rutasLotes(deps),
+    ...rutasTraslados(deps),
   ];
 }
 

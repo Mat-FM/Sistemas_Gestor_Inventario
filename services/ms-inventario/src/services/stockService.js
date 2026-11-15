@@ -48,8 +48,10 @@ const saldoRepository = require('../repositories/saldoRepository');
 //
 // ORDEN DE BLOQUEO cuando una operación toma VARIOS saldos en una misma transacción (D25c): llamar a aplicarMovimiento (o a
 // bloquear) en orden de id_bodega ascendente y, dentro de la misma bodega, de id_producto ascendente.
-// - Traslados (Tarea 11): primero el saldo de MENOR id_bodega, sea cual sea el origen y el destino. Si un traslado A→B
-//   bloqueara A y luego B mientras otro B→A bloquea B y luego A, cada uno esperaría al otro (interbloqueo, 40P01).
+// - Traslados (Tarea 11, D31(d)): NO toman dos saldos. La creación toma solo el saldo de ORIGEN (y lo bloquea ANTES de insertar
+//   el traslado, cuya clave foránea al lote toma FOR KEY SHARE de la fila del lote: ver trasladoService.crear) y la recepción,
+//   en otra transacción, la fila del traslado y después solo el saldo de DESTINO. Sin dos saldos en una transacción no hay ciclo
+//   entre un traslado A→B y otro B→A.
 // - Aprobación de conteos (Tarea 12): los AJUSTE de una misma bodega, por id_producto ascendente; así dos aprobaciones
 //   concurrentes de conteos de la misma bodega que comparten productos no se interbloquean.
 // - Carga inicial (Tarea 13): sus filas, ordenadas igual antes de aplicarlas.
