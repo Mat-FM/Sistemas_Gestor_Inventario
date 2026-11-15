@@ -1,5 +1,6 @@
 const { AppError } = require('../src/errors');
 const { createResilientClient } = require('../src/clients/resilientClient');
+const { conRastreo } = require('./helpers/temporizadores');
 
 // Pruebas del cliente HTTP resiliente (RNF18) con fetch, sleep y reloj falsos: son deterministas y no tocan el reloj global.
 // Solo las de plazo usan temporizadores reales, con plazos de milisegundos. La suite con un servidor HTTP real está en
@@ -68,8 +69,6 @@ async function fallar(cliente, n, { metodo = 'POST', reintentable = false } = {}
     await esperarNoDisponible(cliente.request(metodo, '/x', { reintentable }));
   }
 }
-
-const temporizadoresActivos = () => process.getActiveResourcesInfo().filter((tipo) => tipo === 'Timeout').length;
 
 describe('createResilientClient: reintentos y esperas', () => {
   it('GET reintentable: 503, 503, 200 → resuelve con la respuesta y espera [200, 400]', async () => {
@@ -262,21 +261,25 @@ describe('createResilientClient: plazo de espera', () => {
 });
 
 describe('createResilientClient: temporizadores', () => {
-  // Con un plazo de 60 s, un temporizador que se quede vivo se vería en los recursos activos del proceso.
-  const plazoLargo = { timeoutMs: 60_000 };
+  // Se mide con conRastreo (tests/helpers/temporizadores.js): SOLO los temporizadores que el cliente arma con su `timeoutMs`
+  // dentro de la llamada, no los del proceso entero (Jest, fetch y otras suites los crean y destruyen al azar). Con un plazo de
+  // 60 s, un temporizador que se quedara vivo seguiría vivo cuando la llamada termina.
+  const PLAZO_LARGO = 60_000;
 
   it('el temporizador del plazo existe mientras la llamada está en vuelo (control del medidor)', async () => {
-    const base = temporizadoresActivos();
-    let durante;
-    const { cliente } = crearCliente({
-      ...plazoLargo,
-      fetchImpl: jest.fn(async () => {
-        durante = temporizadoresActivos();
-        return r200();
-      }),
+    await conRastreo(PLAZO_LARGO, async (rastro) => {
+      let durante;
+      const { cliente } = crearCliente({
+        timeoutMs: PLAZO_LARGO,
+        fetchImpl: jest.fn(async () => {
+          durante = rastro.vivos();
+          return r200();
+        }),
+      });
+      await cliente.request('GET', '/x');
+      expect(durante).toBe(1);
+      expect({ creados: rastro.creados(), vivos: rastro.vivos() }).toEqual({ creados: 1, vivos: 0 });
     });
-    await cliente.request('GET', '/x');
-    expect(durante).toBe(base + 1);
   });
 
   it.each([
@@ -287,17 +290,21 @@ describe('createResilientClient: temporizadores', () => {
     ['cuerpo que no es JSON', () => texto(200, 'no json'), 'POST'],
     ['error de red', caidaDeRed, 'POST'],
   ])('no deja temporizadores vivos tras %s', async (_caso, paso, metodo) => {
-    const base = temporizadoresActivos();
-    const { cliente } = crearCliente({ ...plazoLargo, fetchImpl: fetchSecuencia(paso) });
-    await cliente.request(metodo, '/x').catch(() => {});
-    expect(temporizadoresActivos()).toBe(base);
+    await conRastreo(PLAZO_LARGO, async (rastro) => {
+      const { cliente } = crearCliente({ timeoutMs: PLAZO_LARGO, fetchImpl: fetchSecuencia(paso) });
+      await cliente.request(metodo, '/x').catch(() => {});
+      expect(rastro.creados()).toBe(1); // control: el medidor vio el temporizador del único intento (si no, «0 vivos» no probaría nada)
+      expect(rastro.vivos()).toBe(0);
+    });
   });
 
   it('tampoco los deja tras un fallo por plazo ni con reintentos', async () => {
-    const base = temporizadoresActivos();
-    const { cliente } = crearCliente({ timeoutMs: 10, fetchImpl: jest.fn(() => new Promise(() => {})) });
-    await cliente.request('GET', '/x', { reintentable: true }).catch(() => {});
-    expect(temporizadoresActivos()).toBe(base);
+    await conRastreo(10, async (rastro) => {
+      const { cliente } = crearCliente({ timeoutMs: 10, fetchImpl: jest.fn(() => new Promise(() => {})) });
+      await cliente.request('GET', '/x', { reintentable: true }).catch(() => {});
+      // Cuatro intentos (1 + 3 reintentos), cada uno con su temporizador, y los cuatro vencieron: ninguno queda vivo.
+      expect({ creados: rastro.creados(), disparados: rastro.disparados(), vivos: rastro.vivos() }).toEqual({ creados: 4, disparados: 4, vivos: 0 });
+    });
   });
 });
 

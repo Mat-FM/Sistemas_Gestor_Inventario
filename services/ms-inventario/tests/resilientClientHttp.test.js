@@ -1,12 +1,12 @@
 const http = require('node:http');
 const { AppError } = require('../src/errors');
 const { createResilientClient } = require('../src/clients/resilientClient');
+const { conRastreo } = require('./helpers/temporizadores');
 
 // El cliente resiliente contra un servidor HTTP real (node:http en 127.0.0.1, puerto efímero) y el fetch nativo: lo que
 // los fakes no pueden demostrar (plazo sobre el cuerpo, sockets que se cortan, redirecciones que de verdad no se siguen).
 
 const dormir = (ms) => new Promise((resolver) => setTimeout(resolver, ms));
-const temporizadoresActivos = () => process.getActiveResourcesInfo().filter((tipo) => tipo === 'Timeout').length;
 
 let servidor;
 let url;
@@ -203,7 +203,9 @@ describe('cliente resiliente con servidor HTTP real', () => {
     expect(peticiones.map((p) => p.ruta)).toEqual(['/redirige']);
   });
 
-  it('el temporizador del plazo queda limpio tras una llamada normal, un 5xx y una que vence', async () => {
+  // Se mide con conRastreo (tests/helpers/temporizadores.js): SOLO los temporizadores que el cliente arma con su `timeoutMs` dentro
+  // de la llamada. Los del proceso (Jest, undici/fetch, otras suites) aparecen y desaparecen al azar y no cuentan.
+  it('el temporizador del plazo queda limpio tras una llamada normal, un 5xx, una que vence y un cuerpo que nunca termina', async () => {
     manejadores['/ok'] = (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{}');
@@ -213,17 +215,35 @@ describe('cliente resiliente con servidor HTTP real', () => {
       res.end('{}');
     };
     manejadores['/mudo'] = () => {};
-    const base = temporizadoresActivos();
+    manejadores['/a-medias'] = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"parcial":'); // el cuerpo nunca termina
+    };
 
-    // plazo largo: un temporizador que se quedara vivo se vería aquí
-    await crear({ timeoutMs: 60_000 }).request('GET', '/ok');
-    expect(temporizadoresActivos()).toBe(base);
-
-    await esperarNoDisponible(crear({ timeoutMs: 60_000 }).request('GET', '/caido'));
-    expect(temporizadoresActivos()).toBe(base);
-
-    await esperarNoDisponible(crear({ timeoutMs: 30 }).request('GET', '/mudo'));
-    expect(temporizadoresActivos()).toBe(base);
+    // plazo largo: un temporizador que se quedara vivo seguiría vivo al terminar la llamada
+    await conRastreo(60_000, async (rastro) => {
+      await crear({ timeoutMs: 60_000 }).request('GET', '/ok');
+      expect(rastro.creados()).toBe(1); // control: el medidor vio el temporizador (si no, «0 vivos» no probaría nada)
+      expect(rastro.vivos()).toBe(0);
+    });
+    await conRastreo(60_000, async (rastro) => {
+      await esperarNoDisponible(crear({ timeoutMs: 60_000 }).request('GET', '/caido'));
+      expect({ creados: rastro.creados(), vivos: rastro.vivos() }).toEqual({ creados: 1, vivos: 0 });
+    });
+    // las que vencen: el temporizador DISPARA y, aun así, no queda nada vivo
+    await conRastreo(30, async (rastro) => {
+      await esperarNoDisponible(crear({ timeoutMs: 30 }).request('GET', '/mudo'));
+      expect({ creados: rastro.creados(), disparados: rastro.disparados(), vivos: rastro.vivos() }).toEqual({ creados: 1, disparados: 1, vivos: 0 });
+    });
+    await conRastreo(50, async (rastro) => {
+      await esperarNoDisponible(crear({ timeoutMs: 50 }).request('GET', '/a-medias'));
+      expect({ creados: rastro.creados(), disparados: rastro.disparados(), vivos: rastro.vivos() }).toEqual({ creados: 1, disparados: 1, vivos: 0 });
+    });
+    // con reintentos: un temporizador por intento, y ninguno vivo
+    await conRastreo(50, async (rastro) => {
+      await esperarNoDisponible(crear({ timeoutMs: 50 }).request('GET', '/a-medias', { reintentable: true }));
+      expect({ creados: rastro.creados(), vivos: rastro.vivos() }).toEqual({ creados: 4, vivos: 0 });
+    });
   });
 
   it('un puerto sin servidor es un error de red: cada llamada falla con 503 y cinco abren el circuito; la sexta ni lo intenta', async () => {
