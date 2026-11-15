@@ -28,7 +28,7 @@ async function crearUmbral(db, { idProducto, cantidadMinima }) {
   return umbral;
 }
 
-/** Inserta un lote y devuelve la fila. La columna `date` llega como Date a medianoche local (pg), no como texto. */
+/** Inserta un lote y devuelve la fila. `fecha_vencimiento` vuelve como texto YYYY-MM-DD o null (Ruling 15, config/db.js). */
 async function crearLote(db, { idBodega, idProducto, codigoLote, fechaVencimiento = null, cantidad }) {
   const [lote] = await db('lotes')
     .insert({

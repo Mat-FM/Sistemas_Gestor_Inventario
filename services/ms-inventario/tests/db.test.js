@@ -25,6 +25,67 @@ describe('base de pruebas real (PostgreSQL)', () => {
     expect(typeof rows[0].total).toBe('number');
   });
 
+  describe('columnas date como texto YYYY-MM-DD (Ruling 15)', () => {
+    // Sin el parser, `pg` crea un Date a medianoche LOCAL y JSON.stringify lo pasa a UTC: en un huso adelantado a UTC la fecha
+    // retrocede un día. Se prueba en procesos hijos con el huso fijado, para no depender del de la máquina que corre la suite.
+    const { execFile } = require('node:child_process');
+    const path = require('node:path');
+    const HIJO = `
+      const pg = require('pg');
+      const { createTestDb } = require(${JSON.stringify(path.join(__dirname, 'helpers', 'db.js'))});
+      (async () => {
+        const db = createTestDb();
+        try {
+          const { rows: [fila] } = await db.raw("SELECT '2027-01-31'::date AS vence, '2026-12-31'::date AS fin_de_anio, NULL::date AS nula");
+          process.stdout.write(JSON.stringify({
+            tipo: typeof fila.vence,
+            json: JSON.stringify(fila),
+            desfase: new Date(2027, 0, 31).getTimezoneOffset(),
+            parser: pg.types.getTypeParser(1082)('2027-01-31'),
+          }));
+        } finally {
+          await db.destroy();
+        }
+      })().catch((error) => { process.stderr.write(String(error && error.stack)); process.exit(1); });
+    `;
+    const enHuso = (tz) => new Promise((resolver, rechazar) => {
+      execFile(process.execPath, ['-e', HIJO], { env: { ...process.env, TZ: tz }, cwd: path.join(__dirname, '..') }, (error, stdout, stderr) => {
+        if (error) rechazar(new Error(`${error.message}\n${stderr}`));
+        else resolver(JSON.parse(stdout));
+      });
+    });
+
+    it('una columna date llega como el texto exacto de la base, no como Date (y null sigue siendo null)', async () => {
+      const { rows: [fila] } = await db.raw("SELECT '2027-01-31'::date AS vence, NULL::date AS nula");
+      expect(fila).toEqual({ vence: '2027-01-31', nula: null });
+    });
+
+    it('timestamptz NO cambia: sigue llegando como Date (el parser solo toca date, OID 1082)', async () => {
+      const { rows: [fila] } = await db.raw('SELECT now() AS ahora');
+      expect(fila.ahora).toBeInstanceOf(Date);
+    });
+
+    it.each([
+      ['America/Bogota', 300],
+      ['Pacific/Auckland', -780],
+    ])('con TZ=%s la fecha sobrevive a JSON.stringify sin desplazarse un día', async (tz, desfase) => {
+      const resultado = await enHuso(tz);
+      expect(resultado.desfase).toBe(desfase); // control: el huso del hijo es de verdad el pedido
+      expect(resultado).toEqual({
+        tipo: 'string', json: '{"vence":"2027-01-31","fin_de_anio":"2026-12-31","nula":null}', desfase, parser: '2027-01-31',
+      });
+    });
+
+    it('el parser es el del `pg` que usa Knex: config/db.js lo registra para las conexiones de pruebas y de producción', () => {
+      // createDb (lo usan src/server.js, knexfile.js y el arnés) carga config/db.js, que registra el parser en `pg.types`, que es
+      // global al módulo `pg`. Knex debe resolver ESE mismo módulo `pg`; si tuviera su propia copia, el parser no le llegaría.
+      const pg = require('pg');
+      const pgDeKnex = require.resolve('pg', { paths: [path.dirname(require.resolve('knex'))] });
+      expect(pgDeKnex).toBe(require.resolve('pg'));
+      expect(pg.types.getTypeParser(1082)('2027-01-31')).toBe('2027-01-31');
+    });
+  });
+
   describe('truncateAll', () => {
     // Todo ocurre dentro de una transacción que se revierte: no queda ni una tabla ni una fila de prueba.
     const REVERTIR = new Error('revertir');

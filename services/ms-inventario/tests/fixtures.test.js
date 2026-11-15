@@ -83,11 +83,12 @@ describe('fixtures: datos en la base real', () => {
       expect(lote).toEqual({ id_lote: 1, id_bodega: idBodega, id_producto: 5, codigo_lote: 'L-1', fecha_vencimiento: null, cantidad_disponible: 8 });
     });
 
-    it('guarda la fecha de vencimiento como fecha (sin hora ni zona)', async () => {
+    it('guarda la fecha de vencimiento como fecha (sin hora ni zona) y la devuelve como texto YYYY-MM-DD (Ruling 15)', async () => {
       const { id_bodega: idBodega } = await crearBodega(db);
       const lote = await crearLote(db, { idBodega, idProducto: 5, codigoLote: 'L-2', fechaVencimiento: '2026-12-31', cantidad: 8 });
       const { rows } = await db.raw('SELECT fecha_vencimiento::text AS texto FROM lotes WHERE id_lote = ?', [lote.id_lote]);
       expect(rows[0].texto).toBe('2026-12-31');
+      expect(lote.fecha_vencimiento).toBe('2026-12-31');
     });
   });
 });
