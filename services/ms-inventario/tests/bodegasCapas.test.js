@@ -1,6 +1,7 @@
 const { AppError } = require('../src/errors');
 const bodegaRepository = require('../src/repositories/bodegaRepository');
 const { crearBodegaService } = require('../src/services/bodegaService');
+const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega } = require('./helpers/fixtures');
 
@@ -172,54 +173,16 @@ describe('bodegaRepository', () => {
   });
 });
 
-describe('bodegaRepository: promesas reales (Ruling 21)', () => {
-  // Un Knex sin `async` devuelve el builder (un thenable), no una Promise: un fallo síncrono lanza en vez de rechazar y cada
-  // `await` sobre el mismo valor ejecuta la consulta otra vez. Esta es la lista de las funciones asíncronas que exporta el
-  // repositorio; las tareas siguientes copian el patrón.
-  const FUNCIONES = {
-    findById: [1],
-    findByCodigo: ['MZL'],
-    list: [{ limit: 10, offset: 0 }],
-    insert: [DATOS],
-    update: [1, { nombre: 'N', ciudad: 'C', direccion: 'D' }],
-    setActiva: [1, false],
-  };
-
-  it('la lista de arriba cubre TODA función asíncrona exportada (esCodigoDuplicado es la única síncrona)', () => {
-    const exportadas = Object.entries(bodegaRepository).filter(([, valor]) => typeof valor === 'function').map(([nombre]) => nombre);
-    expect(exportadas.filter((nombre) => nombre !== 'esCodigoDuplicado').sort()).toEqual(Object.keys(FUNCIONES).sort());
-    expect(bodegaRepository.esCodigoDuplicado(undefined)).toBe(false); // síncrona: devuelve un booleano, no una promesa
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s devuelve una Promise real, no el builder de Knex', async (nombre, argumentos) => {
-    const resultado = bodegaRepository[nombre](db, ...argumentos);
-    expect(resultado).toBeInstanceOf(Promise);
-    await resultado;
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: un fallo síncrono (db nulo) llega como RECHAZO, no como excepción síncrona', async (nombre, argumentos) => {
-    let resultado;
-    expect(() => { resultado = bodegaRepository[nombre](null, ...argumentos); }).not.toThrow();
-    expect(resultado).toBeInstanceOf(Promise);
-    await expect(resultado).rejects.toBeInstanceOf(TypeError);
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: esperar dos veces la misma promesa NO ejecuta la consulta dos veces', async (nombre, argumentos) => {
-    const sql = [];
-    const registrar = (consulta) => sql.push(consulta.sql);
-    db.on('query', registrar);
-    try {
-      const resultado = bodegaRepository[nombre](db, ...argumentos);
-      await resultado;
-      const tras1 = sql.length;
-      expect(tras1).toBeGreaterThan(0);
-      await resultado;
-      expect(sql.length).toBe(tras1);
-    } finally {
-      db.removeListener('query', registrar);
-    }
-  });
-});
+// Cada función asíncrona que exporta el repositorio con sus argumentos (esCodigoDuplicado es la única síncrona); las tareas
+// siguientes copian el patrón con su propio repositorio.
+promesasReales(bodegaRepository, {
+  findById: [1],
+  findByCodigo: ['MZL'],
+  list: [{ limit: 10, offset: 0 }],
+  insert: [DATOS],
+  update: [1, { nombre: 'N', ciudad: 'C', direccion: 'D' }],
+  setActiva: [1, false],
+}, { titulo: 'bodegaRepository', db: () => db, sincronas: { esCodigoDuplicado: [undefined] } });
 
 describe('bodegaService', () => {
   // Repositorio real salvo lo que cada prueba reemplaza.

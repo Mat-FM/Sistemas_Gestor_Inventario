@@ -3,14 +3,13 @@ const { createApp } = require('../src/app');
 const { buildTestApp, entornoValido } = require('./helpers/app');
 const { truncateAll } = require('./helpers/db');
 const { crearBodega, crearSaldo, crearUmbral, fakeCatalogo, headers } = require('./helpers/fixtures');
-const { datosNoValidos, esError, recursoNoExiste, rutaNoExiste } = require('./helpers/respuestas');
+const { ISO_8601, datosNoValidos, esError, recursoNoExiste, rutaNoExiste } = require('./helpers/respuestas');
 
 // Umbrales de stock mínimo (RF09): GET /umbrales y PUT /umbrales/{id_producto} de la Tabla 9 de la Entrega 2, contra
 // PostgreSQL real. Las pruebas de cada capa por separado están en umbralesCapas.test.js y la lista de rutas en routes.test.js.
 
 const ADM = headers('ADMINISTRADOR');
 const CLAVES = ['id_producto', 'cantidad_minima', 'fecha_actualizacion'];
-const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 let request;
 let db;

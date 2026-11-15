@@ -1,6 +1,7 @@
 const { AppError, e } = require('../src/errors');
 const umbralRepository = require('../src/repositories/umbralRepository');
 const { crearUmbralService } = require('../src/services/umbralService');
+const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearUmbral, fakeCatalogo } = require('./helpers/fixtures');
 
@@ -156,49 +157,12 @@ describe('umbralRepository', () => {
   });
 });
 
-describe('umbralRepository: promesas reales (Ruling 21)', () => {
-  // Un Knex sin `async` devuelve el builder (un thenable), no una Promise: un fallo síncrono lanza en vez de rechazar y cada
-  // `await` sobre el mismo valor ejecuta la consulta otra vez. Esta es la lista de las funciones que exporta el repositorio.
-  const FUNCIONES = {
-    findByProducto: [5],
-    list: [{ limit: 10, offset: 0 }],
-    upsert: [5, 10],
-  };
-
-  it('la lista de arriba cubre TODA función exportada: todas son asíncronas', () => {
-    const exportadas = Object.entries(umbralRepository).filter(([, valor]) => typeof valor === 'function').map(([nombre]) => nombre);
-    expect(exportadas.sort()).toEqual(Object.keys(FUNCIONES).sort());
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s devuelve una Promise real, no el builder de Knex', async (nombre, argumentos) => {
-    const resultado = umbralRepository[nombre](db, ...argumentos);
-    expect(resultado).toBeInstanceOf(Promise);
-    await resultado;
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: un fallo síncrono (db nulo) llega como RECHAZO, no como excepción síncrona', async (nombre, argumentos) => {
-    let resultado;
-    expect(() => { resultado = umbralRepository[nombre](null, ...argumentos); }).not.toThrow();
-    expect(resultado).toBeInstanceOf(Promise);
-    await expect(resultado).rejects.toBeInstanceOf(TypeError);
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: esperar dos veces la misma promesa NO ejecuta la consulta dos veces', async (nombre, argumentos) => {
-    const sql = [];
-    const registrar = (consulta) => sql.push(consulta.sql);
-    db.on('query', registrar);
-    try {
-      const resultado = umbralRepository[nombre](db, ...argumentos);
-      await resultado;
-      const tras1 = sql.length;
-      expect(tras1).toBeGreaterThan(0);
-      await resultado;
-      expect(sql.length).toBe(tras1);
-    } finally {
-      db.removeListener('query', registrar);
-    }
-  });
-});
+// Cada función que exporta el repositorio con sus argumentos: todas son asíncronas.
+promesasReales(umbralRepository, {
+  findByProducto: [5],
+  list: [{ limit: 10, offset: 0 }],
+  upsert: [5, 10],
+}, { titulo: 'umbralRepository', db: () => db });
 
 describe('umbralService', () => {
   const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };

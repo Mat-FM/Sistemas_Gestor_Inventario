@@ -3,6 +3,7 @@ const { createApp } = require('../src/app');
 const { buildTestApp, entornoValido } = require('./helpers/app');
 const { truncateAll } = require('./helpers/db');
 const { crearBodega, headers } = require('./helpers/fixtures');
+const { datosNoValidos, esError, recursoNoExiste, rutaNoExiste } = require('./helpers/respuestas');
 
 // Gestión de bodegas (RF05): las seis operaciones de la Tabla 9 de la Entrega 2, contra PostgreSQL real.
 // Las pruebas de cada capa por separado están en bodegasCapas.test.js y la lista de rutas en routes.test.js.
@@ -14,8 +15,6 @@ const CLAVES = ['id_bodega', 'codigo', 'nombre', 'ciudad', 'direccion', 'activa'
 const LARGOS = { codigo: 30, nombre: 100, ciudad: 100, direccion: 255 };
 const NO_TEXTOS = [['un número', 123], ['un arreglo', ['a']], ['un objeto', { a: 1 }], ['null', null], ['un booleano', true]];
 
-const texto = /\S/;
-
 let request;
 let db;
 
@@ -26,21 +25,6 @@ beforeEach(() => truncateAll(db));
 afterAll(() => db.destroy());
 
 const filas = () => db('bodegas').select('*').orderBy('id_bodega');
-
-// Forma exacta del cuerpo de error común: {"error": {"codigo", "mensaje", "detalles"}}.
-function esError(res, status, codigo, campos = []) {
-  expect(res.status).toBe(status);
-  expect(res.body).toEqual({
-    error: { codigo, mensaje: expect.stringMatching(texto), detalles: campos.map((campo) => ({ campo, mensaje: expect.stringMatching(texto) })) },
-  });
-}
-const datosNoValidos = (res, campos) => esError(res, 422, 'DATOS_NO_VALIDOS', campos);
-// 404 NO_EXISTE de un RECURSO: un id inexistente o inválido. Se distingue del 404 de una ruta que no está montada
-// (rutaNoEncontrada: "La ruta solicitada no existe"), que sin esto haría pasar las pruebas aunque no hubiera rutas.
-function recursoNoExiste(res) {
-  esError(res, 404, 'NO_EXISTE');
-  expect(res.body.error.mensaje).not.toBe('La ruta solicitada no existe');
-}
 
 // Crea una bodega por la API (con otro código que BODEGA) y exige el 201: control positivo antes de cada rechazo.
 async function control(codigo = 'CTL') {
@@ -813,8 +797,7 @@ describe('rutas que no existen en bodegas', () => {
     const creada = await crearBodega(db, { codigo: 'B1' });
     expect((await request.get(`/bodegas/${creada.id_bodega}`).set(ADM)).status).toBe(200);
     const res = await request[metodo.toLowerCase()](ruta).set(ADM);
-    esError(res, 404, 'NO_EXISTE');
-    expect(res.body.error.mensaje).toBe('La ruta solicitada no existe');
+    rutaNoExiste(res);
     expect(await filas()).toEqual([creada]);
   });
 });

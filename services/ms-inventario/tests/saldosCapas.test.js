@@ -1,6 +1,7 @@
 const { AppError } = require('../src/errors');
 const saldoRepository = require('../src/repositories/saldoRepository');
 const { crearSaldoService } = require('../src/services/saldoService');
+const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega, crearSaldo, crearUmbral } = require('./helpers/fixtures');
 
@@ -182,49 +183,12 @@ describe('saldoRepository', () => {
   });
 });
 
-describe('saldoRepository: promesas reales (Ruling 21)', () => {
-  // Un Knex sin `async` devuelve el builder (un thenable), no una Promise: un fallo síncrono lanza en vez de rechazar y cada
-  // `await` sobre el mismo valor ejecuta la consulta otra vez. Esta es la lista de las funciones que exporta el repositorio.
-  const FUNCIONES = {
-    list: [{ limit: 10, offset: 0 }],
-    totalPorProducto: [5],
-    bajoUmbral: [],
-  };
-
-  it('la lista de arriba cubre TODA función exportada: todas son asíncronas', () => {
-    const exportadas = Object.entries(saldoRepository).filter(([, valor]) => typeof valor === 'function').map(([nombre]) => nombre);
-    expect(exportadas.sort()).toEqual(Object.keys(FUNCIONES).sort());
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s devuelve una Promise real, no el builder de Knex', async (nombre, argumentos) => {
-    const resultado = saldoRepository[nombre](db, ...argumentos);
-    expect(resultado).toBeInstanceOf(Promise);
-    await resultado;
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: un fallo síncrono (db nulo) llega como RECHAZO, no como excepción síncrona', async (nombre, argumentos) => {
-    let resultado;
-    expect(() => { resultado = saldoRepository[nombre](null, ...argumentos); }).not.toThrow();
-    expect(resultado).toBeInstanceOf(Promise);
-    await expect(resultado).rejects.toBeInstanceOf(TypeError);
-  });
-
-  it.each(Object.entries(FUNCIONES))('%s: esperar dos veces la misma promesa NO ejecuta la consulta dos veces', async (nombre, argumentos) => {
-    const sql = [];
-    const registrar = (consulta) => sql.push(consulta.sql);
-    db.on('query', registrar);
-    try {
-      const resultado = saldoRepository[nombre](db, ...argumentos);
-      await resultado;
-      const tras1 = sql.length;
-      expect(tras1).toBeGreaterThan(0);
-      await resultado;
-      expect(sql.length).toBe(tras1);
-    } finally {
-      db.removeListener('query', registrar);
-    }
-  });
-});
+// Cada función que exporta el repositorio con sus argumentos: todas son asíncronas.
+promesasReales(saldoRepository, {
+  list: [{ limit: 10, offset: 0 }],
+  totalPorProducto: [5],
+  bajoUmbral: [],
+}, { titulo: 'saldoRepository', db: () => db });
 
 describe('saldoService', () => {
   const OPERADOR = { idUsuario: 7, rol: 'OPERADOR_BODEGA', idBodega: 2, requestId: 'r1' };

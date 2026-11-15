@@ -3,7 +3,7 @@ const { createApp } = require('../src/app');
 const { buildTestApp, entornoValido } = require('./helpers/app');
 const { truncateAll } = require('./helpers/db');
 const { crearBodega, crearSaldo, crearUmbral, headers } = require('./helpers/fixtures');
-const { datosNoValidos, esError, rutaNoExiste } = require('./helpers/respuestas');
+const { ISO_8601, datosNoValidos, esError, rutaNoExiste } = require('./helpers/respuestas');
 
 // Consultas de saldos (RF05) y productos bajo el umbral (RF09): las dos filas de saldos de la Tabla 9 de la Entrega 2,
 // contra PostgreSQL real. Las pruebas de cada capa por separado están en saldosCapas.test.js y la lista de rutas en
@@ -12,7 +12,6 @@ const { datosNoValidos, esError, rutaNoExiste } = require('./helpers/respuestas'
 const ADM = headers('ADMINISTRADOR');
 const ROLES = ['ADMINISTRADOR', 'VENDEDOR', 'CONTADOR'];
 const CLAVES_SALDO = ['id_saldo', 'id_producto', 'id_bodega', 'cantidad_disponible', 'fecha_actualizacion'];
-const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 let request;
 let db;

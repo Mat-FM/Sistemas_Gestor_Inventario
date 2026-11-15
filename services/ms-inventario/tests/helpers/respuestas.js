@@ -1,13 +1,17 @@
-// Aserciones sobre las respuestas de error comunes de la API, compartidas por las suites de los recursos.
+// Aserciones sobre las respuestas de la API, compartidas por las suites de los recursos: ÚNICA fuente de estos helpers.
 // Forma de todo error: {"error": {"codigo", "mensaje", "detalles"}}.
 
-const texto = /\S/;
+// Un mensaje de error útil: al menos un carácter que no sea espacio. (No es el validador `texto` de src/http/validate.js.)
+const NO_VACIO = /\S/;
+
+// Fecha ISO 8601 en UTC con milisegundos, como la serializa JSON.stringify(Date): 2026-11-15T10:00:00.000Z.
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** Exige el estado, el código y la forma exacta del cuerpo de error; `campos` son los de `detalles`, en orden. */
 function esError(res, status, codigo, campos = []) {
   expect(res.status).toBe(status);
   expect(res.body).toEqual({
-    error: { codigo, mensaje: expect.stringMatching(texto), detalles: campos.map((campo) => ({ campo, mensaje: expect.stringMatching(texto) })) },
+    error: { codigo, mensaje: expect.stringMatching(NO_VACIO), detalles: campos.map((campo) => ({ campo, mensaje: expect.stringMatching(NO_VACIO) })) },
   });
 }
 
@@ -29,4 +33,4 @@ function rutaNoExiste(res) {
   expect(res.body.error.mensaje).toBe('La ruta solicitada no existe');
 }
 
-module.exports = { esError, datosNoValidos, recursoNoExiste, rutaNoExiste };
+module.exports = { ISO_8601, esError, datosNoValidos, recursoNoExiste, rutaNoExiste };
