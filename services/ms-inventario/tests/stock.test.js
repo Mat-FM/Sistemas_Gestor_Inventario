@@ -6,6 +6,7 @@ const stockService = require('../src/services/stockService');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const loteRepository = require('../src/repositories/loteRepository');
 const saldoRepository = require('../src/repositories/saldoRepository');
+const { esperarBloqueo } = require('./helpers/bloqueos');
 const { crearBodega, crearLote, crearSaldo } = require('./helpers/fixtures');
 
 // El motor de movimientos (stockService.aplicarMovimiento) y los tipos de movimiento (D3), contra PostgreSQL real y con
@@ -566,6 +567,19 @@ describe('stockService.aplicarMovimiento: TRASLADO_SALIDA sin FEFO (D28(a))', ()
     expect(await lotesDe()).toEqual({ A: 1 });
   });
 
+  it('estado imposible (lotes que suman MÁS que el saldo, sembrado a mano) → 409 con disponible 0 y sin signo menos; control: el estado normal informa el real', async () => {
+    /* Tarea 8b: un cliente nunca debe ver un disponible negativo. Control: saldo 10 = A 4 + 6 sin lote → un traslado de 7 informa disponible 6. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const a = await sembrarLote('A', '2027-01-31', 4);
+    insuficiente(await atrapar(traslado(7)), 6, 7);
+    await db('lotes').where({ id_lote: a.id_lote }).update({ cantidad_disponible: 13 }); // suma 13 > saldo 10: sinLote real -3
+    const error = await atrapar(traslado(1));
+    insuficiente(error, 0, 1);
+    expect(error.detalles[0].mensaje).not.toContain('-');
+    expect(await saldoDe()).toBe(10);
+    expect(await kardex()).toEqual([]);
+  });
+
   it('el saldo insuficiente se informa primero, con los datos del SALDO', async () => {
     /* Saldo 3 sin lotes: un traslado de 4 no cabe ni en el saldo. */
     await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
@@ -583,7 +597,7 @@ describe('stockService.aplicarMovimiento: TRASLADO_SALIDA sin FEFO (D28(a))', ()
     try {
       await stockService.aplicarMovimiento(t1, datos({ cantidad: 5, lote: { codigoLote: 'A', fechaVencimiento: '2027-01-31' } }));
       pendiente = atrapar(traslado(5));
-      await new Promise((resolver) => setTimeout(resolver, 150)); // el traslado ya leyó lo que lea antes del candado y espera
+      await esperarBloqueo(db); // el traslado ya espera el candado del saldo (lo que leyera antes del candado ya lo leyó)
       await t1.commit();
     } finally {
       if (!t1.isCompleted()) await t1.rollback();

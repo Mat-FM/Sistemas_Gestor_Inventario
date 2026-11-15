@@ -48,7 +48,7 @@ function bajaElSaldo(tipo, cantidad) {
 }
 
 /**
- * `lote` (D27): ausente o null → null. Si viene, debe ser un objeto { codigo_lote, fecha_vencimiento? } (los demás campos del
+ * `lote` (D27): ausente o null → null. Si viene, debe ser un objeto { codigo_lote, fecha_vencimiento } (los demás campos del
  * objeto se descartan), no puede ir junto con un `id_lote` y solo vale en un movimiento que SUBE el saldo (al retirar no se crea
  * un lote). `codigo_lote`: texto recortado de 1 a 50 caracteres; `fecha_vencimiento`: fecha real YYYY-MM-DD, OBLIGATORIA
  * (D28(b): en el contrato solo `lote` lleva «?»; ausente o null es 422). El motor sí admite la fecha nula, porque la carga
@@ -59,7 +59,7 @@ function leerLote(datos) {
   const { lote } = datos;
   if (ausente(lote)) return null;
   if (!ausente(datos.id_lote)) throw rechazoLote('no se puede enviar junto con id_lote');
-  if (typeof lote !== 'object' || Array.isArray(lote)) throw rechazoLote('debe ser un objeto { codigo_lote, fecha_vencimiento? }');
+  if (typeof lote !== 'object' || Array.isArray(lote)) throw rechazoLote('debe ser un objeto { codigo_lote, fecha_vencimiento }, ambos obligatorios');
   if (bajaElSaldo(datos.tipo, datos.cantidad)) throw rechazoLote('solo se admite en un movimiento que sube el saldo');
   const detalles = [];
   const codigoLote = recoger(detalles, () => texto(lote.codigo_lote, 'lote.codigo_lote', { max: LARGOS.codigo_lote }));
@@ -74,7 +74,7 @@ function leerLote(datos) {
 }
 
 /**
- * Cuerpo de POST /movimientos: {tipo, id_producto, id_bodega, cantidad, id_lote?, lote?: {codigo_lote, fecha_vencimiento?},
+ * Cuerpo de POST /movimientos: {tipo, id_producto, id_bodega, cantidad, id_lote?, lote?: {codigo_lote, fecha_vencimiento},
  * documento_referencia?, observacion?} (Tabla 9).
  * Orden: cuerpo que no es un objeto (422 «cuerpo») → tipo reservado (403, D4) → todos los campos a la vez (422). Un tipo
  * válido pero reservado es un permiso, no un dato inválido: se rechaza antes de mirar el resto del cuerpo. Cualquier otro

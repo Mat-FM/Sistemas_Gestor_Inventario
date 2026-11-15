@@ -285,7 +285,8 @@ describe('entrada a un lote existente por código (D27(d))', () => {
   // «Fecha omitida suma sin tocar la guardada» y «guardada sin fecha + fecha → 409» solo son alcanzables desde la carga inicial
   // (D28(b)): se prueban en el motor (stock.test.js).
   it('con la fecha omitida o null → 422 sobre "lote.fecha_vencimiento" (D28(b): obligatoria con lote); nada cambia', async () => {
-    /* Control: con la fecha guardada suma (prueba anterior). */
+    /* Control positivo dentro de la prueba: con la fecha guardada suma. Así el 422 solo puede deberse a la fecha que falta. */
+    expect((await post(entrada(1, { lote: { codigo_lote: 'L1', fecha_vencimiento: '2027-01-31' } }))).status).toBe(201);
     const antes = await foto();
     datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'L1' } })), ['lote.fecha_vencimiento']);
     datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'L1', fecha_vencimiento: null } })), ['lote.fecha_vencimiento']);
@@ -340,8 +341,10 @@ describe('validación del cuerpo (422)', () => {
   });
 
   it.each([['L1'], [['L1']], [5], [true]])('lote %p (no es un objeto) → 422 sobre "lote"', async (lote) => {
-    /* Solo un objeto {codigo_lote, fecha_vencimiento?}. */
-    datosNoValidos(await post(entrada(1, { lote })), ['lote']);
+    /* Solo un objeto {codigo_lote, fecha_vencimiento}, ambos obligatorios (D28(b)); el mensaje lo dice. */
+    const res = await post(entrada(1, { lote }));
+    datosNoValidos(res, ['lote']);
+    expect(res.body.error.detalles[0].mensaje).toBe('debe ser un objeto { codigo_lote, fecha_vencimiento }, ambos obligatorios');
   });
 
   it('los campos extra dentro de lote se ignoran (id_lote, cantidad_disponible…)', async () => {

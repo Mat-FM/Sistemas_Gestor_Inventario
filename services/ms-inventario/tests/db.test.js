@@ -86,6 +86,28 @@ describe('base de pruebas real (PostgreSQL)', () => {
     });
   });
 
+  describe('esperarBloqueo (helpers/bloqueos.js)', () => {
+    const { esperarBloqueo } = require('./helpers/bloqueos');
+
+    it('detecta una sesión que espera un candado y, sin ninguna, falla con un mensaje claro en su plazo', async () => {
+      /* Control positivo: A bloquea una fila con FOR UPDATE y B espera esa fila → esperarBloqueo la ve. Después, sin esperas, falla. */
+      await db.raw('CREATE TABLE IF NOT EXISTS prueba_bloqueo (id INTEGER PRIMARY KEY)');
+      await db.raw('INSERT INTO prueba_bloqueo (id) VALUES (1) ON CONFLICT DO NOTHING');
+      const a = await db.transaction();
+      let b;
+      try {
+        await a.raw('SELECT * FROM prueba_bloqueo WHERE id = 1 FOR UPDATE');
+        b = db.transaction((trx) => trx.raw('SELECT * FROM prueba_bloqueo WHERE id = 1 FOR UPDATE'));
+        expect(await esperarBloqueo(db)).toBeGreaterThanOrEqual(1);
+      } finally {
+        await a.rollback();
+        await b;
+        await db.raw('DROP TABLE prueba_bloqueo');
+      }
+      await expect(esperarBloqueo(db, { plazoMs: 100 })).rejects.toThrow(/esperarBloqueo: en 100 ms nunca hubo 1 sesión\(es\) esperando un candado \(había 0\)/);
+    });
+  });
+
   describe('truncateAll', () => {
     // Todo ocurre dentro de una transacción que se revierte: no queda ni una tabla ni una fila de prueba.
     const REVERTIR = new Error('revertir');

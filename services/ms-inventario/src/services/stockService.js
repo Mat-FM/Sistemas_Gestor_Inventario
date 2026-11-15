@@ -164,8 +164,11 @@ async function salirSinLote(trx, { idBodega, idProducto, saldo, solicitado }) {
   if (aislamiento !== 'read committed') {
     throw new TypeError(`La salida de un traslado sin lote exige una transacción READ COMMITTED (es ${aislamiento})`);
   }
-  const disponible = saldo - enLotes;
-  if (disponible < solicitado) {
+  const sinLote = saldo - enLotes;
+  if (sinLote < solicitado) {
+    // Con sinLote negativo (suma de lotes > saldo: un estado imposible por el invariante, sembrado a mano) nada cabe, pero el
+    // cliente nunca debe ver un disponible negativo: se informa 0.
+    const disponible = Math.max(0, sinLote);
     throw e.conflicto('STOCK_INSUFICIENTE', 'El stock sin lote no alcanza para el traslado: indique id_lote para trasladar un lote', [
       { campo: 'cantidad', mensaje: `Disponible sin lote: ${disponible}; solicitado: ${solicitado}`, disponible, solicitado },
     ]);

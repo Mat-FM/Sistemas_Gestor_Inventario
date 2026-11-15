@@ -1,4 +1,5 @@
 const loteRepository = require('../src/repositories/loteRepository');
+const { esperarBloqueo } = require('./helpers/bloqueos');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega, crearLote } = require('./helpers/fixtures');
@@ -128,7 +129,7 @@ describe('loteRepository.upsertEntrada', () => {
     try {
       await loteRepository.upsertEntrada(a, entrada({ fechaVencimiento: '2027-01-31', cantidad: 4 }));
       b = upsert({ fechaVencimiento: '2027-06-30', cantidad: 9 });
-      await new Promise((resolver) => setTimeout(resolver, 100)); // B queda esperando en la unicidad
+      await esperarBloqueo(db); // B ya espera en la unicidad a que A confirme
       await a.commit();
     } finally {
       if (!a.isCompleted()) await a.rollback();
