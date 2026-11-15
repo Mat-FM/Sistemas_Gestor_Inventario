@@ -9,6 +9,7 @@ function rutasTraslados({ db, clients, logger } = {}) {
   const controlador = crearTrasladoController({ trasladoService: crearTrasladoService({ db, clients, logger }) });
   return [
     { metodo: 'post', ruta: '/traslados', handler: controlador.crear },
+    { metodo: 'get', ruta: '/traslados', handler: controlador.listar },
     { metodo: 'post', ruta: '/traslados/:id/recepcion', handler: controlador.recibir },
   ];
 }

@@ -135,7 +135,65 @@ promesasReales(trasladoRepository, {
   findById: [1],
   bloquearPorId: [1],
   marcarRecibido: [1, { idUsuarioRecibe: 9 }],
+  listar: [{ limit: 10, offset: 0 }],
 }, { titulo: 'trasladoRepository', db: () => db });
+
+describe('trasladoRepository.listar', () => {
+  let b3;
+  beforeEach(async () => {
+    b3 = (await crearBodega(db, { codigo: 'B3' })).id_bodega;
+    await trasladoRepository.insert(db, datos());
+    await trasladoRepository.insert(db, datos({ idBodegaOrigen: b2, idBodegaDestino: b3 }));
+    await trasladoRepository.insert(db, datos({ idBodegaOrigen: b3, idBodegaDestino: b1 }));
+    await trasladoRepository.marcarRecibido(db, 2, { idUsuarioRecibe: 9 });
+  });
+
+  it('total es numérico y cuenta TODAS las filas del filtro, no las de la página; limit y offset recortan solo las filas', async () => {
+    /* `total` exacto aunque la página esté vacía. */
+    expect(await trasladoRepository.listar(db, { limit: 1, offset: 1 })).toEqual({ filas: [expect.objectContaining({ id_traslado: 2 })], total: 3 });
+    expect(await trasladoRepository.listar(db, { limit: 10, offset: 50 })).toEqual({ filas: [], total: 3 });
+  });
+
+  it('idBodega es origen O destino y se combina con estado con AND (el OR va entre paréntesis)', async () => {
+    /* Sin paréntesis, `estado = X AND origen = B OR destino = B` dejaría pasar traslados de otro estado. */
+    const ids = async (filtro) => (await trasladoRepository.listar(db, { ...filtro, limit: 10, offset: 0 })).filas.map((f) => f.id_traslado);
+    expect(await ids({ idBodega: b2 })).toEqual([2, 1]);
+    expect(await ids({ idBodega: b1, estado: 'RECIBIDO' })).toEqual([]);
+    expect(await ids({ idBodega: b2, estado: 'RECIBIDO' })).toEqual([2]);
+    expect(await ids({ estado: 'EN_TRANSITO' })).toEqual([3, 1]);
+  });
+
+  it('los valores del filtro viajan como parámetros enlazados y nunca usa SELECT *', async () => {
+    /* Nada del cliente se pega al SQL. */
+    const sql = await conSql(db, () => trasladoRepository.listar(db, { estado: 'EN_TRANSITO', idBodega: 54321, limit: 7, offset: 9876 }));
+    expect(sql).toHaveLength(2);
+    for (const texto of sql) expect(texto).not.toMatch(/54321|9876|EN_TRANSITO|select \*/i);
+  });
+});
+
+describe('trasladoService.listar', () => {
+  const OPERADOR = { idUsuario: 7, rol: 'OPERADOR_BODEGA', idBodega: 2, requestId: 'r1' };
+  const INTERNA = { idUsuario: null, rol: null, idBodega: null, requestId: 'r1' };
+  const FILTROS = { estado: 'RECIBIDO', limit: 5, offset: 10 };
+  afterEach(() => jest.restoreAllMocks());
+
+  it('un operador sin id_bodega recibe el filtro de SU bodega; con otra → 403 SIN consultar el repositorio', async () => {
+    /* El alcance se decide en el servicio. */
+    const espia = jest.spyOn(trasladoRepository, 'listar').mockResolvedValue({ filas: [], total: 0 });
+    await trasladoService.listar(db, FILTROS, OPERADOR);
+    expect(espia).toHaveBeenCalledWith(db, { ...FILTROS, idBodega: 2 });
+    await expect(trasladoService.listar(db, { ...FILTROS, idBodega: 3 }, OPERADOR)).rejects.toMatchObject({ status: 403 });
+    await expect(trasladoService.listar(db, FILTROS, { ...OPERADOR, idBodega: null })).rejects.toMatchObject({ status: 403 });
+    expect(espia).toHaveBeenCalledTimes(1);
+  });
+
+  it('una llamada interna pasa el filtro tal cual; crearTrasladoService.listar usa la db de sus dependencias', async () => {
+    /* D8. */
+    const espia = jest.spyOn(trasladoRepository, 'listar').mockResolvedValue({ filas: [], total: 0 });
+    expect(await trasladoService.crearTrasladoService({ db }).listar(FILTROS, INTERNA)).toEqual({ filas: [], total: 0 });
+    expect(espia).toHaveBeenCalledWith(db, { ...FILTROS, idBodega: undefined });
+  });
+});
 
 describe('trasladoService', () => {
   const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };

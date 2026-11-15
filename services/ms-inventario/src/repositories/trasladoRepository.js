@@ -74,4 +74,31 @@ async function marcarRecibido(trx, id, { idUsuarioRecibe }) {
   return traslado;
 }
 
-module.exports = { insert, findById, bloquearPorId, marcarRecibido };
+// Una consulta sobre `traslados` restringida por los filtros presentes; un filtro undefined no restringe. El COUNT y la página
+// de `listar` la comparten (mismo WHERE), así que `total` es siempre el del filtro. `idBodega` es la bodega de ORIGEN O la de
+// DESTINO (entre paréntesis: el OR no se mezcla con el resto de condiciones).
+function filtrar(consulta, { estado, idBodega }) {
+  if (estado !== undefined) consulta.where({ estado });
+  if (idBodega !== undefined) consulta.where((o) => o.where({ id_bodega_origen: idBodega }).orWhere({ id_bodega_destino: idBodega }));
+  return consulta;
+}
+
+/**
+ * Una página de traslados, del más reciente al más antiguo: `fecha_envio DESC, id_traslado DESC`. El id desempata los envíos con
+ * la misma fecha (orden total y estable: dos páginas seguidas nunca repiten ni saltan filas). Devuelve además el total de filas
+ * del filtro, no de la página: el conteo y la página son dos consultas con el mismo WHERE (`count(*) over()` daría total 0 en una
+ * página fuera de rango). Es una LECTURA: sin FOR UPDATE, nunca espera a una creación o recepción en curso.
+ * @param {{estado?: string, idBodega?: number, limit: number, offset: number}} opciones un filtro undefined no filtra
+ * @returns {Promise<{filas: Traslado[], total: number}>}
+ */
+async function listar(dbOrTrx, { estado, idBodega, limit, offset }) {
+  const filtro = { estado, idBodega };
+  const [resumen] = await filtrar(dbOrTrx(TABLA), filtro).count({ total: '*' });
+  const filas = await filtrar(dbOrTrx(TABLA).select(COLUMNAS), filtro)
+    .orderBy([{ column: 'fecha_envio', order: 'desc' }, { column: 'id_traslado', order: 'desc' }])
+    .limit(limit)
+    .offset(offset);
+  return { filas, total: Number(resumen.total) };
+}
+
+module.exports = { insert, findById, bloquearPorId, marcarRecibido, listar };

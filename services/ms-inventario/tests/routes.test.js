@@ -56,6 +56,7 @@ const LOTES = [
 ];
 const TRASLADOS = [
   ['post', '/traslados'],
+  ['get', '/traslados'],
   ['post', '/traslados/:id/recepcion'],
 ];
 

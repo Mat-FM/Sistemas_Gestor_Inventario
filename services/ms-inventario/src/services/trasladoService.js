@@ -255,12 +255,29 @@ async function recibir({ db }, { idTraslado, body, claveIdempotencia, identity }
   }
 }
 
+/**
+ * Una página de traslados (GET /traslados). Un operador de bodega solo ve los traslados cuyo origen O destino es SU bodega
+ * (scopeBodega, D31(g)): sin `idBodega` se usa la suya y con otra es 403 (también sin bodega asignada); los demás roles y las
+ * llamadas internas (sin X-User-Id, D8) ven todos. `total` es el del filtro EFECTIVO: no revela cuántos traslados hay entre otras
+ * bodegas. Una lectura: no llama a otros servicios.
+ * @param {object} db instancia de Knex
+ * @param {{estado?: string, idBodega?: number, limit: number, offset: number}} filtros ya validados por el controlador
+ * @param {object} identity
+ * @returns {Promise<{filas: Traslado[], total: number}>}
+ * @throws 403 SIN_PERMISO
+ */
+async function listar(db, { estado, idBodega, limit, offset }, identity) {
+  const bodegaEfectiva = scopeBodega(identity, idBodega);
+  return trasladoRepository.listar(db, { estado, idBodega: bodegaEfectiva, limit, offset });
+}
+
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
 function crearTrasladoService(deps = {}) {
   return {
     crear: (peticion) => crear(deps, peticion),
     recibir: (peticion) => recibir(deps, peticion),
+    listar: (filtros, identity) => listar(deps.db, filtros, identity),
   };
 }
 
-module.exports = { crear, recibir, crearTrasladoService };
+module.exports = { crear, recibir, listar, crearTrasladoService };

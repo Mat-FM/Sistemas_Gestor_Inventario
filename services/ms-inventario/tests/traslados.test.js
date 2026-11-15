@@ -15,8 +15,8 @@ const { AGOTADO, esperarConPlazo } = require('./helpers/hijos');
 const { ISO_8601, datosNoValidos, esError, recursoNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
 // Traslados entre bodegas (RF04) de punta a punta, contra PostgreSQL real y con clientes falsos: POST /traslados (crear: saca del
-// origen y deja EN_TRANSITO) y POST /traslados/{id}/recepcion (recibir: suma al destino y deja RECIBIDO). El motor (bloqueos,
-// lotes, D28(a)) se prueba en stock.test.js; las capas por separado en trasladosCapas.test.js.
+// origen y deja EN_TRANSITO), POST /traslados/{id}/recepcion (recibir: suma al destino y deja RECIBIDO) y GET /traslados (el
+// listado). El motor (bloqueos, lotes, D28(a)) se prueba en stock.test.js; las capas por separado en trasladosCapas.test.js.
 //
 // Tras CADA prueba se comprueban en la base dos invariantes: por (producto, bodega) la suma de los lotes nunca supera el saldo
 // ni hay lotes negativos (D27(c)), y todo traslado tiene exactamente su movimiento TRASLADO_SALIDA y, solo si está RECIBIDO,
@@ -905,5 +905,126 @@ describe('POST /traslados/{id}/recepcion: concurrencia (PostgreSQL real)', () =>
     } finally {
       await dbChico.destroy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// GET /traslados
+// ---------------------------------------------------------------------------------------------------------------------------
+
+describe('GET /traslados: listado', () => {
+  // Siembra un traslado con su fecha de envío (y su movimiento de salida, y de entrada si está RECIBIDO, para respetar el
+  // invariante de afterEach) DIRECTAMENTE en la base: el listado no depende del motor.
+  async function sembrar({ origen, destino, estado = 'EN_TRANSITO', fecha = '2026-11-01T10:00:00Z', cantidad = 1 }) {
+    const [fila] = await db('traslados').insert({
+      id_producto: 5, id_bodega_origen: origen, id_bodega_destino: destino, cantidad, estado, fecha_envio: fecha, id_usuario_envia: 7,
+      fecha_recepcion: estado === 'RECIBIDO' ? fecha : null, id_usuario_recibe: estado === 'RECIBIDO' ? 8 : null,
+    }).returning('id_traslado');
+    const base = { id_producto: 5, cantidad, saldo_resultante: 0, id_usuario: 7, id_traslado: fila.id_traslado };
+    await db('movimientos').insert({ ...base, tipo: 'TRASLADO_SALIDA', id_bodega: origen, clave_idempotencia: `s-${fila.id_traslado}` });
+    if (estado === 'RECIBIDO') await db('movimientos').insert({ ...base, tipo: 'TRASLADO_ENTRADA', id_bodega: destino, clave_idempotencia: `e-${fila.id_traslado}` });
+    return fila.id_traslado;
+  }
+  const listar = (consulta = '', cabeceras = ADM) => request.get(`/traslados${consulta}`).set(cabeceras);
+  const ids = (res) => res.body.datos.map((t) => t.id_traslado);
+
+  let t;
+  beforeEach(async () => {
+    // t1..t6 en orden de envío; t3 y t4 comparten fecha (desempata id_traslado DESC).
+    t = {};
+    t.t1 = await sembrar({ origen: b1, destino: b2, fecha: '2026-11-01T10:00:00Z' });
+    t.t2 = await sembrar({ origen: b2, destino: b1, fecha: '2026-11-02T10:00:00Z', estado: 'RECIBIDO' });
+    t.t3 = await sembrar({ origen: b1, destino: b3, fecha: '2026-11-03T10:00:00Z' });
+    t.t4 = await sembrar({ origen: b3, destino: b2, fecha: '2026-11-03T10:00:00Z', estado: 'RECIBIDO' });
+    t.t5 = await sembrar({ origen: b2, destino: b3, fecha: '2026-11-04T10:00:00Z' });
+    t.t6 = await sembrar({ origen: b3, destino: b1, fecha: '2026-11-05T10:00:00Z', estado: 'RECIBIDO' });
+  });
+
+  it('sin filtros: {datos, meta} con todos, del envío más reciente al más antiguo (fecha_envio DESC, id_traslado DESC) y exactamente los campos de un Traslado', async () => {
+    /* Orden total y estable para recorrer páginas. */
+    const res = await listar();
+    expect(res.status).toBe(200);
+    expect(ids(res)).toEqual([t.t6, t.t5, t.t4, t.t3, t.t2, t.t1]);
+    expect(res.body.meta).toEqual({ pagina: 1, por_pagina: 20, total: 6 });
+    for (const fila of res.body.datos) expect(Object.keys(fila).sort()).toEqual([...CLAVES_TRASLADO].sort());
+    expect(res.body.datos.find((f) => f.id_traslado === t.t2)).toEqual({
+      id_traslado: t.t2, id_producto: 5, id_bodega_origen: b2, id_bodega_destino: b1, id_lote: null, cantidad: 1, estado: 'RECIBIDO',
+      fecha_envio: '2026-11-02T10:00:00.000Z', fecha_recepcion: '2026-11-02T10:00:00.000Z', id_usuario_envia: 7, id_usuario_recibe: 8,
+    });
+  });
+
+  it('?estado filtra (EN_TRANSITO / RECIBIDO) con el total exacto; un estado inválido o en minúsculas → 422', async () => {
+    /* Control: los dos estados válidos. */
+    const enTransitoRes = await listar('?estado=EN_TRANSITO');
+    expect(ids(enTransitoRes)).toEqual([t.t5, t.t3, t.t1]);
+    expect(enTransitoRes.body.meta.total).toBe(3);
+    expect(ids(await listar('?estado=RECIBIDO'))).toEqual([t.t6, t.t4, t.t2]);
+    datosNoValidos(await listar('?estado=en_transito'), ['estado']);
+  });
+
+  it('?id_bodega filtra por ORIGEN o DESTINO, y se combina con estado (AND)', async () => {
+    /* Un traslado aparece en el listado de sus dos bodegas. */
+    expect(ids(await listar(`?id_bodega=${b1}`))).toEqual([t.t6, t.t3, t.t2, t.t1]);
+    expect(ids(await listar(`?id_bodega=${b2}`))).toEqual([t.t5, t.t4, t.t2, t.t1]);
+    const combinado = await listar(`?id_bodega=${b1}&estado=EN_TRANSITO`);
+    expect(ids(combinado)).toEqual([t.t3, t.t1]);
+    expect(combinado.body.meta.total).toBe(2);
+    expect((await listar('?id_bodega=9999')).body).toEqual({ datos: [], meta: { pagina: 1, por_pagina: 20, total: 0 } });
+  });
+
+  it('recorrido completo de 2 en 2: sin repetidos ni faltantes y el total de TODAS las filas en cada página; una página fuera de rango → vacía con el total', async () => {
+    /* ms-reportes recorre todas las páginas hasta pagina * por_pagina >= total. */
+    const vistos = [];
+    for (let pagina = 1; pagina <= 3; pagina += 1) {
+      const res = await listar(`?pagina=${pagina}&por_pagina=2`);
+      expect(res.body.meta).toEqual({ pagina, por_pagina: 2, total: 6 });
+      expect(res.body.datos).toHaveLength(2);
+      vistos.push(...ids(res));
+    }
+    expect(vistos).toEqual([t.t6, t.t5, t.t4, t.t3, t.t2, t.t1]);
+    expect((await listar('?pagina=4&por_pagina=2')).body).toEqual({ datos: [], meta: { pagina: 4, por_pagina: 2, total: 6 } });
+    datosNoValidos(await listar('?por_pagina=101'), ['por_pagina']);
+  });
+
+  it('OPERADOR: sin id_bodega ve los de SU bodega (origen o destino) con el total de ESA bodega; con la suya también; con otra → 403', async () => {
+    /* D31(g): restricción global 4. */
+    const propia = await listar('', OPE(b2));
+    expect(ids(propia)).toEqual([t.t5, t.t4, t.t2, t.t1]);
+    expect(propia.body.meta.total).toBe(4);
+    expect(ids(await listar(`?id_bodega=${b2}&estado=RECIBIDO`, OPE(b2)))).toEqual([t.t4, t.t2]);
+    esError(await listar(`?id_bodega=${b1}`, OPE(b2)), 403, 'SIN_PERMISO');
+  });
+
+  it('OPERADOR sin X-User-Bodega → 403 (con y sin id_bodega)', async () => {
+    /* Nunca ve traslados de ninguna bodega. */
+    esError(await listar('', headers('OPERADOR_BODEGA')), 403, 'SIN_PERMISO');
+    esError(await listar(`?id_bodega=${b1}`, headers('OPERADOR_BODEGA')), 403, 'SIN_PERMISO');
+  });
+
+  it('OPERADOR: id_bodega repetido o vacío → 422; ID_BODEGA o id_bodega[] (que Express no reconoce) NO amplían su alcance', async () => {
+    /* Un parámetro que se ignora deja el filtro por omisión: su bodega. */
+    datosNoValidos(await listar(`?id_bodega=${b2}&id_bodega=${b1}`, OPE(b2)), ['id_bodega']);
+    datosNoValidos(await listar('?id_bodega=', OPE(b2)), ['id_bodega']);
+    for (const consulta of [`?ID_BODEGA=${b1}`, `?id_bodega[]=${b1}`, `?id_bodega%5B%5D=${b1}`]) {
+      const res = await listar(consulta, OPE(b2));
+      expect({ consulta, estado: res.status, ids: ids(res) }).toEqual({ consulta, estado: 200, ids: [t.t5, t.t4, t.t2, t.t1] });
+    }
+  });
+
+  it('una llamada interna SIN X-User-Id (D8) y el ADMINISTRADOR ven todos los traslados', async () => {
+    /* Las lecturas son válidas sin usuario (ms-reportes). */
+    const interna = await request.get('/traslados').set('X-Request-Id', 'req-interna');
+    expect(interna.status).toBe(200);
+    expect(interna.body.meta.total).toBe(6);
+    expect((await listar('', headers('ADMINISTRADOR', { idBodega: b1 }))).body.meta.total).toBe(6);
+  });
+
+  it('refleja las escrituras de la API: un traslado creado aparece EN_TRANSITO primero y, tras recibirlo, RECIBIDO', async () => {
+    /* De punta a punta con crear y recibir. */
+    const { movimiento, ...creado } = await enTransito();
+    expect(movimiento.tipo).toBe('TRASLADO_SALIDA');
+    expect((await listar('?estado=EN_TRANSITO')).body.datos.find((f) => f.id_traslado === creado.id_traslado)).toEqual(creado);
+    await recibir(creado.id_traslado);
+    expect(ids(await listar('?estado=RECIBIDO'))[0]).toBe(creado.id_traslado);
   });
 });
