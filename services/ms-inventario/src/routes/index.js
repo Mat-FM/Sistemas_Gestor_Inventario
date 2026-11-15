@@ -1,6 +1,7 @@
 const { requireUser } = require('../middleware/identity');
 const { rutasBodegas } = require('./bodegas');
 const { rutasSaldos } = require('./saldos');
+const { rutasUmbrales } = require('./umbrales');
 
 // Rutas de negocio del servicio: una única fuente de verdad. registrarRutas las monta y la Tarea 14 comprueba contra ella
 // que cada ruta esté en el OpenAPI. Cada tarea nueva añade aquí su módulo (saldos, movimientos, lotes, traslados, conteos…).
@@ -22,6 +23,7 @@ function rutasDeclaradas(deps = {}) {
   return [
     ...rutasBodegas(deps),
     ...rutasSaldos(deps),
+    ...rutasUmbrales(deps),
   ];
 }
 

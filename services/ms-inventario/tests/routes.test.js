@@ -41,6 +41,10 @@ const SALDOS = [
   ['get', '/saldos/bajo-umbral'],
   ['get', '/saldos'],
 ];
+const UMBRALES = [
+  ['get', '/umbrales'],
+  ['put', '/umbrales/:id_producto'],
+];
 
 let request;
 let db;
@@ -77,6 +81,12 @@ describe('rutasDeclaradas', () => {
   it('incluye las dos consultas de saldos de la Tabla 9 y ninguna repetida (el orden de las estáticas lo comprueba la prueba de orden)', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of SALDOS) expect(rutas).toContain(`${metodo} ${ruta}`);
+    expect(new Set(rutas).size).toBe(rutas.length);
+  });
+
+  it('incluye las dos operaciones de umbrales de la Tabla 9, con el parámetro {id_producto} que nombra el contrato, y ninguna repetida', () => {
+    const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
+    for (const [metodo, ruta] of UMBRALES) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
