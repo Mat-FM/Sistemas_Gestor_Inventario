@@ -121,7 +121,8 @@ describe('soloPropagables', () => {
 });
 
 describe('createCatalogoClient.obtenerProducto', () => {
-  const producto = { id_producto: 5, codigo: 'P5', nombre: 'Producto 5', precio: 10 };
+  const productoDe = (id) => ({ id_producto: id, codigo: `P${id}`, nombre: `Producto ${id}`, precio: 10 });
+  const producto = productoDe(5);
   const cabeceras = { 'X-Request-Id': 'req-1', 'X-User-Id': '7', 'X-User-Rol': 'ADMINISTRADOR' };
 
   it('pide GET /productos/{id} como lectura reintentable, con las cabeceras de propagación, y devuelve el producto', async () => {
@@ -146,9 +147,9 @@ describe('createCatalogoClient.obtenerProducto', () => {
   });
 
   it('acepta el id máximo de la base y funciona sin cabeceras', async () => {
-    const http = fakeHttp(async () => ({ status: 200, body: producto }));
+    const http = fakeHttp(async (_metodo, ruta) => ({ status: 200, body: productoDe(Number(ruta.split('/').pop())) }));
     const catalogo = createCatalogoClient(http, loggerEspia());
-    await catalogo.obtenerProducto(2147483647);
+    expect(await catalogo.obtenerProducto(2147483647)).toEqual(productoDe(2147483647));
     expect(http.request).toHaveBeenCalledWith('GET', '/productos/2147483647', { headers: {}, reintentable: true });
     await catalogo.obtenerProducto(1);
     expect(http.request.mock.calls[1][1]).toBe('/productos/1');
@@ -202,18 +203,72 @@ describe('createCatalogoClient.obtenerProducto', () => {
   });
 
   it.each([
-    ['200 sin cuerpo (null)', { status: 200, body: null }],
-    ['200 con un arreglo', { status: 200, body: [producto] }],
-    ['200 con texto', { status: 200, body: 'ok' }],
-    ['200 con un número', { status: 200, body: 5 }],
     ['204 sin cuerpo', { status: 204, body: null }],
     ['201 con producto', { status: 201, body: producto }],
-  ])('%s no es un producto: 503 registrado, nunca null (null significaría "no existe")', async (_caso, respuesta) => {
+    ['202 con producto', { status: 202, body: producto }],
+  ])('%s: un 2xx que no es 200 no es la lectura del contrato: 503 registrado, nunca null (null significaría "no existe")', async (_caso, respuesta) => {
     const http = fakeHttp(async () => respuesta);
     const logger = loggerEspia();
     await esperarNoDisponible(createCatalogoClient(http, logger).obtenerProducto(5, cabeceras));
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error.mock.calls[0][0]).toMatchObject({ mensaje: 'Respuesta inesperada de ms-catalogo', estado: respuesta.status });
+    expect(logger.error.mock.calls[0]).toEqual([{ mensaje: 'Respuesta inesperada de ms-catalogo', estado: respuesta.status, id_producto: 5 }]);
+  });
+
+  it.each([
+    ['sin cuerpo (null)', null, 'cuerpo_no_es_un_producto'],
+    ['con un arreglo', [producto], 'cuerpo_no_es_un_producto'],
+    ['con un arreglo vacío', [], 'cuerpo_no_es_un_producto'],
+    ['con texto', 'ok', 'cuerpo_no_es_un_producto'],
+    ['con un número', 5, 'cuerpo_no_es_un_producto'],
+    ['con un booleano', true, 'cuerpo_no_es_un_producto'],
+    ['con un objeto vacío {}', {}, 'id_producto_no_coincide'],
+    ['con un objeto sin id_producto', { codigo: 'P5', nombre: 'Producto 5', estado: 'ACTIVO' }, 'id_producto_no_coincide'],
+    ['con otro id_producto (6 en vez de 5)', productoDe(6), 'id_producto_no_coincide'],
+    ['con id_producto 0', productoDe(0), 'id_producto_no_coincide'],
+    ['con id_producto negativo', productoDe(-5), 'id_producto_no_coincide'],
+    ['con id_producto decimal (5.5)', productoDe(5.5), 'id_producto_no_coincide'],
+    ['con id_producto null', productoDe(null), 'id_producto_no_coincide'],
+    ['con id_producto en un arreglo ([5])', productoDe([5]), 'id_producto_no_coincide'],
+    ['con id_producto en un objeto', productoDe({ valor: 5 }), 'id_producto_no_coincide'],
+    ['con id_producto como texto ("5": sin coerción)', productoDe('5'), 'id_producto_no_coincide'],
+    ['con id_producto como texto con ceros ("05")', productoDe('05'), 'id_producto_no_coincide'],
+    ['con id_producto como texto con espacios (" 5")', productoDe(' 5'), 'id_producto_no_coincide'],
+    ['con id_producto booleano', productoDe(true), 'id_producto_no_coincide'],
+  ])('un 200 %s no es el producto pedido: 503 registrado, nunca devuelto ni null', async (_caso, body, motivo) => {
+    const http = fakeHttp(async () => ({ status: 200, body }));
+    const logger = loggerEspia();
+    const catalogo = createCatalogoClient(http, logger);
+    const error = await esperarNoDisponible(catalogo.obtenerProducto(5, cabeceras));
+    expect(error.message).toBe('El servicio ms-catalogo no está disponible');
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error.mock.calls[0]).toEqual([{ mensaje: 'Respuesta inesperada de ms-catalogo', estado: 200, id_producto: 5, motivo }]);
+    expect(http.request).toHaveBeenCalledTimes(1); // una respuesta defectuosa no se reintenta
+    // control positivo: el mismo cliente con el producto correcto lo devuelve
+    http.request.mockImplementationOnce(async () => ({ status: 200, body: producto }));
+    expect(await catalogo.obtenerProducto(5, cabeceras)).toBe(producto);
+  });
+
+  it('no registra el contenido de la respuesta defectuosa (solo el motivo)', async () => {
+    const http = fakeHttp(async () => ({ status: 200, body: { id_producto: 6, nombre: 'dato-del-catalogo-secreto', precio: 99 } }));
+    const logger = loggerEspia();
+    await esperarNoDisponible(createCatalogoClient(http, logger).obtenerProducto(5, cabeceras));
+    const volcado = JSON.stringify(logger.error.mock.calls);
+    expect(volcado).not.toContain('dato-del-catalogo-secreto');
+    expect(volcado).not.toContain('99');
+  });
+
+  it('el producto correcto (id_producto numérico igual al pedido) se devuelve tal cual, con todos sus campos', async () => {
+    const completo = { ...productoDe(7), descripcion: 'x', id_categoria: 2, unidad_medida: 'UND', estado: 'ACTIVO', fecha_creacion: '2026-11-01T00:00:00Z' };
+    const http = fakeHttp(async () => ({ status: 200, body: completo }));
+    const resultado = await createCatalogoClient(http, loggerEspia()).obtenerProducto(7, cabeceras);
+    expect(resultado).toBe(completo);
+  });
+
+  it('un 404 sigue siendo "no existe" aunque su cuerpo traiga otro id_producto', async () => {
+    const http = fakeHttp(async () => ({ status: 404, body: { id_producto: 6 } }));
+    const logger = loggerEspia();
+    expect(await createCatalogoClient(http, logger).obtenerProducto(5, cabeceras)).toBeNull();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('un AppError 503 del cliente HTTP (red, plazo, 5xx, circuito abierto) se propaga tal cual y sin registrar de más', async () => {
