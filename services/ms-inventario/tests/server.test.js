@@ -4,7 +4,8 @@ const { entornoValido } = require('./helpers/app');
 describe('createServer', () => {
   it('arma la aplicación con la configuración del entorno y responde /health por HTTP real', async () => {
     const env = { ...entornoValido(), NODE_ENV: 'test', TEST_DB_NAME: 'inventario_test', PORT: '3456', CALL_TIMEOUT_MS: '1500' };
-    const { server, db, config } = createServer(env);
+    // Logger silencioso: la línea de requestLog de /health no debe ensuciar la salida de las pruebas.
+    const { server, db, config } = createServer(env, { info: jest.fn(), error: jest.fn() });
     try {
       expect(config).toMatchObject({
         puerto: 3456,

@@ -33,6 +33,10 @@ function validarEntorno(env = process.env) {
 
 // Se lee al arrancar (no al importar el módulo), para que las pruebas puedan pasar su propio entorno.
 function cargarConfig(env = process.env) {
+  // Con NODE_ENV=test no hay vuelta atrás a DB_NAME: sin base de pruebas se falla aquí, con un mensaje claro, y no más tarde con `database: undefined`.
+  if (env.NODE_ENV === 'test' && !estaDefinida(env.TEST_DB_NAME)) {
+    throw new Error('NODE_ENV=test requiere TEST_DB_NAME: las pruebas usan su propia base (cuyo nombre termina en _test) y nunca la de desarrollo.');
+  }
   const numero = (valor, porDefecto) => (estaDefinida(valor) ? Number(valor) : porDefecto);
   return {
     servicio: SERVICIO,
