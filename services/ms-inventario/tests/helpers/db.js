@@ -1,4 +1,5 @@
-const { createDb } = require('../../src/config/db');
+const knex = require('knex');
+const { construirConfigKnex, createDb } = require('../../src/config/db');
 const { cargarConfig } = require('../../src/config/env');
 
 // Tablas que lleva Knex para saber qué migraciones ya corrieron: truncateAll nunca las vacía.
@@ -32,8 +33,21 @@ function configDePrueba(env = process.env) {
   return { ...cargarConfig(env).db, database };
 }
 
-function createTestDb(env = process.env) {
-  return createDb(configDePrueba(env));
+/**
+ * Instancia de Knex sobre la base de pruebas. Con `zonaHoraria` (p. ej. 'America/Bogota') CADA conexión del pool fija esa
+ * zona como el `TimeZone` de su sesión, para probar que una consulta no depende del huso del servidor de base de datos
+ * (D29). La zona viaja como parámetro (`set_config`), no en el texto de la sentencia.
+ */
+function createTestDb(env = process.env, { zonaHoraria } = {}) {
+  const config = configDePrueba(env);
+  if (zonaHoraria === undefined) return createDb(config);
+  const configKnex = construirConfigKnex(config);
+  configKnex.pool = {
+    ...configKnex.pool,
+    // Knex espera `hecho(error, conexion)`: pasarle el resultado de la consulta como «conexión» dejaría el pool colgado.
+    afterCreate: (conexion, hecho) => conexion.query("SELECT set_config('TimeZone', $1, false)", [zonaHoraria], (error) => hecho(error, conexion)),
+  };
+  return knex(configKnex);
 }
 
 /**

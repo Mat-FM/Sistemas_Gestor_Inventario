@@ -47,6 +47,8 @@ const UMBRALES = [
 ];
 const MOVIMIENTOS = [
   ['post', '/movimientos'],
+  ['get', '/movimientos'],
+  ['get', '/movimientos/:id'],
 ];
 
 let request;
@@ -93,7 +95,7 @@ describe('rutasDeclaradas', () => {
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
-  it('incluye POST /movimientos de la Tabla 9 y ninguna repetida', () => {
+  it('incluye las tres operaciones de movimientos de la Tabla 9 (POST y GET /movimientos, GET /movimientos/{id}) y ninguna repetida', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of MOVIMIENTOS) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);

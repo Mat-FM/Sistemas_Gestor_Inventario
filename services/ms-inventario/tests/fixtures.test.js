@@ -1,7 +1,7 @@
 const { AppError } = require('../src/errors');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { buildTestApp } = require('./helpers/app');
-const { crearBodega, crearSaldo, crearUmbral, crearLote, headers, fakeCatalogo, fakeNotificaciones } = require('./helpers/fixtures');
+const { crearBodega, crearSaldo, crearUmbral, crearLote, crearMovimiento, headers, fakeCatalogo, fakeNotificaciones } = require('./helpers/fixtures');
 
 describe('fixtures: datos en la base real', () => {
   let db;
@@ -89,6 +89,60 @@ describe('fixtures: datos en la base real', () => {
       const { rows } = await db.raw('SELECT fecha_vencimiento::text AS texto FROM lotes WHERE id_lote = ?', [lote.id_lote]);
       expect(rows[0].texto).toBe('2026-12-31');
       expect(lote.fecha_vencimiento).toBe('2026-12-31');
+    });
+  });
+
+  describe('crearMovimiento', () => {
+    let idBodega;
+    beforeEach(async () => {
+      ({ id_bodega: idBodega } = await crearBodega(db));
+    });
+
+    it('con solo la bodega usa valores por defecto razonables y devuelve la fila (no un arreglo), con su clave de idempotencia', async () => {
+      const movimiento = await crearMovimiento(db, { idBodega });
+      expect(movimiento).toEqual({
+        id_movimiento: 1, tipo: 'ENTRADA', id_producto: 5, id_bodega: idBodega, id_lote: null, id_traslado: null, id_conteo: null,
+        cantidad: 1, saldo_resultante: 1, fecha: expect.any(Date), id_usuario: 7, clave_idempotencia: expect.stringMatching(/^fixture-\d+$/),
+        documento_referencia: null, observacion: null,
+      });
+      expect(await db('movimientos')).toEqual([movimiento]);
+    });
+
+    it('respeta la fecha EXACTA pedida, sea un Date o un texto ISO con zona, y el valor guardado es ese instante', async () => {
+      const deTexto = await crearMovimiento(db, { idBodega, fecha: '2026-11-01T23:59:59.999Z' });
+      const deDate = await crearMovimiento(db, { idBodega, fecha: new Date('2026-11-02T00:00:00.000Z') });
+      expect(deTexto.fecha.toISOString()).toBe('2026-11-01T23:59:59.999Z');
+      expect(deDate.fecha.toISOString()).toBe('2026-11-02T00:00:00.000Z');
+    });
+
+    it('respeta todos los campos pedidos (tipo, producto, cantidad con signo, saldo, usuario, referencia y observación)', async () => {
+      const movimiento = await crearMovimiento(db, {
+        idBodega, tipo: 'AJUSTE', idProducto: 9, cantidad: -3, saldoResultante: 4, idUsuario: 12,
+        documentoReferencia: 'ACTA-1', observacion: 'Merma', claveIdempotencia: 'clave-propia',
+      });
+      expect(movimiento).toMatchObject({
+        tipo: 'AJUSTE', id_producto: 9, id_bodega: idBodega, cantidad: -3, saldo_resultante: 4, id_usuario: 12,
+        documento_referencia: 'ACTA-1', observacion: 'Merma', clave_idempotencia: 'clave-propia',
+      });
+    });
+
+    it('cada llamada inventa una clave distinta; una clave repetida choca por la unicidad', async () => {
+      const a = await crearMovimiento(db, { idBodega });
+      const b = await crearMovimiento(db, { idBodega });
+      expect(a.clave_idempotencia).not.toBe(b.clave_idempotencia);
+      await crearMovimiento(db, { idBodega, claveIdempotencia: 'repetida' });
+      await expect(crearMovimiento(db, { idBodega, claveIdempotencia: 'repetida' })).rejects.toMatchObject({ code: '23505' });
+    });
+
+    it('sin bodega, o con una que no existe, la clave foránea lo rechaza (es una siembra real, no un doble)', async () => {
+      await expect(crearMovimiento(db, {})).rejects.toMatchObject({ code: '23502' });
+      await expect(crearMovimiento(db, { idBodega: 999 })).rejects.toMatchObject({ code: '23503' });
+    });
+
+    it('referencia un lote real con idLote', async () => {
+      const lote = await crearLote(db, { idBodega, idProducto: 5, codigoLote: 'L-1', cantidad: 2 });
+      expect((await crearMovimiento(db, { idBodega, idLote: lote.id_lote })).id_lote).toBe(lote.id_lote);
+      await expect(crearMovimiento(db, { idBodega, idLote: 999 })).rejects.toMatchObject({ code: '23503' });
     });
   });
 });

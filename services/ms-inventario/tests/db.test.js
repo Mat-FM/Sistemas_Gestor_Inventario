@@ -86,6 +86,28 @@ describe('base de pruebas real (PostgreSQL)', () => {
     });
   });
 
+  describe('createTestDb con zonaHoraria (D29: el huso de la sesión no debe cambiar una consulta)', () => {
+    const zonaDe = async (conexion) => (await conexion.raw('SHOW TimeZone')).rows[0].TimeZone;
+
+    it.each(['America/Bogota', 'Pacific/Auckland', 'UTC'])('cada conexión del pool nace con TimeZone = %s; sin la opción, la sesión no la tiene', async (zona) => {
+      const conZona = createTestDb(process.env, { zonaHoraria: zona });
+      try {
+        expect(await zonaDe(conZona)).toBe(zona);
+        // Una segunda conexión simultánea (otra del pool) también la lleva.
+        const trxs = await Promise.all([conZona.transaction(), conZona.transaction()]);
+        try {
+          expect(await Promise.all(trxs.map(zonaDe))).toEqual([zona, zona]);
+        } finally {
+          await Promise.all(trxs.map((trx) => trx.rollback()));
+        }
+      } finally {
+        await conZona.destroy();
+      }
+      // Control: la instancia normal de la suite no fija ninguna zona de las tres (la de la base, o la de la máquina).
+      expect(['America/Bogota', 'Pacific/Auckland']).not.toContain(await zonaDe(db));
+    });
+  });
+
   describe('esperarBloqueo (helpers/bloqueos.js)', () => {
     const { esperarBloqueo } = require('./helpers/bloqueos');
 

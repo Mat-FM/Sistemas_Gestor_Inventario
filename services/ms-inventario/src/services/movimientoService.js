@@ -9,8 +9,9 @@ const umbralRepository = require('../repositories/umbralRepository');
 const { OPERACIONES, claveAlmacenada, leerClaveIdempotencia, resolverFallo } = require('./idempotencia');
 const stockService = require('./stockService');
 
-// Lógica de negocio de POST /movimientos (RF04, RF10, RNF17; RNF13): idempotencia por usuario y operación (idempotencia.js),
-// validación del cuerpo, permisos, confirmación del producto en ms-catalogo y la transacción con el motor (stockService). No
+// Lógica de negocio de los movimientos (RF04, RF10, RF15, RNF17; RNF13): el registro (POST /movimientos: idempotencia por usuario
+// y operación en idempotencia.js, validación del cuerpo, permisos, confirmación del producto en ms-catalogo y la transacción con
+// el motor, stockService) y las dos lecturas del kardex (listarMovimientos y obtenerMovimiento). No
 // sabe nada de HTTP: recibe el cuerpo, el valor de la cabecera Idempotency-Key y la identidad como datos. El SQL vive en los
 // repositorios.
 //
@@ -184,11 +185,46 @@ async function registrarMovimiento(deps, { body, claveIdempotencia, identity }) 
   return { movimiento, replayed: false };
 }
 
+/**
+ * Una página del kardex (RF10, RF15). Un operador de bodega solo ve la suya (scopeBodega): sin `idBodega` se usa la suya y con
+ * otra es 403; los demás roles y las llamadas internas (sin X-User-Id, D8) ven cualquier bodega. `total` es el de las filas del
+ * filtro EFECTIVO (el de un operador, su bodega): no revela cuántos movimientos hay en otras bodegas. Una lectura: no llama al
+ * catálogo ni a notificaciones.
+ * @param {{db: object}} deps
+ * @param {{identity: object, idProducto?: number, idBodega?: number, idUsuario?: number, tipo?: string, fechaDesde?: string,
+ *   fechaHasta?: string, limit: number, offset: number}} consulta fechaDesde y fechaHasta son días UTC `YYYY-MM-DD` (D29)
+ * @returns {Promise<{filas: Movimiento[], total: number}>}
+ * @throws 403 SIN_PERMISO
+ */
+async function listarMovimientos({ db }, { identity, idProducto, idBodega, idUsuario, tipo, fechaDesde, fechaHasta, limit, offset }) {
+  const bodegaEfectiva = scopeBodega(identity, idBodega);
+  return movimientoRepository.listar(db, { idProducto, idBodega: bodegaEfectiva, idUsuario, tipo, fechaDesde, fechaHasta, limit, offset });
+}
+
+/**
+ * Un movimiento del kardex por su id. Un operador de bodega solo puede ver los de su bodega: uno de otra bodega es 403 (no 404:
+ * el contrato dice que el operador consulta «el kardex de su bodega»). Un operador SIN bodega asignada recibe 403 antes de tocar
+ * la base, exista o no el movimiento. Los demás roles y las llamadas internas lo ven siempre.
+ * @param {{db: object}} deps
+ * @param {{identity: object, id: number}} peticion `id` ya validado por el controlador (entero positivo dentro del INTEGER)
+ * @returns {Promise<Movimiento>}
+ * @throws 403 SIN_PERMISO, 404 NO_EXISTE
+ */
+async function obtenerMovimiento({ db }, { identity, id }) {
+  scopeBodega(identity); // un operador sin bodega asignada no consulta nada
+  const movimiento = await movimientoRepository.findById(db, id);
+  if (!movimiento) throw e.noExiste('El movimiento no existe');
+  scopeBodega(identity, movimiento.id_bodega);
+  return movimiento;
+}
+
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
 function crearMovimientoService(deps = {}) {
   return {
     registrar: (peticion) => registrarMovimiento(deps, peticion),
+    listar: (consulta) => listarMovimientos(deps, consulta),
+    obtener: (peticion) => obtenerMovimiento(deps, peticion),
   };
 }
 
-module.exports = { registrarMovimiento, evaluarUmbral, crearMovimientoService };
+module.exports = { registrarMovimiento, listarMovimientos, obtenerMovimiento, evaluarUmbral, crearMovimientoService };
