@@ -1,10 +1,12 @@
+const { AppError } = require('../src/errors');
 const movimientoRepository = require('../src/repositories/movimientoRepository');
+const movimientoService = require('../src/services/movimientoService');
 const { promesasReales } = require('./helpers/capas');
 const { createTestDb, truncateAll } = require('./helpers/db');
-const { crearBodega } = require('./helpers/fixtures');
+const { crearBodega, fakeCatalogo } = require('./helpers/fixtures');
 
-// Las capas de movimientos por separado (RNF13): el repositorio contra PostgreSQL real. El motor está en stock.test.js y el
-// comportamiento de punta a punta en movimientos.test.js.
+// Las capas de movimientos por separado (RNF13): el repositorio contra PostgreSQL real y el servicio llamado sin HTTP. El motor
+// está en stock.test.js y el comportamiento de punta a punta en movimientos.test.js.
 
 const CLAVES_MOVIMIENTO = [
   'id_movimiento', 'tipo', 'id_producto', 'id_bodega', 'id_lote', 'id_traslado', 'id_conteo', 'cantidad', 'saldo_resultante',
@@ -114,3 +116,104 @@ promesasReales(movimientoRepository, {
   insert: [{ tipo: 'ENTRADA', idProducto: 5, idBodega: 1, cantidad: 3, saldoResultante: 3, idUsuario: 7, claveIdempotencia: '7:promesa' }],
   findByClave: ['7:k1'],
 }, { titulo: 'movimientoRepository', db: () => db, sincronas: { esClaveDuplicada: [null] } });
+
+describe('movimientoService', () => {
+  const IDENTIDAD = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
+  const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
+
+  describe('claveAlmacenada (D25)', () => {
+    it('es `<id_usuario>:<clave>`, sin transformar la clave', () => {
+      expect(movimientoService.claveAlmacenada(7, 'k1')).toBe('7:k1');
+      expect(movimientoService.claveAlmacenada(12, ' A b ')).toBe('12: A b ');
+    });
+
+    it('es inyectiva: el primer ":" separa siempre el usuario (solo dígitos) de su clave', () => {
+      const pares = [[1, '2:x'], [12, 'x'], [1, '2x'], [12, ':x'], [121, 'x']];
+      const claves = pares.map(([usuario, clave]) => movimientoService.claveAlmacenada(usuario, clave));
+      expect(new Set(claves).size).toBe(pares.length);
+      for (const [indice, [usuario, clave]] of pares.entries()) {
+        const almacenada = claves[indice];
+        const corte = almacenada.indexOf(':');
+        expect([Number(almacenada.slice(0, corte)), almacenada.slice(corte + 1)]).toEqual([usuario, clave]);
+      }
+    });
+
+    it('con la clave más larga (200) y el id más alto cabe en varchar(255) y deja sitio a un sufijo `#<n>` de D5', () => {
+      const almacenada = movimientoService.claveAlmacenada(2147483647, 'k'.repeat(movimientoService.LARGO_MAXIMO_CLAVE));
+      expect(`${almacenada}#2147483647`.length).toBeLessThanOrEqual(255);
+    });
+
+    it.each([
+      [null, 'k'], [0, 'k'], [1.5, 'k'], ['7', 'k'], [7, ''], [7, null], [7, 5],
+    ])('claveAlmacenada(%p, %p) → TypeError (error de programación)', (usuario, clave) => {
+      expect(() => movimientoService.claveAlmacenada(usuario, clave)).toThrow(TypeError);
+    });
+  });
+
+  describe('leerClaveIdempotencia', () => {
+    it('devuelve la clave sin espacios en los extremos, hasta 200 caracteres', () => {
+      expect(movimientoService.leerClaveIdempotencia('  k1 ')).toBe('k1');
+      expect(movimientoService.leerClaveIdempotencia('k'.repeat(200))).toBe('k'.repeat(200));
+    });
+
+    it.each([[undefined], [''], ['   '], ['k'.repeat(201)], [['a', 'b']], [5]])('%p → 400 PETICION_MAL_FORMADA', (valor) => {
+      let error;
+      try {
+        movimientoService.leerClaveIdempotencia(valor);
+      } catch (capturado) {
+        error = capturado;
+      }
+      expect(error).toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ status: 400, codigo: 'PETICION_MAL_FORMADA' });
+    });
+  });
+
+  describe('registrarMovimiento', () => {
+    const peticion = (extra = {}) => ({
+      body: { tipo: 'ENTRADA', id_producto: 5, id_bodega: b1, cantidad: 2 }, claveIdempotencia: 'k1', identity: IDENTIDAD, ...extra,
+    });
+    const deps = (catalogo = fakeCatalogo()) => ({ db, clients: { catalogo }, logger: { info() {}, error() {} } });
+
+    it('devuelve { movimiento, replayed: false } y luego { movimiento, replayed: true } con el mismo movimiento', async () => {
+      const primera = await movimientoService.registrarMovimiento(deps(), peticion());
+      const segunda = await movimientoService.registrarMovimiento(deps(), peticion());
+      expect(primera.replayed).toBe(false);
+      expect(segunda).toEqual({ movimiento: primera.movimiento, replayed: true });
+    });
+
+    it('no toma una conexión de la base mientras espera al catálogo (la transacción se abre después)', async () => {
+      let tomadas;
+      const catalogo = { obtenerProducto: jest.fn(async (id) => { tomadas = db.client.pool.numUsed(); return { id_producto: id }; }) };
+      await movimientoService.registrarMovimiento(deps(catalogo), peticion());
+      expect(catalogo.obtenerProducto).toHaveBeenCalledTimes(1);
+      expect(tomadas).toBe(0);
+    });
+
+    it('sin X-User-Id → 401 antes que la clave (una clave ausente no cambia el código)', async () => {
+      const error = await atrapar(movimientoService.registrarMovimiento(deps(), peticion({ identity: { ...IDENTIDAD, idUsuario: null }, claveIdempotencia: undefined })));
+      expect(error).toMatchObject({ status: 401, codigo: 'NO_AUTENTICADO' });
+    });
+
+    it('un resultado vacío del catálogo (undefined) no confirma el producto: 404 y nada escrito (falla cerrado)', async () => {
+      const catalogo = { obtenerProducto: jest.fn(async () => undefined) };
+      const error = await atrapar(movimientoService.registrarMovimiento(deps(catalogo), peticion()));
+      expect(error).toMatchObject({ status: 404, codigo: 'NO_EXISTE' });
+      expect(await db('movimientos')).toEqual([]);
+    });
+
+    it('lee las dependencias en cada llamada: el servicio se puede construir sin ellas (rutasDeclaradas())', async () => {
+      expect(() => movimientoService.crearMovimientoService()).not.toThrow();
+      const tardias = {};
+      const servicio = movimientoService.crearMovimientoService(tardias);
+      Object.assign(tardias, deps());
+      expect((await servicio.registrar(peticion())).replayed).toBe(false);
+    });
+
+    it('un fallo síncrono del catálogo llega como rechazo, no como excepción', async () => {
+      const falla = new Error('fallo síncrono');
+      let resultado;
+      expect(() => { resultado = movimientoService.registrarMovimiento(deps({ obtenerProducto: () => { throw falla; } }), peticion()); }).not.toThrow();
+      await expect(resultado).rejects.toBe(falla);
+    });
+  });
+});

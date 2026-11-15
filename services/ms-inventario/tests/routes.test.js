@@ -45,6 +45,9 @@ const UMBRALES = [
   ['get', '/umbrales'],
   ['put', '/umbrales/:id_producto'],
 ];
+const MOVIMIENTOS = [
+  ['post', '/movimientos'],
+];
 
 let request;
 let db;
@@ -87,6 +90,12 @@ describe('rutasDeclaradas', () => {
   it('incluye las dos operaciones de umbrales de la Tabla 9, con el parámetro {id_producto} que nombra el contrato, y ninguna repetida', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of UMBRALES) expect(rutas).toContain(`${metodo} ${ruta}`);
+    expect(new Set(rutas).size).toBe(rutas.length);
+  });
+
+  it('incluye POST /movimientos de la Tabla 9 y ninguna repetida', () => {
+    const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
+    for (const [metodo, ruta] of MOVIMIENTOS) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
