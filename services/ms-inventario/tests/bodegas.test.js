@@ -105,16 +105,53 @@ describe('POST /bodegas', () => {
     expect(await filas()).toHaveLength(1);
   });
 
-  it('el codigo distingue mayúsculas (el contrato no dice otra cosa y la columna es única sin normalizar): "mzl" y "MZL" coexisten', async () => {
+  // Ruling 18: el codigo es único SIN distinguir mayúsculas. ms-reportes agrupa las bodegas por `codigo.strip().casefold()`:
+  // con "mzl" y "MZL" como bodegas distintas rechazaría todas las filas de STOCK_INICIAL («más de una bodega con ese código»).
+  it.each(['mzl', 'Mzl', 'mZL', 'MZl'])('el codigo no distingue mayúsculas: %p repite a "MZL" → 409 CODIGO_DUPLICADO y no se crea otra bodega', async (variante) => {
     await control('MZL');
-    const res = await request.post('/bodegas').set(ADM).send(con('codigo', 'mzl'));
-    expect(res.status).toBe(201);
-    expect((await filas()).map((fila) => fila.codigo)).toEqual(['MZL', 'mzl']);
+    // Control positivo: un codigo realmente distinto sí se acepta (y deja de ser un duplicado en cuanto cambia una letra).
+    expect((await request.post('/bodegas').set(ADM).send(con('codigo', 'BOG'))).status).toBe(201);
+    const res = await request.post('/bodegas').set(ADM).send({ ...BODEGA, codigo: variante, nombre: 'Otra' });
+    esError(res, 409, 'CODIGO_DUPLICADO');
+    expect(res.body.error.detalles).toEqual([]);
+    const guardadas = await filas();
+    expect(guardadas.map((fila) => fila.codigo)).toEqual(['MZL', 'BOG']);
+    expect(guardadas[0].nombre).toBe('Principal');
   });
 
-  it('un codigo repetido de una bodega inactiva también es 409: el código no se libera al inactivar', async () => {
+  it('un codigo que solo se parece (otra letra, un dígito más) no es un duplicado', async () => {
+    await control('MZL');
+    for (const codigo of ['MZ', 'MZL1', 'MZLL', 'M-ZL']) expect((await request.post('/bodegas').set(ADM).send(con('codigo', codigo))).status).toBe(201);
+    expect(await filas()).toHaveLength(5);
+  });
+
+  it('" mzl " frente a "MZL" → 409: el codigo se recorta Y se compara sin mayúsculas; sin conflicto se guarda recortado', async () => {
+    await control('MZL');
+    esError(await request.post('/bodegas').set(ADM).send(con('codigo', ' mzl ')), 409, 'CODIGO_DUPLICADO');
+    esError(await request.post('/bodegas').set(ADM).send(con('codigo', '\tMzL\n')), 409, 'CODIGO_DUPLICADO');
+    expect(await filas()).toHaveLength(1);
+
+    // La clave de ms-reportes es strip().casefold(): lo guardado debe estar recortado, o dos códigos «iguales» para esa
+    // importación podrían coexistir aquí. Con el recorte, el código queda exactamente como lo busca el consumidor.
+    const res = await request.post('/bodegas').set(ADM).send(con('codigo', '  nuevo '));
+    expect(res.status).toBe(201);
+    expect(res.body.codigo).toBe('nuevo');
+    expect((await filas()).map((fila) => fila.codigo)).toEqual(['MZL', 'nuevo']);
+    for (const fila of await filas()) expect(fila.codigo).toBe(fila.codigo.trim());
+  });
+
+  it('varias altas simultáneas con el mismo codigo escrito con distintas mayúsculas: una gana y las demás son 409, nunca un 500', async () => {
+    const variantes = ['MZL', 'mzl', 'Mzl', ' mZl ', 'MZL', 'mzL'];
+    const respuestas = await Promise.all(variantes.map((codigo) => request.post('/bodegas').set(ADM).send(con('codigo', codigo))));
+    expect(respuestas.filter((res) => res.status === 201)).toHaveLength(1);
+    for (const res of respuestas.filter((r) => r.status !== 201)) esError(res, 409, 'CODIGO_DUPLICADO');
+    expect(await filas()).toHaveLength(1);
+  });
+
+  it('un codigo repetido de una bodega inactiva también es 409, con las mismas o distintas mayúsculas: el código no se libera al inactivar', async () => {
     await crearBodega(db, { codigo: 'MZL', activa: false });
     esError(await request.post('/bodegas').set(ADM).send(BODEGA), 409, 'CODIGO_DUPLICADO');
+    esError(await request.post('/bodegas').set(ADM).send(con('codigo', 'mzl')), 409, 'CODIGO_DUPLICADO');
     expect(await filas()).toHaveLength(1);
   });
 

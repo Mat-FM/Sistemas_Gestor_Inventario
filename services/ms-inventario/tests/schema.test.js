@@ -95,6 +95,8 @@ const ESTRUCTURA = {
 const INDICES = {
   bodegas_pkey: 'UNIQUE bodegas(id_bodega)',
   bodegas_codigo_key: 'UNIQUE bodegas(codigo)',
+  // Ruling 18: el código es único sin distinguir mayúsculas (ms-reportes lo agrupa con strip().casefold()).
+  bodegas_codigo_lower_key: 'UNIQUE bodegas(lower((codigo)::text))',
   saldos_pkey: 'UNIQUE saldos(id_saldo)',
   saldos_id_producto_id_bodega_key: 'UNIQUE saldos(id_producto, id_bodega)',
   lotes_pkey: 'UNIQUE lotes(id_lote)',
@@ -251,6 +253,7 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
     it.each([
       // --- unicidad ---
       ['bodegas.codigo repetido', (c) => c('bodegas').insert([filaBodega(), filaBodega()]), '23505', 'bodegas_codigo_key'],
+      ['bodegas.codigo repetido salvo por las mayúsculas', (c) => c('bodegas').insert([filaBodega({ codigo: 'MZL' }), filaBodega({ codigo: 'mzl' })]), '23505', 'bodegas_codigo_lower_key'],
       ['saldo repetido para el mismo producto y bodega', conBodega((c, b) =>
         c('saldos').insert([{ id_producto: 1, id_bodega: b.id_bodega }, { id_producto: 1, id_bodega: b.id_bodega }])), '23505', 'saldos_id_producto_id_bodega_key'],
       ['lote repetido (misma bodega, producto y código)', conBodega((c, b) => {
@@ -307,6 +310,29 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
       const esperado = { code: codigo };
       if (restriccion) esperado.constraint = restriccion;
       await expect(insertar(db)).rejects.toMatchObject(esperado);
+    });
+
+    describe('unicidad del código de bodega sin distinguir mayúsculas (Ruling 18)', () => {
+      it('existe el índice único funcional bodegas_codigo_lower_key sobre lower(codigo), además de la restricción del código exacto', async () => {
+        const { rows } = await db.raw("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'bodegas_codigo_lower_key'");
+        expect(rows).toHaveLength(1);
+        expect(rows[0].indexdef).toBe('CREATE UNIQUE INDEX bodegas_codigo_lower_key ON public.bodegas USING btree (lower((codigo)::text))');
+        const { rows: exacta } = await db.raw("SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'bodegas_codigo_key'");
+        expect(exacta).toHaveLength(1);
+      });
+
+      it.each([['mzl'], ['Mzl'], ['mZL']])('un código que solo difiere en mayúsculas (%s) da 23505 y pg informa el nombre del índice en `constraint`', async (variante) => {
+        await db('bodegas').insert(filaBodega({ codigo: 'MZL' }));
+        const error = await db('bodegas').insert(filaBodega({ codigo: variante })).catch((falla) => falla);
+        expect(error).toMatchObject({ code: '23505', constraint: 'bodegas_codigo_lower_key' });
+        expect(await db('bodegas').count({ total: '*' })).toEqual([{ total: 1 }]);
+      });
+
+      it('control positivo: códigos distintos, aunque parecidos, sí se aceptan', async () => {
+        await db('bodegas').insert(filaBodega({ codigo: 'MZL' }));
+        await db('bodegas').insert([filaBodega({ codigo: 'MZL1' }), filaBodega({ codigo: 'MZ' }), filaBodega({ codigo: 'M-ZL' })]);
+        expect((await db('bodegas').select('codigo').orderBy('id_bodega')).map((fila) => fila.codigo)).toEqual(['MZL', 'MZL1', 'MZ', 'M-ZL']);
+      });
     });
 
     it('un texto más largo que la columna se rechaza (22001) en vez de truncarse', async () => {
@@ -533,6 +559,9 @@ describe('esquema de la base de datos (PostgreSQL real)', () => {
 
         await temporal.migrate.rollback(undefined, true);
         expect(await tablasDeDatos(temporal)).toEqual([]);
+        // Deshacer la migración no deja residuo: ni siquiera el índice funcional de bodegas.
+        const { rows: indices } = await temporal.raw("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename NOT LIKE 'knex\\_%'");
+        expect(indices).toEqual([]);
 
         const [, aplicadas] = await temporal.migrate.latest();
         expect(aplicadas).toEqual([MIGRACION]);

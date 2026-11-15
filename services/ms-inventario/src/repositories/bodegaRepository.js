@@ -5,9 +5,12 @@
 const TABLA = 'bodegas';
 const COLUMNAS = ['id_bodega', 'codigo', 'nombre', 'ciudad', 'direccion', 'activa'];
 
-// Restricción única del código, tal como la nombra la migración. Se detecta por este nombre y no por el texto del mensaje
-// de PostgreSQL (que depende del idioma del servidor y de su versión).
-const RESTRICCION_CODIGO = 'bodegas_codigo_key';
+// Las dos unicidades del código, tal como las nombra la migración: `bodegas_codigo_key` (código exacto) y el índice funcional
+// `bodegas_codigo_lower_key` (sobre lower(codigo): el código es único sin distinguir mayúsculas, Ruling 18). Un código
+// repetido viola una u otra, así que se detecta por cualquiera de los dos nombres y no por el texto del mensaje de PostgreSQL
+// (que depende del idioma del servidor y de su versión). `pg` informa en `constraint` el nombre del índice también para un
+// índice funcional.
+const RESTRICCIONES_CODIGO = Object.freeze(['bodegas_codigo_key', 'bodegas_codigo_lower_key']);
 const VIOLACION_UNICA = '23505';
 
 /** @returns {Promise<Bodega|undefined>} */
@@ -15,9 +18,12 @@ function findById(dbOrTrx, id) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ id_bodega: id }).first();
 }
 
-/** Busca por código exacto (distingue mayúsculas, como la columna única). Encuentra también las inactivas. */
+/**
+ * Busca por código SIN distinguir mayúsculas, con el mismo criterio que la unicidad (lower(codigo)). No recorta: el código
+ * se guarda ya recortado y quien busque debe pasarlo recortado. Encuentra también las inactivas.
+ */
 function findByCodigo(dbOrTrx, codigo) {
-  return dbOrTrx(TABLA).select(COLUMNAS).where({ codigo }).first();
+  return dbOrTrx(TABLA).select(COLUMNAS).whereRaw('lower(codigo) = lower(?)', [codigo]).first();
 }
 
 /**
@@ -36,7 +42,8 @@ async function list(dbOrTrx, { activa, limit, offset }) {
 
 /**
  * Inserta una bodega activa. Solo toma las cuatro columnas que fija el cliente: `id_bodega` lo genera la base y `activa`
- * arranca en true. Con un código repetido lanza el 23505 de PostgreSQL (ver esCodigoDuplicado).
+ * arranca en true. Con un código repetido (también si solo difiere en mayúsculas) lanza el 23505 de PostgreSQL (ver
+ * esCodigoDuplicado).
  * @returns {Promise<Bodega>}
  */
 async function insert(dbOrTrx, { codigo, nombre, ciudad, direccion }) {
@@ -63,9 +70,9 @@ async function setActiva(dbOrTrx, id, activa) {
   return bodega;
 }
 
-/** ¿Es este error el 23505 de la restricción única del código? Cualquier otro 23505 (u otro error) no lo es. */
+/** ¿Es este error el 23505 de una de las unicidades del código? Cualquier otro 23505 (u otro error) no lo es. */
 function esCodigoDuplicado(error) {
-  return error?.code === VIOLACION_UNICA && error?.constraint === RESTRICCION_CODIGO;
+  return error?.code === VIOLACION_UNICA && RESTRICCIONES_CODIGO.includes(error?.constraint);
 }
 
-module.exports = { RESTRICCION_CODIGO, findById, findByCodigo, list, insert, update, setActiva, esCodigoDuplicado };
+module.exports = { RESTRICCIONES_CODIGO, findById, findByCodigo, list, insert, update, setActiva, esCodigoDuplicado };

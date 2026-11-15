@@ -31,14 +31,15 @@ function crearBodegaService({ db, repo = bodegaRepository } = {}) {
 
     /**
      * Crea una bodega activa.
-     * @throws 409 CODIGO_DUPLICADO si el código ya existe (también el de una bodega inactiva: el código no se libera).
-     *         Solo el 23505 de la restricción del código se traduce; cualquier otro error de la base se relanza tal cual.
+     * @throws 409 CODIGO_DUPLICADO si el código ya existe sin distinguir mayúsculas (también el de una bodega inactiva: el
+     *         código no se libera). Solo el 23505 de las unicidades del código se traduce; cualquier otro error de la base se
+     *         relanza tal cual.
      */
     async crear({ codigo, nombre, ciudad, direccion }) {
       try {
         return await repo.insert(db, { codigo, nombre, ciudad, direccion });
       } catch (error) {
-        if (repo.esCodigoDuplicado(error)) throw e.conflicto('CODIGO_DUPLICADO', 'Ya existe una bodega con ese código');
+        if (repo.esCodigoDuplicado(error)) throw e.conflicto('CODIGO_DUPLICADO', 'Ya existe una bodega con ese código (no se distingue entre mayúsculas y minúsculas)');
         throw error;
       }
     },

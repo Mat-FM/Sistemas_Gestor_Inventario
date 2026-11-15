@@ -42,6 +42,16 @@ describe('bodegaRepository', () => {
       expect(bodegaRepository.esCodigoDuplicado(error)).toBe(true);
     });
 
+    it('con un codigo que solo difiere en mayúsculas lanza el 23505 del índice bodegas_codigo_lower_key (pg informa su nombre)', async () => {
+      await bodegaRepository.insert(db, DATOS);
+      for (const variante of ['mzl', 'Mzl']) {
+        const error = await bodegaRepository.insert(db, { ...DATOS, codigo: variante }).catch((falla) => falla);
+        expect(error).toMatchObject({ code: '23505', constraint: 'bodegas_codigo_lower_key' });
+        expect(bodegaRepository.esCodigoDuplicado(error)).toBe(true);
+      }
+      expect(await filas()).toHaveLength(1);
+    });
+
     it('funciona dentro de una transacción (dbOrTrx): un rollback no deja nada', async () => {
       await expect(db.transaction(async (trx) => {
         await bodegaRepository.insert(trx, DATOS);
@@ -66,10 +76,15 @@ describe('bodegaRepository', () => {
       expect(await bodegaRepository.findByCodigo(db, 'NOPE')).toBeUndefined();
     });
 
-    it('findByCodigo distingue mayúsculas y encuentra también las inactivas', async () => {
+    it('findByCodigo no distingue mayúsculas (como la unicidad del código) y encuentra también las inactivas', async () => {
       const inactiva = await crearBodega(db, { codigo: 'MZL', activa: false });
       expect(await bodegaRepository.findByCodigo(db, 'MZL')).toEqual(inactiva);
-      expect(await bodegaRepository.findByCodigo(db, 'mzl')).toBeUndefined();
+      for (const variante of ['mzl', 'Mzl', 'mZL']) expect(await bodegaRepository.findByCodigo(db, variante)).toEqual(inactiva);
+    });
+
+    it('findByCodigo no encuentra un código distinto, aunque se parezca, ni un código con espacios (el repositorio no recorta)', async () => {
+      await crearBodega(db, { codigo: 'MZL' });
+      for (const otro of ['MZ', 'MZL1', 'M-ZL', ' mzl', 'mzl ', '']) expect(await bodegaRepository.findByCodigo(db, otro)).toBeUndefined();
     });
   });
 
@@ -127,13 +142,18 @@ describe('bodegaRepository', () => {
   });
 
   describe('esCodigoDuplicado', () => {
-    it('es verdadero solo para el 23505 de la restricción bodegas_codigo_key', () => {
-      expect(bodegaRepository.esCodigoDuplicado(errorUnico('bodegas_codigo_key'))).toBe(true);
+    it.each(['bodegas_codigo_key', 'bodegas_codigo_lower_key'])('es verdadero para el 23505 de la restricción %s (código exacto o sin distinguir mayúsculas)', (restriccion) => {
+      expect(bodegaRepository.esCodigoDuplicado(errorUnico(restriccion))).toBe(true);
+    });
+
+    it('RESTRICCIONES_CODIGO nombra exactamente esas dos restricciones', () => {
+      expect([...bodegaRepository.RESTRICCIONES_CODIGO].sort()).toEqual(['bodegas_codigo_key', 'bodegas_codigo_lower_key']);
     });
 
     it('un 23505 de otra restricción no es un código duplicado', () => {
       expect(bodegaRepository.esCodigoDuplicado(errorUnico('movimientos_clave_idempotencia_key'))).toBe(false);
       expect(bodegaRepository.esCodigoDuplicado(errorUnico('bodegas_pkey'))).toBe(false);
+      expect(bodegaRepository.esCodigoDuplicado(errorUnico('bodegas_codigo_otra_key'))).toBe(false);
       expect(bodegaRepository.esCodigoDuplicado(errorUnico(undefined))).toBe(false);
     });
 
@@ -144,7 +164,9 @@ describe('bodegaRepository', () => {
     });
 
     it('la restricción correcta con otro código de error tampoco cuenta; ni lo que no es un error', () => {
-      expect(bodegaRepository.esCodigoDuplicado(Object.assign(new Error('x'), { code: '23503', constraint: 'bodegas_codigo_key' }))).toBe(false);
+      for (const restriccion of ['bodegas_codigo_key', 'bodegas_codigo_lower_key']) {
+        expect(bodegaRepository.esCodigoDuplicado(Object.assign(new Error('x'), { code: '23503', constraint: restriccion }))).toBe(false);
+      }
       for (const valor of [undefined, null, 'texto', 42, {}]) expect(bodegaRepository.esCodigoDuplicado(valor)).toBe(false);
     });
   });
@@ -156,8 +178,8 @@ describe('bodegaService', () => {
   const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
 
   describe('crear', () => {
-    it('un 23505 de bodegas_codigo_key → 409 CODIGO_DUPLICADO', async () => {
-      const error = await atrapar(servicio({ insert: async () => { throw errorUnico('bodegas_codigo_key'); } }).crear(DATOS));
+    it.each(['bodegas_codigo_key', 'bodegas_codigo_lower_key'])('un 23505 de %s → 409 CODIGO_DUPLICADO', async (restriccion) => {
+      const error = await atrapar(servicio({ insert: async () => { throw errorUnico(restriccion); } }).crear(DATOS));
       expect(error).toBeInstanceOf(AppError);
       expect(error).toMatchObject({ status: 409, codigo: 'CODIGO_DUPLICADO' });
       expect(error.message).toMatch(/\S/);
@@ -179,9 +201,10 @@ describe('bodegaService', () => {
       expect(await servicio().crear(DATOS)).toEqual({ id_bodega: expect.any(Number), ...DATOS, activa: true });
     });
 
-    it('con un código repetido de verdad (base real) → 409 CODIGO_DUPLICADO', async () => {
+    it('con un código repetido de verdad (base real), con las mismas o distintas mayúsculas → 409 CODIGO_DUPLICADO', async () => {
       await servicio().crear(DATOS);
       expect(await atrapar(servicio().crear(DATOS))).toMatchObject({ status: 409, codigo: 'CODIGO_DUPLICADO' });
+      expect(await atrapar(servicio().crear({ ...DATOS, codigo: 'mzl' }))).toMatchObject({ status: 409, codigo: 'CODIGO_DUPLICADO' });
     });
   });
 

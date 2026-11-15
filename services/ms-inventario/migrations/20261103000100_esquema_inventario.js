@@ -5,7 +5,8 @@
 // - Cantidades enteras (D2). Lo que tiene historia no se borra, así que solo detalles_conteo cae en cascada con su conteo.
 // - Cada restricción y cada índice lleva nombre propio y estable: `<tabla>_<columnas>_key` (únicas), `_fkey`
 //   (foráneas), `_pkey` e `_idx`. El servicio detecta una clave de idempotencia repetida por el nombre
-//   `movimientos_clave_idempotencia_key` (Tarea 7): no se renombra.
+//   `movimientos_clave_idempotencia_key` (Tarea 7), y un código de bodega repetido por `bodegas_codigo_key` o
+//   `bodegas_codigo_lower_key`: no se renombran.
 // - Una migración es una instantánea: repite aquí los valores de las listas en lugar de importar el código del
 //   servicio, para que cambiar el código no reescriba el pasado.
 
@@ -32,6 +33,14 @@ exports.up = async (knex) => {
     tabla.boolean('activa').notNullable().defaultTo(true);
     tabla.unique(['codigo'], { indexName: 'bodegas_codigo_key' });
   });
+  // El código de una bodega es único SIN distinguir mayúsculas (RF05, Ruling 18): ms-reportes agrupa las bodegas por
+  // `codigo.strip().casefold()` para importar el stock inicial y, con «mzl» y «MZL» como bodegas distintas, rechazaría todas
+  // las filas con «Hay más de una bodega con ese código». `bodegas_codigo_key` se mantiene (código exacto); este índice
+  // funcional añade la unicidad de lower(codigo). Knex no expresa índices funcionales: va con raw. El `down()` borra las
+  // tablas y con ellas sus índices, así que no deja residuo.
+  // Ojo: lower() de PostgreSQL depende de la collation de la base y casefold() de Python pliega más (ß → ss). Para códigos
+  // ASCII (los de bodega: «MZL», «BOG»…) coinciden y basta; un código con letras fuera de ASCII podría escapar de la unicidad.
+  await knex.raw('CREATE UNIQUE INDEX bodegas_codigo_lower_key ON bodegas (lower(codigo))');
 
   await knex.schema.createTable('saldos', (tabla) => {
     tabla.increments('id_saldo');

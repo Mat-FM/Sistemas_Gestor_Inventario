@@ -8,6 +8,8 @@ const LARGOS = { codigo: 30, nombre: 100, ciudad: 100, direccion: 255 };
 const campoTexto = (cuerpo, campo) => () => texto(cuerpo[campo], campo, { max: LARGOS[campo] });
 
 // Cuerpo de POST /bodegas: {codigo, nombre, ciudad, direccion}. Se descarta cualquier otro campo (`activa`, `id_bodega`…).
+// `texto` recorta los espacios de los extremos, así que el código se GUARDA recortado: ms-reportes busca la bodega por
+// `codigo.strip().casefold()` y un código con espacios sobrantes no coincidiría con lo que escribe su usuario.
 const leerAlta = (cuerpo) => {
   const datos = cuerpoObjeto(cuerpo);
   return validarCampos({
