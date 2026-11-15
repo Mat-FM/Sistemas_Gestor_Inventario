@@ -18,13 +18,14 @@ class AppError extends Error {
 }
 
 // Fábrica de los errores comunes a todos los servicios. Los códigos propios de este servicio (STOCK_INSUFICIENTE,
-// BODEGA_INACTIVA…) se crean con e.conflicto(codigo, mensaje).
+// BODEGA_INACTIVA…) se crean con e.conflicto(codigo, mensaje, detalles?).
 const e = {
   malFormada: (mensaje = 'La petición está mal formada') => new AppError(400, 'PETICION_MAL_FORMADA', mensaje),
   noAutenticado: (mensaje = 'No autenticado') => new AppError(401, 'NO_AUTENTICADO', mensaje),
   sinPermiso: (mensaje = 'No tiene permiso para realizar esta operación') => new AppError(403, 'SIN_PERMISO', mensaje),
   noExiste: (mensaje = 'El recurso no existe') => new AppError(404, 'NO_EXISTE', mensaje),
-  conflicto: (codigo, mensaje) => new AppError(409, codigo, mensaje),
+  // `detalles` es opcional: STOCK_INSUFICIENTE informa ahí lo disponible y lo solicitado.
+  conflicto: (codigo, mensaje, detalles = []) => new AppError(409, codigo, mensaje, detalles),
   datosNoValidos: (detalles) => new AppError(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos', detalles),
   noDisponible: (mensaje = 'El servicio no está disponible') => new AppError(503, 'SERVICIO_NO_DISPONIBLE', mensaje),
 };

@@ -15,6 +15,7 @@ describe('AppError y la fábrica e', () => {
     ['sinPermiso', () => e.sinPermiso('m'), 403, 'SIN_PERMISO', 'm', []],
     ['noExiste', () => e.noExiste('m'), 404, 'NO_EXISTE', 'm', []],
     ['conflicto', () => e.conflicto('CODIGO_DUPLICADO', 'm'), 409, 'CODIGO_DUPLICADO', 'm', []],
+    ['conflicto con detalles', () => e.conflicto('STOCK_INSUFICIENTE', 'm', [{ campo: 'cantidad', mensaje: 'x', disponible: 1, solicitado: 2 }]), 409, 'STOCK_INSUFICIENTE', 'm', [{ campo: 'cantidad', mensaje: 'x', disponible: 1, solicitado: 2 }]],
     ['datosNoValidos', () => e.datosNoValidos([{ campo: 'cantidad', mensaje: 'x' }]), 422, 'DATOS_NO_VALIDOS', expect.any(String), [{ campo: 'cantidad', mensaje: 'x' }]],
     ['noDisponible', () => e.noDisponible('m'), 503, 'SERVICIO_NO_DISPONIBLE', 'm', []],
   ])('e.%s crea un AppError con su estado, código, mensaje y detalles', (_nombre, crear, status, codigo, mensaje, detalles) => {
