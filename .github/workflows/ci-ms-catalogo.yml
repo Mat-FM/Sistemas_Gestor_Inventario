@@ -1,0 +1,50 @@
+name: CI ms-catalogo
+
+# Pruebas de ms-catalogo con cobertura mínima del 60 % (RNF20).
+# Corre en cada pull request que toque el servicio o este mismo archivo. Sigue el mismo esquema que ci-api-gateway.yml.
+on:
+  pull_request:
+    paths:
+      - 'services/ms-catalogo/**'
+      - '.github/workflows/ci-ms-catalogo.yml'
+
+# El token solo necesita leer el código.
+permissions:
+  contents: read
+
+# Una ejecución nueva sobre la misma rama cancela la anterior, que ya quedó obsoleta.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/ms-catalogo
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # pcov mide la cobertura. PHP 8.4, el mismo de la imagen Docker. Las pruebas usan SQLite en memoria
+      # (phpunit.xml) y simulan ms-proveedores con Http::fake(): no hace falta MySQL ni otro servicio.
+      - name: Preparar PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+          extensions: ctype, dom, fileinfo, filter, iconv, libxml, mbstring, openssl, pdo_sqlite, session, sqlite3, tokenizer, xml, xmlwriter
+
+      - name: Instalar las dependencias
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Preparar el entorno
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Ejecutar las pruebas con cobertura mínima del 60 %
+        run: php artisan test --coverage --min=60

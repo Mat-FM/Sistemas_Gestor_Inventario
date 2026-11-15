@@ -168,6 +168,10 @@ la carga masiva, `/health`, `/docs`, la forma común de error y `X-Request-Id` (
 
 Cobertura actual: **98,8 %** (38 pruebas); RNF20 exige al menos 60 %.
 
+**Integración continua.** El flujo `.github/workflows/ci-ms-catalogo.yml` corre estas pruebas con
+`php artisan test --coverage --min=60` (PHP 8.4 y pcov) en cada pull request que toque `services/ms-catalogo/`, y marca
+el PR como fallido si alguna prueba falla o la cobertura baja del 60 % (RNF20).
+
 ## Docker (RNF03)
 
 La imagen sirve la aplicación con **Apache y PHP 8.4** (`php:8.4-apache`), con el usuario `www-data` en el puerto
