@@ -1,3 +1,4 @@
+const { mensajePlazoInvalido, plazoValido } = require('../config/env');
 const { e } = require('../errors');
 
 // Cliente HTTP hacia otro servicio con las garantías de RNF18: espera máxima por intento, reintentos con esperas
@@ -108,7 +109,7 @@ function leerJson(texto) {
  * @param {string} opciones.baseUrl dirección del servicio destino (viene de una variable de entorno; si falta o no es válida el
  *   cliente se construye igual y cada llamada responde 503, para que /health pueda avisar de la configuración, D17)
  * @param {string} [opciones.nombre] nombre del servicio destino para los registros y el mensaje del 503 (sin él, no se revela el host)
- * @param {number} [opciones.timeoutMs] espera máxima POR INTENTO, hasta terminar de leer el cuerpo (RNF18)
+ * @param {number} [opciones.timeoutMs] espera máxima POR INTENTO, hasta terminar de leer el cuerpo (RNF18); entero entre 1 y 60000 (CALL_TIMEOUT_MS)
  * @param {number[]} [opciones.backoffMs] esperas antes de cada reintento; su longitud es el máximo de reintentos
  * @param {number} [opciones.failureThreshold] llamadas fallidas seguidas que abren el circuito
  * @param {number} [opciones.openMs] tiempo que el circuito abierto no llama al destino
@@ -131,10 +132,9 @@ function createResilientClient({
   sleep = dormirPorDefecto,
   logger,
 } = {}) {
-  // Una variable de entorno mal escrita (CALL_TIMEOUT_MS=abc llega como NaN) dejaría el plazo en 1 ms: se falla al arrancar.
-  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new TypeError('timeoutMs debe ser un número de milisegundos mayor que 0');
-  }
+  // Un plazo fuera de rango (NaN, decimales, más de 2^31-1 ms…) haría que setTimeout espere 1 ms: todas las llamadas fallarían por
+  // plazo en silencio. cargarConfig ya lo valida al arrancar; aquí se vuelve a comprobar con el mismo rango (config/env.js).
+  if (!plazoValido(timeoutMs)) throw new TypeError(mensajePlazoInvalido(timeoutMs, 'timeoutMs (CALL_TIMEOUT_MS)'));
 
   const base = normalizarBase(baseUrl);
   const destino = nombre ?? (base === null ? 'servicio-sin-url' : new URL(base).host);

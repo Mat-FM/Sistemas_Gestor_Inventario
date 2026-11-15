@@ -212,7 +212,7 @@ describe('createServer: clientes de ms-catalogo y ms-notificaciones', () => {
     expect(notificaciones.peticiones).toHaveLength(0);
   });
 
-  it('un CALL_TIMEOUT_MS que no es un número falla al arrancar, antes de abrir el pool de la base (en vez de dejar un plazo de 1 ms)', () => {
+  it('un CALL_TIMEOUT_MS inválido falla al arrancar con un error de configuración, antes de abrir el pool de la base', () => {
     const env = { ...entornoValido(), NODE_ENV: 'test', TEST_DB_NAME: 'inventario_test', CALL_TIMEOUT_MS: 'abc' };
     let createDbEspia;
     let crear;
@@ -227,7 +227,16 @@ describe('createServer: clientes de ms-catalogo y ms-notificaciones', () => {
       }
     });
 
-    expect(() => crear(env, loggerEspia())).toThrow(TypeError);
+    let error;
+    try {
+      crear(env, loggerEspia());
+    } catch (err) {
+      error = err;
+    }
+    // el error de configuración (sin TypeError) sale de cargarConfig, antes de construir los clientes y de abrir el pool
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('ErrorDeConfiguracion');
+    expect(error.message).toMatch(/CALL_TIMEOUT_MS.*"abc"/);
     expect(createDbEspia).not.toHaveBeenCalled();
     // control: con un número válido arranca y sí abre el pool
     const { db } = crear({ ...env, CALL_TIMEOUT_MS: '2500' }, loggerEspia());

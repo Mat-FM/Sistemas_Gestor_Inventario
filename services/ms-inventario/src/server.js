@@ -23,23 +23,52 @@ function crearClientes(config, log) {
 // Arma el servidor sin ponerlo a escuchar, para poder probarlo.
 function createServer(env = process.env, log = logger) {
   const config = cargarConfig(env);
-  // Antes de abrir el pool de la base: una configuración inválida (p. ej. CALL_TIMEOUT_MS=abc) falla aquí sin dejar nada abierto.
+  // cargarConfig ya validó el plazo (CALL_TIMEOUT_MS=abc falla ahí, sin construir clientes ni abrir el pool); los clientes se arman antes que la base.
   const clients = crearClientes(config, log);
   const db = createDb(config.db);
   const app = createApp({ db, clients, logger: log, env });
   return { app, server: http.createServer(app), db, config, clients };
 }
 
-if (require.main === module) {
-  const { server, db, config } = createServer();
-  server.listen(config.puerto, () => logger.info({ mensaje: 'Servidor iniciado', puerto: config.puerto }));
+/**
+ * Arranque del servicio: arma el servidor y lo pone a escuchar. Una configuración inválida (p. ej. CALL_TIMEOUT_MS=abc) o cualquier
+ * otro fallo al armarlo se registra con el logger estructurado, solo con nombre y mensaje (es un error de configuración, no un
+ * defecto: sin pila ni TypeError volcado por Node), y el proceso sale con código 1 para que Kubernetes lo reinicie y lo muestre.
+ * Con variables obligatorias ausentes o URL inválidas NO es un error de arranque: el servicio escucha y /health responde 503 (D17).
+ * @param {NodeJS.ProcessEnv} env
+ * @param {{info: Function, error: Function}} log
+ * @param {(codigo: number) => void} salir termina el proceso (inyectable en las pruebas)
+ * @returns {object|null} lo que devuelve createServer, o null si el arranque falló
+ */
+function iniciar(env = process.env, log = logger, salir = (codigo) => process.exit(codigo)) {
+  let creado;
+  try {
+    creado = createServer(env, log);
+  } catch (err) {
+    const nombre = err instanceof Error ? err.name : typeof err;
+    let mensaje;
+    try {
+      mensaje = err instanceof Error ? err.message : String(err);
+    } catch {
+      mensaje = 'no se pudo describir el error';
+    }
+    log.error({ mensaje: 'No se pudo iniciar el servicio', error: { nombre, mensaje } });
+    salir(1);
+    return null;
+  }
+
+  const { server, db, config } = creado;
+  server.listen(config.puerto, () => log.info({ mensaje: 'Servidor iniciado', puerto: config.puerto }));
 
   // Al escalar hacia abajo Kubernetes envía SIGTERM: se atienden las peticiones en curso y se cierra el pool.
   for (const senal of ['SIGTERM', 'SIGINT']) {
     process.once(senal, () => {
-      server.close(() => db.destroy().finally(() => process.exit(0)));
+      server.close(() => db.destroy().finally(() => salir(0)));
     });
   }
+  return creado;
 }
 
-module.exports = { createServer };
+if (require.main === module) iniciar();
+
+module.exports = { createServer, iniciar };

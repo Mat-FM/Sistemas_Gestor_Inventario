@@ -252,11 +252,12 @@ describe('createResilientClient: plazo de espera', () => {
     }
   });
 
-  it('un timeoutMs que no es un número positivo falla al construir el cliente (no 1 ms en silencio)', () => {
-    for (const invalido of [NaN, 0, -5, '3000', Infinity]) {
+  it('un timeoutMs que no es un entero entre 1 y 60000 falla al construir el cliente y nombra CALL_TIMEOUT_MS (no 1 ms en silencio)', () => {
+    for (const invalido of [NaN, 0, -5, 1.5, 60001, 3e9, Infinity, '3000', '', null, {}]) {
       expect(() => createResilientClient({ baseUrl: BASE, timeoutMs: invalido })).toThrow(TypeError);
+      expect(() => createResilientClient({ baseUrl: BASE, timeoutMs: invalido })).toThrow(/CALL_TIMEOUT_MS.*entre 1 y 60000/);
     }
-    expect(() => createResilientClient({ baseUrl: BASE, timeoutMs: 3000 })).not.toThrow();
+    for (const valido of [1, 3000, 60000]) expect(() => createResilientClient({ baseUrl: BASE, timeoutMs: valido })).not.toThrow();
   });
 });
 
