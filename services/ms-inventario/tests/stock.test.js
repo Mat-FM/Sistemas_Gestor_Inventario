@@ -419,6 +419,28 @@ describe('stockService.aplicarMovimiento: lotes (D27)', () => {
     expect(await kardex()).toHaveLength(1);
   });
 
+  // Movidas desde movimientosLotes.test.js (ronda de corrección 1, D28(b)): POST /movimientos ya exige la fecha con `lote`, así
+  // que estos caminos solo son alcanzables desde la carga inicial (Tarea 12), que llama al motor con fechaVencimiento nula.
+  it('lote sin fecha (fechaVencimiento null u omitida) sobre un lote existente con fecha → suma sin tocar la fecha guardada', async () => {
+    /* Sin fecha no hay nada que contradecir. */
+    await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 4, lote: { codigoLote: 'L1', fechaVencimiento: '2027-01-31' } });
+    await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 1, lote: { codigoLote: 'L1' } });
+    expect(await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 1, lote: { codigoLote: 'L1', fechaVencimiento: null } })).toMatchObject({ saldo_resultante: 6 });
+    expect(await db('lotes').select('codigo_lote', 'fecha_vencimiento', 'cantidad_disponible')).toEqual([{ codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 6 }]);
+  });
+
+  it('lote guardado SIN fecha y llega una → 409 CONFLICTO sin cambios (control: sin fecha suma)', async () => {
+    /* D27(d): una fecha nueva sobre un lote sin fecha también contradice lo guardado. */
+    await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 1, lote: { codigoLote: 'SF', fechaVencimiento: null } });
+    expect(await aplicar({ tipo: 'CARGA_INICIAL', cantidad: 1, lote: { codigoLote: 'SF' } })).toMatchObject({ saldo_resultante: 2 });
+    const error = await atrapar(aplicar({ cantidad: 1, lote: { codigoLote: 'SF', fechaVencimiento: '2027-01-31' } }));
+    expect(error).toMatchObject({ status: 409, codigo: 'CONFLICTO' });
+    expect(error.detalles).toEqual([{ campo: 'lote.fecha_vencimiento', mensaje: expect.stringContaining('sin fecha') }]);
+    expect(await saldoDe()).toBe(2);
+    expect(await lotesDe()).toEqual({ SF: 2 });
+    expect(await kardex()).toHaveLength(2);
+  });
+
   it('orden de bloqueo: el saldo SIEMPRE antes que cualquier lote (por id, por FEFO o por código)', async () => {
     /* D27(c): el saldo es el candado maestro; tomar un lote antes abriría un interbloqueo con otra operación del mismo par. */
     await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });

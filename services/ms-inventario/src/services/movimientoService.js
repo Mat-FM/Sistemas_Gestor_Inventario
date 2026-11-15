@@ -50,8 +50,9 @@ function bajaElSaldo(tipo, cantidad) {
 /**
  * `lote` (D27): ausente o null → null. Si viene, debe ser un objeto { codigo_lote, fecha_vencimiento? } (los demás campos del
  * objeto se descartan), no puede ir junto con un `id_lote` y solo vale en un movimiento que SUBE el saldo (al retirar no se crea
- * un lote). `codigo_lote`: texto recortado de 1 a 50 caracteres; `fecha_vencimiento`: fecha real YYYY-MM-DD, null o ausente.
- * Informa a la vez el código y la fecha inválidos.
+ * un lote). `codigo_lote`: texto recortado de 1 a 50 caracteres; `fecha_vencimiento`: fecha real YYYY-MM-DD, OBLIGATORIA
+ * (D28(b): en el contrato solo `lote` lleva «?»; ausente o null es 422). El motor sí admite la fecha nula, porque la carga
+ * inicial (Tarea 12) la deja opcional. Informa a la vez el código y la fecha inválidos.
  * @returns {{codigoLote: string, fechaVencimiento: string|null}|null} la forma que recibe el motor
  */
 function leerLote(datos) {
@@ -62,7 +63,12 @@ function leerLote(datos) {
   if (bajaElSaldo(datos.tipo, datos.cantidad)) throw rechazoLote('solo se admite en un movimiento que sube el saldo');
   const detalles = [];
   const codigoLote = recoger(detalles, () => texto(lote.codigo_lote, 'lote.codigo_lote', { max: LARGOS.codigo_lote }));
-  const fechaVencimiento = recoger(detalles, () => (ausente(lote.fecha_vencimiento) ? null : fecha(lote.fecha_vencimiento, 'lote.fecha_vencimiento')));
+  const fechaVencimiento = recoger(detalles, () => {
+    if (ausente(lote.fecha_vencimiento)) {
+      throw e.datosNoValidos([{ campo: 'lote.fecha_vencimiento', mensaje: 'es obligatoria cuando se envía un lote' }]);
+    }
+    return fecha(lote.fecha_vencimiento, 'lote.fecha_vencimiento');
+  });
   if (detalles.length > 0) throw e.datosNoValidos(detalles);
   return { codigoLote, fechaVencimiento };
 }

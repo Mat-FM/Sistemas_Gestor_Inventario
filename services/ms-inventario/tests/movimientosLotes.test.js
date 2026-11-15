@@ -83,9 +83,9 @@ describe('casos del brief', () => {
     /* Control: cada uno por separado es válido. */
     const a = await sembrarLote('A', null, 0);
     expect((await post(entrada(1, { id_lote: a.id_lote }))).status).toBe(201);
-    expect((await post(entrada(1, { lote: { codigo_lote: 'N' } }))).status).toBe(201);
+    expect((await post(entrada(1, { lote: { codigo_lote: 'N', fecha_vencimiento: '2027-03-01' } }))).status).toBe(201);
     const antes = await foto();
-    datosNoValidos(await post(entrada(1, { id_lote: a.id_lote, lote: { codigo_lote: 'N' } })), ['lote']);
+    datosNoValidos(await post(entrada(1, { id_lote: a.id_lote, lote: { codigo_lote: 'N', fecha_vencimiento: '2027-03-01' } })), ['lote']);
     datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'N', fecha_vencimiento: '2027-13-40' } })), ['lote.fecha_vencimiento']);
     expect(await foto()).toEqual(antes);
   });
@@ -282,19 +282,14 @@ describe('entrada a un lote existente por código (D27(d))', () => {
     expect((await post(entrada(1, { lote: { codigo_lote: 'L1', fecha_vencimiento: '2027-01-31' } }), 'k-fecha')).status).toBe(201);
   });
 
-  it('con la fecha omitida (o null) suma sin tocar la fecha guardada', async () => {
-    /* Sin fecha no hay nada que contradecir. */
-    expect((await post(entrada(1, { lote: { codigo_lote: 'L1' } }))).status).toBe(201);
-    expect((await post(entrada(1, { lote: { codigo_lote: 'L1', fecha_vencimiento: null } }))).status).toBe(201);
-    expect(await lotes()).toEqual([expect.objectContaining({ codigo_lote: 'L1', fecha_vencimiento: '2027-01-31', cantidad_disponible: 6 })]);
-  });
-
-  it('guardada SIN fecha y la petición trae una → 409 CONFLICTO', async () => {
-    /* Control: sin fecha, suma. */
-    expect((await post(entrada(1, { lote: { codigo_lote: 'SF' } }))).status).toBe(201);
-    expect((await post(entrada(1, { lote: { codigo_lote: 'SF' } }))).status).toBe(201);
+  // «Fecha omitida suma sin tocar la guardada» y «guardada sin fecha + fecha → 409» solo son alcanzables desde la carga inicial
+  // (D28(b)): se prueban en el motor (stock.test.js).
+  it('con la fecha omitida o null → 422 sobre "lote.fecha_vencimiento" (D28(b): obligatoria con lote); nada cambia', async () => {
+    /* Control: con la fecha guardada suma (prueba anterior). */
     const antes = await foto();
-    esError(await post(entrada(1, { lote: { codigo_lote: 'SF', fecha_vencimiento: '2027-01-31' } })), 409, 'CONFLICTO', ['lote.fecha_vencimiento']);
+    datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'L1' } })), ['lote.fecha_vencimiento']);
+    datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'L1', fecha_vencimiento: null } })), ['lote.fecha_vencimiento']);
+    datosNoValidos(await post(entrada(1, { lote: { codigo_lote: 'NUEVO' } })), ['lote.fecha_vencimiento']);
     expect(await foto()).toEqual(antes);
   });
 
@@ -321,9 +316,9 @@ describe('validación del cuerpo (422)', () => {
 
   it(`lote.codigo_lote: ${LARGO_CODIGO} caracteres → 201; ${LARGO_CODIGO + 1} → 422 (nunca el 22001); vacío, solo espacios, ausente, un número o con NUL → 422`, async () => {
     /* El largo exacto de la columna y el cableado del campo; el resto de texto() está en validate.test.js. */
-    expect((await post(entrada(1, { lote: { codigo_lote: 'x'.repeat(LARGO_CODIGO) } }))).status).toBe(201);
+    expect((await post(entrada(1, { lote: { codigo_lote: 'x'.repeat(LARGO_CODIGO), fecha_vencimiento: '2027-03-01' } }))).status).toBe(201);
     for (const codigo of ['x'.repeat(LARGO_CODIGO + 1), '', '   ', undefined, 5, 'a\u0000b']) {
-      datosNoValidos(await post(entrada(1, { lote: { codigo_lote: codigo } })), ['lote.codigo_lote']);
+      datosNoValidos(await post(entrada(1, { lote: { codigo_lote: codigo, fecha_vencimiento: '2027-03-01' } })), ['lote.codigo_lote']);
     }
   });
 
@@ -351,7 +346,7 @@ describe('validación del cuerpo (422)', () => {
 
   it('los campos extra dentro de lote se ignoran (id_lote, cantidad_disponible…)', async () => {
     /* Como en el resto del cuerpo: lo que fija el servidor no se toma del cliente. */
-    const res = await post(entrada(2, { lote: { codigo_lote: 'X', id_lote: 777, cantidad_disponible: 1000, id_bodega: b2 } }));
+    const res = await post(entrada(2, { lote: { codigo_lote: 'X', fecha_vencimiento: '2027-03-01', id_lote: 777, cantidad_disponible: 1000, id_bodega: b2 } }));
     expect(res.status).toBe(201);
     expect(await lotes()).toEqual([expect.objectContaining({ codigo_lote: 'X', cantidad_disponible: 2, id_bodega: b1 })]);
     expect(res.body.id_lote).not.toBe(777);
@@ -359,14 +354,14 @@ describe('validación del cuerpo (422)', () => {
 
   it('lote en un AJUSTE positivo se acepta y en uno negativo es 422 (el signo lo decide)', async () => {
     /* D27 va por el signo, no por el tipo. */
-    expect((await post(mov('AJUSTE', 2, { lote: { codigo_lote: 'AJ' } }))).status).toBe(201);
-    datosNoValidos(await post(mov('AJUSTE', -1, { lote: { codigo_lote: 'AJ' } })), ['lote']);
+    expect((await post(mov('AJUSTE', 2, { lote: { codigo_lote: 'AJ', fecha_vencimiento: '2027-03-01' } }))).status).toBe(201);
+    datosNoValidos(await post(mov('AJUSTE', -1, { lote: { codigo_lote: 'AJ', fecha_vencimiento: '2027-03-01' } })), ['lote']);
   });
 
   it.each([[0], [MAXIMO + 1], ['3']])('SALIDA con lote y cantidad inválida %p → 422 solo sobre "cantidad" (el signo no se conoce: no se inventa un error de lote)', async (cantidad) => {
     /* Control: con cantidad válida, el lote en una SALIDA sí es un error propio. */
-    datosNoValidos(await post(salida(1, { lote: { codigo_lote: 'L' } })), ['lote']);
-    datosNoValidos(await post(salida(cantidad, { lote: { codigo_lote: 'L' } })), ['cantidad']);
+    datosNoValidos(await post(salida(1, { lote: { codigo_lote: 'L', fecha_vencimiento: '2027-03-01' } })), ['lote']);
+    datosNoValidos(await post(salida(cantidad, { lote: { codigo_lote: 'L', fecha_vencimiento: '2027-03-01' } })), ['cantidad']);
   });
 
   it('informa todos los campos inválidos a la vez, en el orden del contrato', async () => {
