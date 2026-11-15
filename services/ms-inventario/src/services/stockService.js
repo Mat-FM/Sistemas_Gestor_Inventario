@@ -113,4 +113,59 @@ async function aplicarMovimiento(trx, datos) {
   });
 }
 
-module.exports = { aplicarMovimiento };
+const FORMATO_FECHA = /^\d{4}-\d{2}-\d{2}$/;
+
+// Orden FEFO (D6): fecha de vencimiento ascendente, los lotes sin fecha al final y, a igual fecha, id_lote ascendente. Las fechas
+// son texto YYYY-MM-DD (Ruling 15), cuyo orden lexicográfico es el cronológico. Es el mismo orden que el ORDER BY de
+// loteRepository.listarParaFefo.
+function compararFefo(a, b) {
+  if (a.fecha_vencimiento !== b.fecha_vencimiento) {
+    if (a.fecha_vencimiento === null) return 1;
+    if (b.fecha_vencimiento === null) return -1;
+    return a.fecha_vencimiento < b.fecha_vencimiento ? -1 : 1;
+  }
+  return a.id_lote - b.id_lote;
+}
+
+function comprobarLotes(lotes) {
+  if (!Array.isArray(lotes)) throw new TypeError('planificarFefo: `lotes` debe ser un arreglo');
+  const vistos = new Set();
+  for (const lote of lotes) {
+    const fecha = lote?.fecha_vencimiento;
+    if (!esId(lote?.id_lote) || !Number.isSafeInteger(lote.cantidad_disponible) || lote.cantidad_disponible < 0
+      || !(fecha === null || (typeof fecha === 'string' && FORMATO_FECHA.test(fecha)))) {
+      // Un Date en fecha_vencimiento (sin el parser de Ruling 15) compararía objetos, no días: mejor un 500 que un plan inventado.
+      throw new TypeError('planificarFefo: cada lote necesita id_lote, cantidad_disponible entera ≥ 0 y fecha_vencimiento YYYY-MM-DD o null');
+    }
+    if (vistos.has(lote.id_lote)) throw new TypeError('planificarFefo: un lote aparece dos veces (se asignaría dos veces su existencia)');
+    vistos.add(lote.id_lote);
+  }
+}
+
+/**
+ * Plan de una salida por FEFO (RF17, D6): de qué lotes sale `cantidad`, del primero en vencer al último. Función PURA: no toca la
+ * base ni muta su entrada (el motor la llama con los lotes que leyó y bloqueó loteRepository.listarParaFefo).
+ * - Ignora los lotes sin existencia (cantidad_disponible 0).
+ * - Agota cada lote antes de pasar al siguiente; solo la última asignación puede ser parcial.
+ * - Lo que los lotes no cubren queda en `restante` y, en el motor, sale del stock sin lote.
+ * @param {Array<{id_lote: number, fecha_vencimiento: string|null, cantidad_disponible: number}>} lotes en cualquier orden
+ * @param {number} cantidad entero positivo
+ * @returns {{asignaciones: Array<{id_lote: number, cantidad: number}>, restante: number}} asignaciones en orden FEFO, todas > 0
+ * @throws {TypeError} error de programación si la cantidad no es un entero positivo o algún lote no tiene la forma de un Lote
+ */
+function planificarFefo(lotes, cantidad) {
+  if (!Number.isSafeInteger(cantidad) || cantidad < 1) throw new TypeError('planificarFefo: `cantidad` debe ser un entero positivo');
+  comprobarLotes(lotes);
+  const ordenados = lotes.filter((lote) => lote.cantidad_disponible > 0).sort(compararFefo); // filter copia: no muta la entrada
+  const asignaciones = [];
+  let restante = cantidad;
+  for (const lote of ordenados) {
+    if (restante === 0) break;
+    const toma = Math.min(restante, lote.cantidad_disponible);
+    asignaciones.push({ id_lote: lote.id_lote, cantidad: toma });
+    restante -= toma;
+  }
+  return { asignaciones, restante };
+}
+
+module.exports = { aplicarMovimiento, planificarFefo };
