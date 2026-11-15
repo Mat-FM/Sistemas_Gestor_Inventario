@@ -15,9 +15,13 @@ const saldoRepository = require('../repositories/saldoRepository');
 //   (producto, bodega) se aplican uno detrás de otro y el segundo ve el saldo que dejó el primero, así que nunca queda negativo.
 // - Escribe `saldos.fecha_actualizacion` y `movimientos.fecha` con clock_timestamp() DESPUÉS de tomar el bloqueo (D24).
 //
-// ORDEN DE BLOQUEO en operaciones con DOS saldos (traslados, Tarea 9): llamar a aplicarMovimiento (o a bloquear) primero
-// sobre el saldo de MENOR id_bodega y después sobre el de mayor, sea cual sea el origen y el destino. Si un traslado A→B
-// bloqueara A y luego B mientras otro B→A bloquea B y luego A, cada uno esperaría al otro (interbloqueo, 40P01).
+// ORDEN DE BLOQUEO cuando una operación toma VARIOS saldos en una misma transacción (D25c): llamar a aplicarMovimiento (o a
+// bloquear) en orden de id_bodega ascendente y, dentro de la misma bodega, de id_producto ascendente.
+// - Traslados (Tarea 9): primero el saldo de MENOR id_bodega, sea cual sea el origen y el destino. Si un traslado A→B
+//   bloqueara A y luego B mientras otro B→A bloquea B y luego A, cada uno esperaría al otro (interbloqueo, 40P01).
+// - Aprobación de conteos (Tarea 11): los AJUSTE de una misma bodega, por id_producto ascendente; así dos aprobaciones
+//   concurrentes de conteos de la misma bodega que comparten productos no se interbloquean.
+// - Carga inicial (Tarea 12): sus filas, ordenadas igual antes de aplicarlas.
 
 const ENTERO_MAXIMO = 2147483647;
 const LARGO_CLAVE = 255; // movimientos.clave_idempotencia es varchar(255)

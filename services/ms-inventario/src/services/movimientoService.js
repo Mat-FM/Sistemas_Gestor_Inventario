@@ -6,7 +6,7 @@ const { requireUser, scopeBodega } = require('../middleware/identity');
 const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
 const umbralRepository = require('../repositories/umbralRepository');
-const { OPERACIONES, claveAlmacenada, leerClaveIdempotencia } = require('./idempotencia');
+const { OPERACIONES, claveAlmacenada, leerClaveIdempotencia, resolverFallo } = require('./idempotencia');
 const stockService = require('./stockService');
 
 // Lógica de negocio de POST /movimientos (RF04, RF10, RNF17; RNF13): idempotencia por usuario y operación (idempotencia.js),
@@ -67,29 +67,6 @@ function leerCuerpo(cuerpo) {
   return movimiento;
 }
 
-/**
- * Tras un fallo de la transacción, ¿ya hay un movimiento con esta clave? Puede haberlo aunque la búsqueda inicial no lo viera:
- * otra petición del mismo usuario con la misma clave confirmó entre medias. Esa carrera se manifiesta como el 23505 de la clave
- * (el INSERT chocó con la unicidad) o como cualquier otro rechazo del motor que dependa de lo que la otra ya escribió (p. ej.
- * un 409 STOCK_INSUFICIENTE porque la otra consumió el stock): en todos los casos la respuesta correcta es la original (D7).
- * Como la transacción ya se deshizo entera (saldo incluido), se vuelve a leer con la conexión normal.
- * @returns {Promise<Movimiento>} el movimiento original
- * @throws el error original si no hay ninguno; un Error interno (500) si era el 23505 de la clave y aun así no aparece
- */
-async function resolverFallo(db, almacenada, error) {
-  let original;
-  try {
-    original = await movimientoRepository.findByClave(db, almacenada);
-  } catch {
-    throw error; // la base falló también al releer: se informa el fallo original
-  }
-  if (original) return original;
-  if (movimientoRepository.esClaveDuplicada(error)) {
-    throw new Error('La clave de idempotencia ya existía pero no se encontró su movimiento al releerla', { cause: error });
-  }
-  throw error;
-}
-
 // Un logger roto no puede hacer que el aviso de stock bajo lance: nunca debe cambiar la respuesta del movimiento.
 function registrarFallo(logger, registro) {
   try {
@@ -142,7 +119,8 @@ async function evaluarUmbral({ db, clients, logger }, { tipo, idProducto, idBode
  * 5. Alcance de bodega: un operador fuera de la suya (o sin bodega) → 403.
  * 6. Catálogo: GET /productos/{id} (llamada 1); null → 404, sin respuesta → 503. Se llama SIN ninguna conexión tomada.
  * 7. Transacción con el motor (bloqueo, saldo, movimiento). Los errores no se guardan: no dejan clave y un reintento con la
- *    misma clave se vuelve a ejecutar.
+ *    misma clave se vuelve a ejecutar. Si la transacción falla, resolverFallo relee por la clave: si otra petición del mismo
+ *    usuario la confirmó entre medias, se responde con ese movimiento (200).
  * 8. Tras el commit, el umbral (evaluarUmbral), que nunca cambia el 201. Una repetición no vuelve a avisar.
  * @param {{db: object, clients: {catalogo: object}, logger: object}} deps
  * @param {{body: unknown, claveIdempotencia: string|undefined, identity: object}} peticion

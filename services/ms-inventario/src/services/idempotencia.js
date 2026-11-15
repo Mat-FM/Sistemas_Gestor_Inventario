@@ -1,8 +1,10 @@
 const { e } = require('../errors');
+const movimientoRepository = require('../repositories/movimientoRepository');
 
 // Claves de idempotencia (RNF17): ÚNICA fuente de verdad de cómo se arma la clave que se guarda en
-// movimientos.clave_idempotencia (D25, D25b, D25c). La usan POST /movimientos (Tarea 7) y los traslados, la aprobación de
-// conteos y la carga inicial (Tareas 9, 11 y 12). Nadie arma una clave ni una derivada a mano.
+// movimientos.clave_idempotencia (D25, D25b, D25c) y de cómo se relee tras un fallo (resolverFallo). La usan POST /movimientos
+// (Tarea 7) y los traslados, la aprobación de conteos y la carga inicial (Tareas 9, 11 y 12). Nadie arma una clave ni una
+// derivada a mano.
 //
 // Formato: `<id_usuario>:<operacion>:<clave>` y, para las operaciones que generan varios movimientos (D5),
 // `<id_usuario>:<operacion>:<clave>#<sufijo>`.
@@ -73,4 +75,33 @@ function derivada(almacenada, sufijo) {
   return `${almacenada}${SEPARADOR_DERIVADA}${sufijo}`;
 }
 
-module.exports = { OPERACIONES, LARGO_MAXIMO_CLAVE, leerClaveIdempotencia, claveAlmacenada, derivada };
+/**
+ * Relectura por clave tras un fallo de la transacción de una operación idempotente. Puede haber movimiento aunque la búsqueda
+ * inicial no lo viera: otra petición del mismo usuario y la misma operación, con la misma clave, confirmó entre medias. Esa
+ * carrera aparece como el 23505 de la clave (el INSERT chocó con la unicidad) o como cualquier otro rechazo del motor que
+ * dependa de lo que la otra ya escribió (p. ej. un 409 STOCK_INSUFICIENTE porque la otra consumió el stock). En todos los casos
+ * la respuesta correcta es la original (D7).
+ * - Se relee con la conexión NORMAL (`db`), nunca con la transacción: ya se deshizo entera, saldo incluido.
+ * - No puede devolver el movimiento de otro usuario ni de otra operación: la clave guardada los lleva (D25, D25b).
+ * - Si no hay movimiento, relanza el MISMO objeto de error original (nunca uno nuevo): un 40P01, un 40001 o una conexión
+ *   cortada no se ocultan, y un 23505 de la clave sin movimiento llega al manejador como 500 con su causa registrada. Si la
+ *   relectura también falla, se relanza el error original.
+ * La usan registrarMovimiento (clave `mov`) y las Tareas 9, 11 y 12 con su clave base o la derivada que elijan.
+ * @param {object} db instancia de Knex (no la transacción)
+ * @param {string} almacenada la clave tal como se guardó (claveAlmacenada o derivada)
+ * @param {unknown} error el error con el que falló la transacción
+ * @returns {Promise<Movimiento>} el movimiento original
+ * @throws el mismo `error` si no hay movimiento con esa clave
+ */
+async function resolverFallo(db, almacenada, error) {
+  let original;
+  try {
+    original = await movimientoRepository.findByClave(db, almacenada);
+  } catch {
+    throw error; // la base falló también al releer: se informa el fallo original
+  }
+  if (original) return original;
+  throw error;
+}
+
+module.exports = { OPERACIONES, LARGO_MAXIMO_CLAVE, leerClaveIdempotencia, claveAlmacenada, derivada, resolverFallo };

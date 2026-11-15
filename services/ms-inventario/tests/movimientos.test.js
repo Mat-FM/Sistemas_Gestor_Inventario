@@ -551,10 +551,10 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
   });
 
   describe('la carrera que pierde el INSERT (23505)', () => {
-    it('23505 de la clave sin movimiento que leer (no debería ocurrir) → 500 ERROR_INTERNO genérico y registrado', async () => {
+    it('23505 de la clave sin movimiento que leer (no debería ocurrir) → 500 ERROR_INTERNO genérico y registrado con el error original', async () => {
       jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(Object.assign(new Error('duplicate key'), { code: '23505', constraint: 'movimientos_clave_idempotencia_key' }));
       esError(await post(entrada(), ADM, 'k-fantasma'), 500, 'ERROR_INTERNO');
-      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ estado: 500, error: expect.objectContaining({ mensaje: expect.stringMatching(/clave de idempotencia/) }) }));
+      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ estado: 500, error: expect.objectContaining({ mensaje: 'duplicate key' }) }));
     });
 
     it('un 23505 de OTRA restricción no es una repetición: el error original llega al manejador (500) tal cual', async () => {

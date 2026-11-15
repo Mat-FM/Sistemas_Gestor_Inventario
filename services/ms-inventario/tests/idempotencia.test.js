@@ -1,11 +1,14 @@
 const { AppError } = require('../src/errors');
+const movimientoRepository = require('../src/repositories/movimientoRepository');
 const idempotencia = require('../src/services/idempotencia');
+const { createTestDb, truncateAll } = require('./helpers/db');
+const { crearBodega } = require('./helpers/fixtures');
 
 // Claves de idempotencia (RNF17; D25, D25b, D25c): la clave guardada `<id_usuario>:<operacion>:<clave>`, las derivadas
-// `<guardada>#<sufijo>` (D5) y la lectura de la cabecera Idempotency-Key. Sin base de datos: son funciones puras. El
-// comportamiento de punta a punta está en movimientos.test.js.
+// `<guardada>#<sufijo>` (D5), la lectura de la cabecera Idempotency-Key (funciones puras) y la relectura por clave tras un fallo
+// (resolverFallo, contra PostgreSQL real). El comportamiento de punta a punta está en movimientos.test.js.
 
-const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia, LARGO_MAXIMO_CLAVE } = idempotencia;
+const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia, resolverFallo, LARGO_MAXIMO_CLAVE } = idempotencia;
 
 function atraparSincrono(funcion) {
   try {
@@ -116,5 +119,73 @@ describe('leerClaveIdempotencia', () => {
     expect(error.message).toMatch(/#/);
     expect(error.message).toMatch(/no puede contener/);
     expect(error.message).not.toContain('centinela');
+  });
+});
+
+describe('resolverFallo (D25c: relectura por clave tras un fallo, reutilizable por las Tareas 9, 11 y 12)', () => {
+  let db;
+  let b1;
+  beforeAll(() => {
+    db = createTestDb();
+  });
+  beforeEach(async () => {
+    await truncateAll(db);
+    b1 = (await crearBodega(db, { codigo: 'B1' })).id_bodega;
+  });
+  afterAll(() => db.destroy());
+
+  const sembrar = (claveIdempotencia) => movimientoRepository.insert(db, {
+    tipo: 'AJUSTE', idProducto: 5, idBodega: b1, cantidad: 2, saldoResultante: 2, idUsuario: 7, claveIdempotencia,
+  });
+  const atrapar = (promesa) => promesa.then(() => { throw new Error('Se esperaba un rechazo'); }, (error) => error);
+  const errorPg = (code, constraint) => Object.assign(new Error(`error ${code}`), { code, ...(constraint ? { constraint } : {}) });
+
+  it('con una clave DERIVADA: devuelve el movimiento que otra petición confirmó con esa clave', async () => {
+    const base = claveAlmacenada(7, OPERACIONES.CONTEO, 'k');
+    const sembrado = await sembrar(derivada(base, 1));
+    await sembrar(derivada(base, 2));
+    expect(await resolverFallo(db, derivada(base, 1), errorPg('23505', 'movimientos_clave_idempotencia_key'))).toEqual(sembrado);
+  });
+
+  it('sin movimiento relanza el MISMO objeto de error original (nunca uno nuevo)', async () => {
+    const original = Object.assign(new Error('stock insuficiente'), { status: 409 });
+    expect(await atrapar(resolverFallo(db, '7:mov:k', original))).toBe(original);
+  });
+
+  it.each([['40P01 (interbloqueo)', '40P01'], ['40001 (serialización)', '40001'], ['57P01 (conexión cortada)', '57P01']])('un %s sin movimiento se relanza tal cual: no se oculta', async (_caso, code) => {
+    const original = errorPg(code);
+    expect(await atrapar(resolverFallo(db, '7:mov:k', original))).toBe(original);
+  });
+
+  it('un 23505 de la clave sin movimiento que releer también relanza el mismo error (el manejador responde 500 y lo registra)', async () => {
+    const original = errorPg('23505', 'movimientos_clave_idempotencia_key');
+    expect(await atrapar(resolverFallo(db, '7:mov:k', original))).toBe(original);
+  });
+
+  it('si la relectura también falla se relanza el error ORIGINAL, no el de la relectura', async () => {
+    const original = errorPg('40P01');
+    const rota = () => { throw new Error('relectura rota'); };
+    expect(await atrapar(resolverFallo(rota, '7:mov:k', original))).toBe(original);
+  });
+
+  it('nunca devuelve el movimiento de otro usuario ni de otra operación: la clave los lleva', async () => {
+    await sembrar(claveAlmacenada(7, OPERACIONES.TRASLADO, 'k'));
+    await sembrar(claveAlmacenada(8, OPERACIONES.MOVIMIENTO, 'k'));
+    const original = errorPg('40P01');
+    expect(await atrapar(resolverFallo(db, claveAlmacenada(7, OPERACIONES.MOVIMIENTO, 'k'), original))).toBe(original);
+  });
+
+  it('relee con la conexión que recibe (la normal, nunca la transacción ya deshecha)', async () => {
+    const sembrado = await sembrar('7:mov:k');
+    const consultas = [];
+    const registrar = (consulta) => consultas.push(consulta.sql);
+    db.on('query', registrar);
+    try {
+      expect(await resolverFallo(db, '7:mov:k', errorPg('40P01'))).toEqual(sembrado);
+    } finally {
+      db.removeListener('query', registrar);
+    }
+    expect(consultas).toHaveLength(1);
+    expect(consultas[0]).toMatch(/^select .* from "movimientos" where "clave_idempotencia" = \$1/i);
   });
 });
