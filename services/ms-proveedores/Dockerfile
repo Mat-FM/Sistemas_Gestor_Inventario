@@ -55,8 +55,9 @@ ENV APP_NAME=ms-proveedores \
     CACHE_STORE=file \
     QUEUE_CONNECTION=sync
 
-# Apache corre con el usuario www-data, no como root (por eso escucha en el 8000 y no en el 80).
-USER www-data
+# Apache corre con el usuario www-data, no como root (por eso escucha en el 8000 y no en el 80). Se indica por su UID
+# (33) y no por su nombre: con runAsNonRoot, Kubernetes solo acepta un USER numérico.
+USER 33
 
 EXPOSE 8000
 
