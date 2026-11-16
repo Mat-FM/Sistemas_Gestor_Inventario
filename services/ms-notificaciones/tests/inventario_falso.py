@@ -45,8 +45,20 @@ def crear(estado):
 
             if url.path == "/lotes":
                 limite = consulta.get("vence_antes_de", "9999-12-31")
-                lotes = [l for l in estado.lotes if l["fecha_vencimiento"] <= limite]
+                # Como en ms-inventario: el filtro es estricto, con existencia y del que vence primero al último.
+                lotes = [
+                    l
+                    for l in estado.lotes
+                    if l["fecha_vencimiento"] and l["fecha_vencimiento"] < limite
+                    and (consulta.get("con_existencia") != "true" or l.get("cantidad_disponible", 1) > 0)
+                ]
+                lotes.sort(key=lambda l: (l["fecha_vencimiento"], l["id_lote"]))
                 pagina, por_pagina = int(consulta.get("pagina", 1)), int(consulta.get("por_pagina", 20))
+                if por_pagina > 100:
+                    return self._responder(
+                        422,
+                        {"error": {"codigo": "DATOS_NO_VALIDOS", "mensaje": "por_pagina", "detalles": []}},
+                    )
                 inicio = (pagina - 1) * por_pagina
                 return self._responder(
                     200,

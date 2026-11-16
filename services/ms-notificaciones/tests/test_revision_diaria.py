@@ -27,9 +27,9 @@ def test_crea_las_alertas_de_vencimiento_y_de_stock_bajo(inventario, cliente):
     resumen = revision_diaria.ejecutar(hoy=HOY)
 
     assert resumen == {"vencimiento": 1, "stock_bajo": 1, "errores": []}
-    # Pide solo los lotes con existencia que vencen dentro de los 30 días configurados.
+    # Pide los lotes con existencia que vencen dentro de los 30 días configurados (vence_antes_de es estricto).
     consulta = inventario.peticiones[0]["consulta"]
-    assert consulta["vence_antes_de"] == "2026-12-16"
+    assert consulta["vence_antes_de"] == "2026-12-17"
     assert consulta["con_existencia"] == "true"
     datos = cliente.get("/notificaciones", headers=ADMIN).json["datos"]
     por_tipo = {n["tipo"]: n for n in datos}
@@ -45,7 +45,13 @@ def test_usa_los_dias_de_anticipacion_configurados(inventario, cliente):
         "/configuracion-alertas", headers=ADMIN, json={"dias_anticipacion_vencimiento": 5, "hora_revision_diaria": "06:00"}
     )
     revision_diaria.ejecutar(hoy=HOY)
-    assert inventario.peticiones[0]["consulta"]["vence_antes_de"] == "2026-11-21"
+    assert inventario.peticiones[0]["consulta"]["vence_antes_de"] == "2026-11-22"
+
+
+def test_incluye_el_lote_que_vence_justo_el_ultimo_dia_de_anticipacion(inventario):
+    inventario.lotes = [_lote(1, 25, "2026-12-16"), _lote(2, 26, "2026-12-17"), _lote(3, 27, "2026-11-20", cantidad=0)]
+    # Vence el día 30 (entra), el 31 (no entra) y un lote agotado (no entra).
+    assert revision_diaria.ejecutar(hoy=HOY)["vencimiento"] == 1
 
 
 def test_repetir_la_revision_no_duplica_las_alertas_sin_leer(inventario, cliente):
@@ -59,8 +65,10 @@ def test_repetir_la_revision_no_duplica_las_alertas_sin_leer(inventario, cliente
 def test_recorre_todas_las_paginas_de_lotes(inventario):
     inventario.lotes = [_lote(i, i, "2026-11-20") for i in range(1, 151)]
     assert revision_diaria.ejecutar(hoy=HOY)["vencimiento"] == 150
-    paginas = [p["consulta"]["pagina"] for p in inventario.peticiones if p["ruta"] == "/lotes"]
-    assert paginas == ["1", "2"]
+    consultas = [p["consulta"] for p in inventario.peticiones if p["ruta"] == "/lotes"]
+    assert [c["pagina"] for c in consultas] == ["1", "2"]
+    # 100 es el máximo por página que acepta ms-inventario.
+    assert {c["por_pagina"] for c in consultas} == {"100"}
 
 
 def test_envia_el_mismo_request_id_a_las_dos_llamadas(inventario):
