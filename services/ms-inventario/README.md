@@ -140,6 +140,13 @@ origina (ninguna otra cabecera del cliente viaja):
   llamadas a ms-catalogo, ni al revés.
 - **El estado es por proceso.** Con 1 a 4 copias del servicio, cada una cuenta sus fallos y abre su propio circuito: no se
   comparten (no hay ningún almacén común, para no romper RNF05).
+- **Plazos encadenados con el Gateway.** El Gateway espera como máximo 3 s por llamada a un servicio (`timeout_seconds` en
+  `api-gateway/config/gateway.php`, que usa `ProxyService`), pero con el catálogo lento o caído este servicio puede tardar
+  hasta unos 13,4 s en responder (4 intentos de 3 s más 1,4 s de esperas). El cliente puede recibir entonces un 503 **del
+  Gateway** aunque la operación se confirme después aquí: la petición no se cancela cuando el Gateway deja de esperar. Al
+  registrar movimientos, crear y recibir traslados y aprobar conteos hay que **reintentar con la misma `Idempotency-Key`**: si
+  la operación ya se había confirmado, la repetición devuelve el resultado registrado (200) sin repetirla; si no, la ejecuta.
+  `PUT /umbrales/{id_producto}` no lleva clave, pero repetirlo con el mismo cuerpo deja el mismo umbral.
 
 ## Estructura (RNF13)
 
@@ -205,8 +212,10 @@ Toda la configuración viene del entorno; ninguna dirección ni credencial está
 | `TEST_DB_NAME` | Solo para las pruebas | — | Base de datos de las pruebas (`inventario_test`): debe terminar en `_test` y ser distinta de `DB_NAME` |
 
 - Si falta una variable obligatoria o una URL no es válida, el servicio **arranca** igual y `GET /health` responde 503
-  `SERVICIO_NO_DISPONIBLE`, sin decir qué falla; el registro nombra las variables (nunca sus valores). Así un contenedor mal
-  configurado no recibe tráfico.
+  `SERVICIO_NO_DISPONIBLE`, sin decir qué falla. El registro nombra las variables que faltan (nunca sus valores) y lo hace en
+  **cada** llamada a `/health`, no solo al arrancar. `/health` es una sonda de vida: no consulta la base de datos (D17, RNF10).
+  Si los manifiestos de `k8s/` la usaran como sonda de disponibilidad (*readiness*), un contenedor mal configurado quedaría
+  fuera de tráfico; esa elección es de los manifiestos, no del servicio.
 - Un `CALL_TIMEOUT_MS` definido pero inválido (vacío, con decimales, fuera de rango) **impide arrancar**: el proceso escribe
   un registro `ErrorDeConfiguracion` y sale con código 1. Si no está definido, vale 3000.
 - `NODE_ENV` no figura en `.env.example`. Jest lo fija en `test`, y con `NODE_ENV=test` el servicio usa `TEST_DB_NAME` en lugar
@@ -335,7 +344,9 @@ hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
 - **Obligación de los manifiestos de `k8s/`** (todavía sin escribir): este servicio debe quedar sin exposición externa (sin
   Ingress ni NodePort; solo el Gateway se publica) y con una `NetworkPolicy` que permita entrar al puerto 3000 únicamente desde
   el Gateway y desde los servicios que lo llaman (ms-compras, ms-notificaciones y ms-reportes), y salir únicamente hacia
-  ms-catalogo, ms-notificaciones y su propia base de datos, que a su vez solo debe ser alcanzable desde este servicio (RNF02).
+  ms-catalogo, ms-notificaciones, su propia base de datos y el DNS del clúster (kube-dns, puerto 53 UDP y TCP): si la política de
+  salida lo olvida, no se resuelve el nombre de ms-catalogo y todo lo que lo consulta responde 503. La base de datos, a su vez,
+  solo debe ser alcanzable desde este servicio (RNF02).
 
 ## Notas para los servicios que lo consumen
 
