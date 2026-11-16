@@ -1,3 +1,4 @@
+const path = require('node:path');
 const knex = require('knex');
 const supertest = require('supertest');
 const { createApp } = require('../src/app');
@@ -12,6 +13,7 @@ const stockService = require('../src/services/stockService');
 const { buildTestApp, entornoValido } = require('./helpers/app');
 const { esperarBloqueo } = require('./helpers/bloqueos');
 const { configDePrueba, truncateAll } = require('./helpers/db');
+const { ejecutarHijo } = require('./helpers/hijos');
 const { crearBodega, crearLote, crearSaldo, crearUmbral, headers } = require('./helpers/fixtures');
 const { ISO_8601, esError, datosNoValidos, recursoNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
@@ -25,6 +27,7 @@ const { ISO_8601, esError, datosNoValidos, recursoNoExiste, stockInsuficiente } 
 // y clave_aprobacion, y exactamente un AJUSTE por cada línea contada con diferencia ≠ 0 (de esa misma diferencia); uno que no
 // está APROBADO no tiene ni clave ni movimientos. Nunca un conteo aprobado sin sus ajustes, ni ajustes sin conteo aprobado.
 
+const RAIZ = path.join(__dirname, '..');
 const ADM = headers('ADMINISTRADOR');
 const OPE = (idBodega, idUsuario = 8) => headers('OPERADOR_BODEGA', { idUsuario, idBodega });
 const CLAVES_CONTEO = ['id_conteo', 'id_bodega', 'estado', 'fecha_programada', 'fecha_aprobacion', 'id_usuario_aprueba', 'detalles'];
@@ -180,21 +183,58 @@ describe('POST /conteos: fecha_programada y el reloj (D29, D32(g))', () => {
     expect((await programar(cuerpoConteo({ fecha_programada: '2026-11-16' }))).status).toBe(201);
   });
 
-  it('el día es el UTC y no el local: con el reloj en 2026-11-15T23:30:00-05:00 (ya el 16 en UTC) el 15 es pasado y el 16 es hoy, aunque el proceso corra en Bogotá', async () => {
-    /* D29: todos los servicios usan UTC. El huso del proceso se fuerza a Bogotá para que la regla local (el 15) se distinga. */
-    const zonaOriginal = process.env.TZ;
-    process.env.TZ = 'America/Bogota';
-    try {
-      reloj = new Date('2026-11-15T23:30:00-05:00');
-      expect(reloj.getDate()).toBe(15); // control: en el huso local todavía es el 15
-      datosNoValidos(await programar(cuerpoConteo({ fecha_programada: '2026-11-15' })), ['fecha_programada']);
-      const hoy = await programar(cuerpoConteo({ fecha_programada: '2026-11-16' }));
-      expect(hoy.status).toBe(201);
-      expect(hoy.body.fecha_programada).toBe('2026-11-16');
-    } finally {
-      if (zonaOriginal === undefined) delete process.env.TZ;
-      else process.env.TZ = zonaOriginal;
-    }
+  // D29: todos los servicios usan UTC, así que «hoy» es el día UTC del reloj y nunca el día del huso del proceso. Para que la regla
+  // local se distinga de la UTC, el proceso tiene que correr en un huso con otro día que el UTC en ese instante. Un
+  // `process.env.TZ = …` dentro de Jest NO lo cambia (cada prueba recibe una copia de `process`): el huso real solo se fija al
+  // lanzar un proceso, así que la comprobación corre en un HIJO con TZ en su entorno, como db.test.js y lotes.test.js, y esta prueba
+  // no depende del huso de la máquina ni de la CI. El hijo usa la misma base de pruebas (la bodega b1 que sembró beforeEach).
+  describe.each([
+    // [huso del hijo, instante del reloj, día local (getDate), día UTC, ayer, hoy, mañana (UTC)]
+    ['America/Bogota', '2026-11-16T02:00:00Z', 15, '2026-11-16', '2026-11-15', '2026-11-16', '2026-11-17'], // UTC-5: el día local va por detrás
+    ['Pacific/Auckland', '2026-11-15T12:00:00Z', 16, '2026-11-15', '2026-11-14', '2026-11-15', '2026-11-16'], // UTC+13: va por delante
+  ])('con el proceso en %s', (zona, instante, diaLocal, diaUtc, ayer, hoy, manana) => {
+    it(`el reloj en ${instante} (día local ${diaLocal}, día UTC ${diaUtc}): ${ayer} es pasado, ${hoy} es hoy y ${manana} es futuro`, async () => {
+      const guion = `
+        const raiz = process.argv[1];
+        const { instante, zona, diaLocal, diaUtc, idBodega, fechas } = JSON.parse(process.argv[2]);
+        const reloj = new Date(instante);
+        // Control de la premisa, DENTRO del hijo (donde sí es cierta): sin el huso esperado la prueba no distinguiría nada.
+        const zonaReal = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (zonaReal !== zona || reloj.getDate() !== diaLocal || reloj.toISOString().slice(0, 10) !== diaUtc) {
+          process.stderr.write('El huso del hijo no es el esperado: zona ' + zonaReal + ' (se pidió ' + zona + '), día local ' + reloj.getDate() +
+            ' (se esperaba ' + diaLocal + '), día UTC ' + reloj.toISOString().slice(0, 10) + ' (se esperaba ' + diaUtc + ')');
+          process.exit(2);
+        }
+        const supertest = require(raiz + '/node_modules/supertest');
+        const { createApp } = require(raiz + '/src/app');
+        const { createTestDb } = require(raiz + '/tests/helpers/db');
+        (async () => {
+          const db = createTestDb();
+          try {
+            const app = createApp({ db, clients: { catalogo: {}, notificaciones: {} }, logger: { info() {}, error() {} }, now: () => reloj });
+            const estados = {};
+            for (const fecha of fechas) {
+              const res = await supertest(app).post('/conteos').set({ 'X-User-Id': '7', 'X-User-Rol': 'ADMINISTRADOR' })
+                .send({ id_bodega: idBodega, fecha_programada: fecha, ids_producto: [5] });
+              estados[fecha] = { estado: res.status, campos: (res.body.error?.detalles ?? []).map((d) => d.campo) };
+            }
+            process.stdout.write(JSON.stringify({ zona: zonaReal, estados }));
+          } finally {
+            await db.destroy();
+          }
+        })().catch((error) => { process.stderr.write(String(error && error.stack)); process.exit(1); });
+      `;
+      const parametros = JSON.stringify({ instante, zona, diaLocal, diaUtc, idBodega: b1, fechas: [ayer, hoy, manana] });
+      const { stdout } = await ejecutarHijo(['-e', guion, RAIZ, parametros], { env: { ...process.env, TZ: zona }, cwd: RAIZ });
+      expect(JSON.parse(stdout)).toEqual({
+        zona,
+        estados: {
+          [ayer]: { estado: 422, campos: ['fecha_programada'] },
+          [hoy]: { estado: 201, campos: [] },
+          [manana]: { estado: 201, campos: [] },
+        },
+      });
+    });
   });
 
   it('el reloj se lee en CADA petición: al avanzar un día, la fecha que antes era hoy pasa a ser pasada', async () => {
