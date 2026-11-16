@@ -133,3 +133,63 @@ describe('requestLog', () => {
     expect((await request.get('/x')).headers['x-request-id']).toMatch(UUID);
   });
 });
+
+// Ruling 11: las sondas de Kubernetes (/health) y la documentación (/docs) no escriben la línea por petición, como en los
+// servicios hermanos (ms-reportes, ms-catalogo, ms-proveedores): llenarían el registro de ruido. Solo las lecturas (GET y HEAD) de
+// esas rutas EXACTAS: cualquier otra cosa (un POST a /health, un /docs/otra-cosa que da 404) sigue dejando su línea.
+describe('requestLog: rutas que no se registran', () => {
+  // Registra todas las rutas de las pruebas para los métodos que se necesiten; devuelve la app, el logger espía y las líneas.
+  function conRutas() {
+    const lineas = [];
+    const log = { info: jest.fn((registro) => lineas.push(registro)), error: jest.fn() };
+    const { request } = miniApp((app) => {
+      for (const ruta of ['/health', '/docs', '/docs/openapi.yaml', '/x']) {
+        app.get(ruta, (_req, res) => res.json({}));
+        app.post(ruta, (_req, res) => res.status(201).json({}));
+      }
+    }, { logger: log });
+    // Espera a que la línea de una petición ya terminada salga (el registro se escribe en 'close', después de la respuesta).
+    const esperar = async (ruta) => {
+      const limite = Date.now() + 2000;
+      while (!lineas.some((linea) => linea.ruta === ruta) && Date.now() < limite) await dormir(5);
+    };
+    return { request, lineas, esperar };
+  }
+
+  it.each(['/health', '/docs', '/docs/openapi.yaml'])('GET %s no deja línea, y la siguiente petición normal sí (control)', async (ruta) => {
+    const { request, lineas, esperar } = conRutas();
+    const sonda = await request.get(ruta);
+    expect(sonda.status).toBe(200);
+    expect((await request.get('/x')).status).toBe(200);
+    await esperar('/x');
+    expect(lineas.map((linea) => linea.ruta)).toEqual(['/x']);
+    // La petición excluida igual lleva su identificador de petición: solo se omite el registro.
+    expect(sonda.headers['x-request-id']).toMatch(UUID);
+  });
+
+  it('HEAD, la consulta y la barra final de esas rutas tampoco dejan línea', async () => {
+    const { request, lineas, esperar } = conRutas();
+    expect((await request.head('/health')).status).toBe(200);
+    expect((await request.get('/docs?x=1')).status).toBe(200);
+    expect((await request.get('/health/')).status).toBe(200);
+    expect((await request.get('/x')).status).toBe(200);
+    await esperar('/x');
+    expect(lineas.map((linea) => linea.ruta)).toEqual(['/x']);
+  });
+
+  it('otro método sobre esas rutas SÍ deja su línea (POST /health, POST /docs)', async () => {
+    const { request, lineas, esperar } = conRutas();
+    expect((await request.post('/health').send({})).status).toBe(201);
+    expect((await request.post('/docs').send({})).status).toBe(201);
+    await esperar('/docs');
+    expect(lineas.map((linea) => `${linea.metodo} ${linea.ruta}`)).toEqual(['POST /health', 'POST /docs']);
+  });
+
+  it('otras rutas bajo /docs o /health SÍ dejan su línea: solo se omiten las tres exactas', async () => {
+    const { request, lineas, esperar } = conRutas();
+    expect((await request.get('/docs/otra-cosa')).status).toBe(404);
+    expect((await request.get('/healthz')).status).toBe(404);
+    await esperar('/healthz');
+    expect(lineas.map((linea) => linea.ruta)).toEqual(['/docs/otra-cosa', '/healthz']);
+  });
+});

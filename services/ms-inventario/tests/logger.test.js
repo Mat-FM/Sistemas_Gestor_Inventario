@@ -232,7 +232,7 @@ describe('logger', () => {
     });
   });
 
-  it('es el logger que usa la aplicación cuando no se inyecta otro (el 503 de /health queda registrado)', async () => {
+  it('es el logger que usa la aplicación cuando no se inyecta otro (el aviso del 503 de /health queda registrado)', async () => {
     const app = createApp({ env: { DB_HOST: 'host-centinela.interno', MS_CATALOGO_URL: 'catalogo-centinela' } });
     const res = await request(app).get('/health');
     const [linea] = lineas();
@@ -242,14 +242,25 @@ describe('logger', () => {
     expect(registro.faltantes).toEqual(['DB_PORT', 'DB_NAME', 'DB_USER', 'MS_NOTIFICACIONES_URL']);
     expect(linea).not.toContain('host-centinela.interno');
     expect(linea).not.toContain('catalogo-centinela');
-
-    // Con el logger por defecto, el aviso de configuración y la línea de la petición llevan el mismo request_id.
-    // La línea de la petición sale al cerrarse la respuesta: se espera antes de soltar el espía.
-    const limite = Date.now() + 1000;
-    while (lineas().length < 2 && Date.now() < limite) await new Promise((resolver) => setTimeout(resolver, 5));
-    const peticion = JSON.parse(lineas()[1]);
-    expect(peticion).toMatchObject({ servicio: 'ms-inventario', nivel: 'info', metodo: 'GET', ruta: '/health', estado: 503 });
+    // El aviso de configuración lleva el request_id de la petición (D19).
     expect(registro.request_id).toBe(res.headers['x-request-id']);
-    expect(peticion.request_id).toBe(res.headers['x-request-id']);
+  });
+
+  it('con el logger por defecto, /health no escribe la línea de la petición (Ruling 11) y una petición normal sí, con su request_id', async () => {
+    const app = createApp({ env: { DB_HOST: 'host-centinela.interno' } });
+    const sonda = await request(app).get('/health');
+    const normal = await request(app).get('/no-existe');
+    // La línea de la petición sale al cerrarse la respuesta: se espera a la de la petición normal antes de soltar el espía.
+    const limite = Date.now() + 1000;
+    while (!lineas().some((linea) => linea.includes('"ruta":"/no-existe"')) && Date.now() < limite) {
+      await new Promise((resolver) => setTimeout(resolver, 5));
+    }
+    const registros = lineas().map((linea) => JSON.parse(linea));
+    expect(sonda.status).toBe(503);
+    expect(registros.filter((registro) => registro.ruta === '/health')).toEqual([]);
+    expect(registros.filter((registro) => registro.nivel === 'error')).toHaveLength(1); // el aviso de configuración
+    const peticion = registros.find((registro) => registro.ruta === '/no-existe');
+    expect(peticion).toMatchObject({ servicio: 'ms-inventario', nivel: 'info', metodo: 'GET', estado: 404 });
+    expect(peticion.request_id).toBe(normal.headers['x-request-id']);
   });
 });

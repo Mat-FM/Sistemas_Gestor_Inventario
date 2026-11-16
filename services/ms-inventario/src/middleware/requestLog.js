@@ -1,6 +1,18 @@
 const { resolverRequestId, rutaDe } = require('../http/peticion');
 const { ejecutarEnPeticion } = require('../logger');
 
+// Lecturas que NO escriben la línea por petición (Ruling 11): la sonda de salud que Kubernetes repite cada pocos segundos y la
+// documentación. Los servicios hermanos hacen lo mismo (ms-reportes, ms-catalogo, ms-proveedores) para no llenar el registro de
+// ruido. Rutas EXACTAS y solo GET/HEAD: un POST a /health o un /docs/otra-cosa (que da 404) siguen dejando su línea, y los
+// errores de /health (503) los registra su propio handler, no esta línea. Se ignora una barra final (`/health/`).
+const RUTAS_SIN_REGISTRO = new Set(['/health', '/docs', '/docs/openapi.yaml']);
+const METODOS_SIN_REGISTRO = new Set(['GET', 'HEAD']);
+
+function sinRegistro(metodo, ruta) {
+  const sinBarraFinal = ruta.length > 1 && ruta.endsWith('/') ? ruta.slice(0, -1) : ruta;
+  return METODOS_SIN_REGISTRO.has(metodo) && RUTAS_SIN_REGISTRO.has(sinBarraFinal);
+}
+
 /**
  * Primer middleware de la aplicación (RNF10): fija el request_id de la petición, lo devuelve en la cabecera X-Request-Id,
  * abre el contexto (AsyncLocalStorage) que el logger usa para etiquetar toda línea de la petición (D19) y, al terminar la
@@ -19,7 +31,11 @@ function crearRequestLog({ logger }) {
 
     res.setHeader('X-Request-Id', requestId);
 
+    // Una ruta sin registro conserva todo lo demás (identificador, contexto del logger): solo omite la línea final.
+    const omitir = sinRegistro(metodo, ruta);
+
     res.once('close', () => {
+      if (omitir) return;
       // El contexto de un listener de eventos no es fiable: el identificador se pasa explícito, capturado arriba.
       const registro = {
         request_id: requestId,
