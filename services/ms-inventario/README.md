@@ -117,6 +117,9 @@ un usuario no puede coincidir con una derivada.
   las filas ya aplicadas cuentan como `creados` sin volver a procesarse, pero reenviar las mismas filas con una clave
   **nueva** las suma otra vez (la idempotencia es por clave y posición, no por contenido).
 - **Los errores no se guardan:** tras un 409 o un 422, reintentar con la misma clave vuelve a ejecutar la operación.
+- **Una clave identifica un solo movimiento.** Como una repetición no mira el cuerpo, usar la misma clave para dos movimientos
+  distintos hace que el segundo no se registre y reciba el 200 del primero, **sin ningún error**. Quien registre varios movimientos
+  (por ejemplo, las líneas de una recepción) necesita una clave por movimiento.
 - Quien llama debe reenviar siempre el mismo `X-User-Id` y derivar la clave de forma determinista de su propia operación.
 
 ## Resiliencia (RNF18) y llamadas entre servicios
@@ -387,10 +390,24 @@ README no se desfase de las rutas, las variables y los scripts.
   en el clúster.
 - **`/saldos/bajo-umbral`** es solo para ADM y los servicios internos, y no aplica el alcance por bodega: devuelve totales de todas
   las bodegas. Es un arreglo plano, sin paginar.
-- **Recepción de un traslado:** puede fallar y dejar el traslado `EN_TRANSITO` con la mercancía fuera de todo saldo: 409
-  `BODEGA_INACTIVA` si la bodega de destino está inactiva (hasta reactivarla), 409 `CONFLICTO` si en el destino existe, o se
-  creó después del envío, un lote con ese código y otra fecha de vencimiento, y 422 si el saldo del destino superaría
-  2 147 483 647 unidades. Los errores no se guardan: se reintenta con la misma clave cuando se regularice.
+- **Recepción de un traslado:** puede fallar y dejar el traslado `EN_TRANSITO` con la mercancía fuera de todo saldo. Los errores
+  no se guardan: reintentar con la misma clave vuelve a ejecutar la recepción. Hay tres casos:
+  - 409 `BODEGA_INACTIVA`, si la bodega de destino está inactiva: se resuelve reactivándola y repitiendo la recepción con la
+    misma clave.
+  - 422, si el saldo del destino superaría 2 147 483 647 unidades: se resuelve bajando ese saldo.
+  - 409 `CONFLICTO`, si en el destino existe, o se creó después del envío, un lote con ese código y otra fecha de vencimiento.
+    **Ninguna operación de la API lo resuelve**: el código y la fecha de un lote no se pueden cambiar, los lotes no se borran y
+    vaciar el del destino no quita el conflicto. El traslado queda `EN_TRANSITO` y sus unidades fuera de todo saldo hasta que
+    alguien intervenga directamente en la base de datos. Se evita no creando en la bodega de destino un lote con el mismo código y
+    otra fecha (la creación del traslado ya rechaza el caso en que ese lote existe antes del envío).
+- **Sin devolución al origen:** no hay ninguna operación para devolver un traslado `EN_TRANSITO` a su bodega de origen. Es una
+  limitación conocida; la salida natural sería `POST /traslados/{id}/devolucion`, pendiente de decisión.
+- **Bodega inactivada en pleno movimiento:** la comprobación de que la bodega está activa se hace sin bloquear su fila, así que
+  puede inactivarse entre la comprobación y el movimiento: uno que ya empezó (por ejemplo, esperando el saldo que tiene otra
+  transacción) puede completarse sobre una bodega que acaba de inactivarse. No rompe ninguna invariante de saldos: equivale a que
+  el movimiento hubiera ocurrido justo antes de inactivarla. Se decidió no bloquear la bodega (`FOR SHARE`) porque podría cerrar un
+  ciclo de esperas con el orden de bloqueo de los traslados (saldo y luego bodega); véase `D12` en
+  [`DECISIONES.md`](DECISIONES.md).
 - **Conteos:** la aprobación ajusta con la diferencia guardada al registrar lo contado, no contra el saldo del momento de
   aprobar: si hubo movimientos entre ambos, el saldo queda en el actual más la diferencia. Las líneas que nunca se contaron se
   ignoran.
@@ -437,9 +454,19 @@ hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
 - Los listados llevan `meta.total` exacto y los recorre pidiendo `por_pagina=100`; para el kardex, filtrar por fecha.
 
 **ms-compras**
-- Registra sus entradas y devoluciones con `POST /movimientos` (`ENTRADA_COMPRA` y `DEVOLUCION_PROVEEDOR`). Debe derivar la
-  `Idempotency-Key` de forma determinista de la recepción (la misma recepción, la misma clave) y reenviar **siempre el
-  `X-User-Id` original**: con otro usuario, la clave no se reconoce como repetición y se duplicaría el movimiento.
+- Registra sus entradas y devoluciones con `POST /movimientos` (`ENTRADA_COMPRA` y `DEVOLUCION_PROVEEDOR`), **un movimiento por
+  cada línea** de la recepción o de la devolución. Cada línea necesita **su propia `Idempotency-Key`**, derivada de forma
+  determinista de la recepción y de la posición de la línea (por ejemplo `rec-<id_recepcion>-<n>`: `rec-77-1`, `rec-77-2`…; sin
+  `#` y de 200 caracteres como máximo), y debe reenviar **siempre el `X-User-Id` original**: con otro usuario, la clave no se
+  reconoce como repetición y se duplicaría el movimiento.
+- **No use una sola clave para toda la recepción.** Una repetición no mira el cuerpo: con la clave `recepcion-77` en tres líneas,
+  la primera da 201 y las otras dos dan 200 con el movimiento de la primera. Esas dos líneas **no se registran y no hay ningún
+  error**.
+- Distinga el 201 (movimiento nuevo) del 200 (repetición). Un 200 cuyo `id_producto` o `cantidad` no son los de la línea enviada
+  significa que la clave ya se usó para otra línea: debe tratarlo como un error propio, no como un éxito.
+- Las líneas **no son atómicas entre sí**: cada una es su propia petición. Si la tercera falla con 409 (por ejemplo
+  `STOCK_INSUFICIENTE` en una devolución), la primera y la segunda ya están aplicadas. Se reintenta la recepción completa con las
+  **mismas claves**: las líneas ya aplicadas responden 200 y solo se ejecutan las pendientes.
 - Además de los códigos de la Tabla 9, `POST /movimientos` puede responder 404 `NO_EXISTE` si el `id_lote` es de otra bodega o
   producto, y 409 `CONFLICTO` si el lote ya existe con otra `fecha_vencimiento`; con `lote`, `codigo_lote` y
   `fecha_vencimiento` son obligatorios.
@@ -449,6 +476,12 @@ hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
   estricto (un lote que vence ese día no entra) y los lotes sin fecha nunca entran. Los parámetros que el servicio no conoce se
   ignoran.
 - `GET /saldos/bajo-umbral`, sin paginar.
+- Recibe de este servicio `POST /internas/notificaciones` (`STOCK_BAJO`, con `id_producto` e `id_bodega`) **tras cada movimiento
+  mientras el total del producto siga por debajo del mínimo** (`D13`): también tras una `ENTRADA` que sube el stock sin alcanzar
+  el mínimo y tras cada `AJUSTE` de la aprobación de un conteo. No avisa tras un traslado ni en la carga inicial, ni en la
+  repetición (200) de un movimiento. El aviso se envía sin reintentos y sin esperar respuesta, así que puede perderse. **Debe
+  deduplicar** (por ejemplo, por `id_producto` e `id_bodega` mientras la alerta siga abierta): este servicio no recuerda qué avisó
+  antes.
 
 ## Pendiente
 

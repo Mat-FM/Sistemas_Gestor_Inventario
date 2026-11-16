@@ -7,6 +7,7 @@ const { TIPOS } = require('../src/domain/tipos');
 const { rutasDeclaradas } = require('../src/routes');
 const { MAX_FILAS_CARGA_INICIAL } = require('../src/services/cargaInicialService');
 const { MAX_LINEAS_CONTEO } = require('../src/services/conteoService');
+const { leerClaveIdempotencia } = require('../src/services/idempotencia');
 
 // Guarda estática del README: lo que el documento afirma sobre rutas, variables, scripts y archivos se contrasta con el propio
 // servicio (rutasDeclaradas, .env.example, package.json, openapi.yaml, el disco), de modo que un README desfasado hace fallar la
@@ -198,6 +199,76 @@ describe('lo que el README dice del servicio coincide con el servicio', () => {
     expect(texto).toContain(`como máximo ${MAX_LINEAS_CONTEO} líneas`);
     expect(texto).toContain(`${openapi().info['x-tamano-maximo-cuerpo-bytes']} bytes`);
     expect(texto).toContain('1048576 bytes');
+  });
+});
+
+describe('las guías para quien consume el servicio y los límites que reconocen', () => {
+  // Un trozo del README entre dos marcas, con los saltos de línea y las sangrías convertidos en un espacio.
+  function trozo(inicio, fin) {
+    const texto = readme();
+    const desde = texto.indexOf(inicio);
+    const hasta = texto.indexOf(fin, desde + 1);
+    if (desde < 0 || hasta < 0) throw new Error(`El README no tiene el trozo entre «${inicio}» y «${fin}»`);
+    return texto.slice(desde, hasta).replace(/\s+/g, ' ');
+  }
+  const compras = () => trozo('**ms-compras**', '**ms-notificaciones**');
+
+  it('ms-compras: pide una Idempotency-Key POR LÍNEA, con ejemplos que el servicio acepta, y no promete una clave por recepción', () => {
+    const guia = compras();
+    expect(guia).toContain('un movimiento por cada línea');
+    expect(guia).toContain('su propia `Idempotency-Key`');
+    expect(guia).toContain('rec-<id_recepcion>-<n>');
+    expect(guia).toContain('No use una sola clave para toda la recepción');
+    expect(guia).not.toMatch(/la misma recepción, la misma clave/);
+    // Los ejemplos de clave del README son válidos tal cual y distintos entre sí (una clave por línea).
+    const ejemplos = [...guia.matchAll(/`(rec-\d+-\d+)`/g)].map((m) => m[1]);
+    expect(ejemplos.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(ejemplos).size).toBe(ejemplos.length);
+    for (const ejemplo of ejemplos) expect(leerClaveIdempotencia(ejemplo)).toBe(ejemplo);
+    expect(leerClaveIdempotencia('rec-<id_recepcion>-<n>'.replace('<id_recepcion>', '77').replace('<n>', '3'))).toBe('rec-77-3');
+  });
+
+  it('ms-compras: distingue 201 de 200, trata un 200 con otro producto o cantidad como error y avisa de que las líneas no son atómicas', () => {
+    const guia = compras();
+    expect(guia).toMatch(/Distinga el 201 \(movimiento nuevo\) del 200 \(repetición\)/);
+    expect(guia).toMatch(/200 cuyo `id_producto` o `cantidad` no son los de la línea enviada/);
+    expect(guia).toContain('no son atómicas entre sí');
+    expect(guia).toContain('**mismas claves**');
+  });
+
+  it('Idempotencia: dice que una clave identifica un solo movimiento (el segundo no se registra y no hay error)', () => {
+    const texto = trozo('## Idempotencia (RNF17)', '## Resiliencia');
+    expect(texto).toContain('Una clave identifica un solo movimiento.');
+    expect(texto).toContain('sin ningún error');
+  });
+
+  it('Límites: la recepción de un traslado NO promete «regularizar» un lote; dice que exige intervenir en la base y qué caso sí se resuelve', () => {
+    const limites = trozo('## Límites y limitaciones conocidas', '## Seguridad de red');
+    expect(limites).not.toMatch(/regulari[cz]/i);
+    expect(limites).toMatch(/BODEGA_INACTIVA`, si la bodega de destino está inactiva: se resuelve reactivándola y repitiendo la recepción con la misma clave/);
+    expect(limites).toContain('Ninguna operación de la API lo resuelve');
+    expect(limites).toContain('intervenga directamente en la base de datos');
+    expect(limites).toContain('no creando en la bodega de destino un lote con el mismo código y otra fecha');
+  });
+
+  it('Límites: no hay devolución al origen (POST /traslados/{id}/devolucion, pendiente) y la bodega puede inactivarse entre la comprobación y el movimiento (D12)', () => {
+    const limites = trozo('## Límites y limitaciones conocidas', '## Seguridad de red');
+    expect(limites).toContain('`POST /traslados/{id}/devolucion`, pendiente de decisión');
+    expect(limites).toContain('puede inactivarse entre la comprobación y el movimiento');
+    expect(limites).toContain('`FOR SHARE`');
+    expect(limites).toContain('`D12` en [`DECISIONES.md`](DECISIONES.md)');
+  });
+
+  it('el OpenAPI tampoco promete regularizar nada: ni en la recepción ni en ninguna otra descripción', () => {
+    expect(leerTexto('openapi.yaml')).not.toMatch(/regulari[cz]/i);
+  });
+
+  it('ms-notificaciones: avisa tras CADA movimiento mientras siga bajo el mínimo (también una entrada que no lo alcanza) y debe deduplicar (D13)', () => {
+    const guia = trozo('**ms-notificaciones**', '## Pendiente');
+    expect(guia).toContain('POST /internas/notificaciones');
+    expect(guia).toContain('tras cada movimiento mientras el total del producto siga por debajo del mínimo');
+    expect(guia).toContain('una `ENTRADA` que sube el stock sin alcanzar el mínimo');
+    expect(guia).toContain('Debe deduplicar');
   });
 });
 

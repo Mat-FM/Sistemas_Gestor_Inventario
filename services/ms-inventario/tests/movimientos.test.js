@@ -566,6 +566,73 @@ describe('POST /movimientos: Idempotency-Key (RNF17, D7, D25)', () => {
   });
 });
 
+// La guía de ms-compras del README: una recepción tiene varias líneas y cada una es un POST /movimientos. Como la repetición no
+// mira el cuerpo (D7), la clave identifica UN movimiento. Estas pruebas fijan lo que el README afirma, con las claves que escribe.
+describe('POST /movimientos: una recepción de varias líneas (guía de ms-compras en el README)', () => {
+  const linea = (idProducto, cantidad, extra = {}) => ({ tipo: 'ENTRADA_COMPRA', id_producto: idProducto, id_bodega: b1, cantidad, ...extra });
+  // Una función: la bodega (b1) se crea en el beforeEach, no al definir el bloque.
+  const lineasDeLaRecepcion = () => [linea(10, 5), linea(11, 7), linea(12, 9)];
+  const porLinea = (n) => `rec-77-${n}`;
+  const enviar = async (lineas, clave) => {
+    const respuestas = [];
+    for (const [posicion, cuerpo] of lineas.entries()) respuestas.push(await post(cuerpo, ADM, clave(posicion + 1)));
+    return respuestas;
+  };
+  const saldos = async () => Promise.all([10, 11, 12].map((idProducto) => saldoDe(idProducto)));
+
+  it('UNA clave para toda la recepción (recepcion-77): 201, 200, 200; solo entra el primer producto y no hay ningún error', async () => {
+    const respuestas = await enviar(lineasDeLaRecepcion(), () => 'recepcion-77');
+    expect(respuestas.map((res) => res.status)).toEqual([201, 200, 200]);
+    // Las líneas 2 y 3 reciben el movimiento de la línea 1, no el suyo: ni el producto ni la cantidad son los que enviaron.
+    expect(respuestas[1].body).toEqual(respuestas[0].body);
+    expect(respuestas[2].body).toEqual(respuestas[0].body);
+    expect(respuestas[0].body).toMatchObject({ id_producto: 10, cantidad: 5 });
+    expect(await saldos()).toEqual([5, undefined, undefined]);
+    expect(await movimientos()).toHaveLength(1);
+  });
+
+  it('UNA clave POR LÍNEA (rec-77-1, rec-77-2, rec-77-3): 201 ×3 y los tres saldos', async () => {
+    const respuestas = await enviar(lineasDeLaRecepcion(), porLinea);
+    expect(respuestas.map((res) => res.status)).toEqual([201, 201, 201]);
+    expect(respuestas.map((res) => [res.body.id_producto, res.body.cantidad])).toEqual([[10, 5], [11, 7], [12, 9]]);
+    expect(await saldos()).toEqual([5, 7, 9]);
+    expect((await movimientos()).map((fila) => fila.clave_idempotencia)).toEqual(['7:mov:rec-77-1', '7:mov:rec-77-2', '7:mov:rec-77-3']);
+  });
+
+  it('reintentar la recepción completa con las MISMAS claves: 200 ×3 con los movimientos originales, sin tocar los saldos', async () => {
+    const primera = await enviar(lineasDeLaRecepcion(), porLinea);
+    const reintento = await enviar(lineasDeLaRecepcion(), porLinea);
+    expect(reintento.map((res) => res.status)).toEqual([200, 200, 200]);
+    expect(reintento.map((res) => res.body)).toEqual(primera.map((res) => res.body));
+    expect(await saldos()).toEqual([5, 7, 9]);
+    expect(await movimientos()).toHaveLength(3);
+  });
+
+  it('las líneas NO son atómicas: si la 3.ª falla con 409 la 1.ª y la 2.ª ya están aplicadas, y reintentar con las mismas claves da 200, 200 y 201', async () => {
+    const devolucion = linea(12, 4, { tipo: 'DEVOLUCION_PROVEEDOR' });
+    const lineas = [...lineasDeLaRecepcion().slice(0, 2), devolucion];
+    const primera = await enviar(lineas, porLinea);
+    expect(primera.map((res) => res.status)).toEqual([201, 201, 409]);
+    stockInsuficiente(primera[2], 0, 4);
+    expect(await saldos()).toEqual([5, 7, undefined]); // las dos primeras quedaron aplicadas
+    await crearSaldo(db, { idProducto: 12, idBodega: b1, cantidad: 10 }); // se repone el stock que faltaba
+    const reintento = await enviar(lineas, porLinea);
+    expect(reintento.map((res) => res.status)).toEqual([200, 200, 201]); // el error no se guardó: la 3.ª se ejecuta ahora
+    expect(reintento[0].body).toEqual(primera[0].body);
+    expect(reintento[1].body).toEqual(primera[1].body);
+    expect(await saldos()).toEqual([5, 7, 6]);
+    expect(await movimientos()).toHaveLength(3);
+  });
+
+  it('una clave de 200 caracteres sin «#» es válida y una con «#» o de 201 caracteres es 400 (el formato que pide el README)', async () => {
+    const larga = `rec-77-${'x'.repeat(193)}`;
+    expect(larga).toHaveLength(200);
+    expect((await post(lineasDeLaRecepcion()[0], ADM, larga)).status).toBe(201);
+    expect((await post(lineasDeLaRecepcion()[1], ADM, `${larga}x`)).status).toBe(400);
+    expect((await post(lineasDeLaRecepcion()[1], ADM, 'rec-77#2')).status).toBe(400);
+  });
+});
+
 describe('POST /movimientos: aviso de stock bajo (D13)', () => {
   const aviso = () => clients.notificaciones.notificarStockBajo;
   const salida = (cantidad, idBodega = b1) => ({ tipo: 'SALIDA', id_producto: 5, id_bodega: idBodega, cantidad });

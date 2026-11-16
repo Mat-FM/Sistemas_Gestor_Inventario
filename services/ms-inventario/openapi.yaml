@@ -85,8 +85,11 @@ info:
     En los movimientos, los traslados y las recepciones la repetición no mira el cuerpo, aunque sea otro. La clave se acota por **usuario y por operación**: otro usuario, o el mismo usuario en otra operación, no la
     reconoce como repetición (la misma clave sirve para un movimiento y para un traslado sin chocar; crear y recibir un
     traslado con la misma clave son dos operaciones distintas). Los errores no se guardan: tras un 409 o un 422 el
-    reintento con la misma clave se vuelve a ejecutar. Quien llama (p. ej. ms-compras) debe reenviar siempre el mismo
-    `X-User-Id` y derivar la clave de forma determinista de su operación.
+    reintento con la misma clave se vuelve a ejecutar. **Una clave identifica un solo movimiento:** como la repetición no mira el
+    cuerpo, usar la misma clave para dos movimientos distintos hace que el segundo no se registre y reciba el 200 del primero, sin
+    ningún error; una operación de varias líneas (p. ej. una recepción de ms-compras, que hace un `POST /movimientos` por línea)
+    necesita una clave por línea. Quien llama (p. ej. ms-compras) debe reenviar siempre el mismo `X-User-Id` y derivar cada clave
+    de forma determinista de su operación y de la posición de la línea.
 
     ## Resiliencia (RNF18) y servicios de los que depende
 
@@ -98,8 +101,10 @@ info:
       el suyo). Si no responde, o responde algo que el contrato no prevé (otro 4xx, una redirección o un producto distinto del
       pedido), la operación se rechaza con **503** `SERVICIO_NO_DISPONIBLE` y no cambia nada. Un 404 del catálogo es 404 aquí. Una repetición de una clave de idempotencia ya registrada no llama al catálogo.
     - **ms-notificaciones** (aviso de stock bajo, sin espera): tras confirmar un movimiento, si el total de las bodegas
-      queda por debajo del umbral del producto se avisa sin esperar la respuesta y sin reintentos. Un fallo del aviso solo
-      se anota en el registro: nunca cambia la respuesta ni impide el movimiento.
+      queda por debajo del umbral del producto se avisa sin esperar la respuesta y sin reintentos. Se avisa tras **cada**
+      movimiento mientras el total siga por debajo del mínimo, también tras una entrada que sube el stock sin alcanzarlo, así que
+      ms-notificaciones debe deduplicar los avisos. Un fallo del aviso solo se anota en el registro: nunca cambia la respuesta ni
+      impide el movimiento.
 
 servers:
   - url: /
@@ -515,10 +520,13 @@ paths:
 
         **Idempotencia (RNF17).** Con la misma clave del mismo usuario se devuelve el movimiento original con 200, aunque el
         cuerpo sea otro, **sin validar el cuerpo, sin permisos y sin llamar al catálogo**: un reintento tras un éxito da 200
-        aunque ms-catalogo esté caído.
+        aunque ms-catalogo esté caído. Por eso una clave sirve para **un solo movimiento**: si dos movimientos distintos usan la
+        misma, el segundo no se registra y recibe el 200 del primero, sin ningún error (una recepción de varias líneas necesita una
+        clave por línea).
 
         **Después de confirmar** se evalúa el umbral del producto (no tras traslados ni carga inicial): si el total de las
-        bodegas queda estrictamente por debajo, se avisa a ms-notificaciones sin esperarla. Eso nunca cambia el 201.
+        bodegas queda estrictamente por debajo, se avisa a ms-notificaciones sin esperarla, en cada movimiento mientras siga por
+        debajo (también en una entrada que no alcanza el mínimo). Eso nunca cambia el 201.
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
@@ -911,11 +919,14 @@ paths:
         **Una sola recepción.** Dos recepciones simultáneas con claves distintas: una gana y la otra recibe 409
         `TRASLADO_YA_RECIBIDO`; con la misma clave, la perdedora responde 200 con lo de la ganadora.
 
-        **La recepción puede fallar y el traslado sigue EN_TRANSITO**: la mercancía queda en tránsito hasta regularizarlo y volver a
-        enviar la recepción (los errores no se guardan: sirve la misma clave). Los casos son 409 `BODEGA_INACTIVA` si la bodega de
-        destino está inactiva (hasta reactivarla); 409 `CONFLICTO` si en el destino existe, o se creó después del envío, un lote
-        con ese código y **otra** fecha de vencimiento (el mensaje nombra el lote y las dos fechas); y 422 si el saldo del destino
-        superaría 2 147 483 647 unidades (límite irreal en la práctica).
+        **La recepción puede fallar y el traslado sigue EN_TRANSITO**, con la mercancía fuera de todo saldo (los errores no se
+        guardan: sirve la misma clave). Los casos son 409 `BODEGA_INACTIVA` si la bodega de destino está inactiva (se resuelve
+        reactivándola y repitiendo la recepción con la misma clave); 422 si el saldo del destino superaría 2 147 483 647 unidades
+        (límite irreal en la práctica); y 409 `CONFLICTO` si en el destino existe, o se creó después del envío, un lote con ese
+        código y **otra** fecha de vencimiento (el mensaje nombra el lote y las dos fechas). Este último caso **no tiene salida por
+        la API**: el código y la fecha de un lote no se pueden cambiar, los lotes no se borran y vaciar el del destino no quita el
+        conflicto, así que el traslado queda EN_TRANSITO hasta que alguien intervenga directamente en la base de datos. Se evita no
+        creando en el destino un lote con el mismo código y otra fecha. No hay una operación de devolución al origen.
 
         **Idempotencia.** La recepción tiene su **propia** clave (la de esta petición). Si ya se usó en una recepción de este
         mismo traslado, 200 con el traslado y el movimiento originales; si pertenece a la recepción de **otro** traslado, 409
