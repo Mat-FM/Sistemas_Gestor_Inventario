@@ -1,0 +1,21 @@
+# Lo que no debe entrar a la imagen: dependencias instaladas en el equipo, secretos locales, pruebas y archivos generados.
+# Las dependencias se instalan dentro de la imagen con `npm ci --omit=dev`, y el Dockerfile copia cada ruta por su nombre.
+#
+# Secretos y basura del sistema: en CUALQUIER carpeta (`**/`), no solo en la raíz. `COPY src ./src` y `COPY migrations ./migrations`
+# copian los directorios enteros, y un `src/.env`, un `src/.DS_Store` (macOS) o un `src/node_modules` entrarían en la imagen.
+**/node_modules
+**/.env
+**/.env.*
+**/.DS_Store
+**/*.log
+**/.git
+
+# Solo en la raíz de este directorio: los demás patrones se anclan a ella, así que `tests` es la carpeta de pruebas del servicio
+# y no excluye un `src/tests` si algún día existiera.
+tests
+coverage
+jest.config.js
+README.md
+DECISIONES.md
+Dockerfile
+.dockerignore
