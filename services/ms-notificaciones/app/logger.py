@@ -14,7 +14,7 @@ class _FormatoJson(logging.Formatter):
     def format(self, registro):
         linea = {
             "fecha": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "nivel": registro.levelname.lower(),
+            "nivel": "warn" if registro.levelno == logging.WARNING else registro.levelname.lower(),
             "servicio": _servicio,
             "mensaje": registro.getMessage(),
         }
