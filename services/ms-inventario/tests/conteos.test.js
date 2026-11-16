@@ -3,7 +3,9 @@ const supertest = require('supertest');
 const { createApp } = require('../src/app');
 const { construirConfigKnex } = require('../src/config/db');
 const { delta } = require('../src/domain/tipos');
+const bodegaRepository = require('../src/repositories/bodegaRepository');
 const conteoRepository = require('../src/repositories/conteoRepository');
+const conteoService = require('../src/services/conteoService');
 const { OPERACIONES, claveAlmacenada } = require('../src/services/idempotencia');
 const movimientoService = require('../src/services/movimientoService');
 const stockService = require('../src/services/stockService');
@@ -1006,5 +1008,75 @@ describe('POST /conteos/{id}/aprobacion: concurrencia (PostgreSQL real)', () => 
     } finally {
       await dbChico.destroy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// D33: un conteo tiene como máximo MAX_LINEAS_CONTEO (1 000) líneas
+// ---------------------------------------------------------------------------------------------------------------------------
+
+describe('D33: tope de líneas por conteo', () => {
+  const ids = (desde, cuantos) => Array.from({ length: cuantos }, (_, i) => desde + i);
+  // Siembra de una vez `cuantos` saldos de `cantidad` en b1 (productos 1..cuantos).
+  const sembrarSaldos = (cuantos, cantidad = 50) => db('saldos').insert(ids(1, cuantos).map((p) => ({ id_producto: p, id_bodega: b1, cantidad_disponible: cantidad })));
+
+  it('la constante es 1 000 y vive en conteoService', () => {
+    /* Un único sitio. */
+    expect(conteoService.MAX_LINEAS_CONTEO).toBe(1000);
+  });
+
+  it('ids_producto con 1 001 elementos → 422 sobre "ids_producto" SIN tocar la base (ni leer la bodega); con 1 000 → 201 con 1 000 líneas', async () => {
+    /* D33(a): la longitud se comprueba antes de validar elemento por elemento. */
+    const lectura = jest.spyOn(bodegaRepository, 'findById');
+    const res = await programar(cuerpoConteo({ ids_producto: [...ids(1, 1000), 'x'] }));
+    datosNoValidos(res, ['ids_producto']);
+    expect(lectura).not.toHaveBeenCalled();
+    expect(await db('conteos')).toEqual([]);
+    const control = await programar(cuerpoConteo({ ids_producto: ids(1, 1000) }));
+    expect(control.status).toBe(201);
+    expect(control.body.detalles).toHaveLength(1000);
+  });
+
+  it('sin ids_producto en una bodega con 1 001 productos con existencia → 422 que pide contar por partes, sin conteo ni líneas; con 1 000 → 201', async () => {
+    /* D33(b): la consulta de las líneas por omisión se corta en 1 001. */
+    await sembrarSaldos(1001);
+    const res = await programar({ id_bodega: b1, fecha_programada: '2026-11-20' });
+    datosNoValidos(res, ['ids_producto']);
+    expect(res.body.error.detalles[0].mensaje).toMatch(/por partes/);
+    expect(await db('conteos')).toEqual([]);
+    expect(await db('detalles_conteo')).toEqual([]);
+    await db('saldos').where({ id_producto: 1001 }).update({ cantidad_disponible: 0 });
+    const control = await programar({ id_bodega: b1, fecha_programada: '2026-11-20' });
+    expect(control.status).toBe(201);
+    expect(control.body.detalles).toHaveLength(1000);
+  });
+
+  it('PUT con 1 001 líneas → 422 sobre "detalles" sin leer el conteo ni cambiar nada', async () => {
+    /* D33(c): antes de tocar la base. */
+    await sembrarSaldos(1000);
+    const conteo = (await programar(cuerpoConteo({ ids_producto: ids(1, 1000) }))).body;
+    const antes = await foto();
+    const lectura = jest.spyOn(conteoRepository, 'findById');
+    const detalles = ids(1, 1001).map((p) => ({ id_producto: p, cantidad_contada: 1 }));
+    datosNoValidos(await registrar(conteo.id_conteo, detalles), ['detalles']);
+    expect(lectura).not.toHaveBeenCalled();
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('control: un conteo de 1 000 líneas se registra entero y se aprueba (con salidas simultáneas sobre los mismos saldos) sin 5xx ni 40P01', async () => {
+    /* D33: 1 000 exactas pasan; el tiempo se mide en el informe. */
+    await sembrarSaldos(1000);
+    const conteo = (await programar(cuerpoConteo({ ids_producto: ids(1, 1000) }))).body;
+    const contado = ids(1, 1000).map((p) => ({ id_producto: p, cantidad_contada: 50 + ((p % 3) - 1) }));
+    const enRev = await registrar(conteo.id_conteo, contado);
+    expect(enRev.status).toBe(200);
+    expect(enRev.body.detalles.filter((l) => l.diferencia !== 0)).toHaveLength(666);
+    const salidas = [7, 250, 500, 750, 998].map((p) => moverStock('SALIDA', p, 2));
+    const [aprobacion, ...resto] = await Promise.all([aprobar(conteo.id_conteo), ...salidas]);
+    expect(aprobacion.status).toBe(200);
+    expect(aprobacion.body.movimientos).toHaveLength(666);
+    expect(resto.map((r) => r.status)).toEqual(Array(5).fill(201));
+    expect(await saldoDe(7)).toBe(50 + 0 - 2);
+    expect(await saldoDe(500)).toBe(50 + 1 - 2);
   });
 });

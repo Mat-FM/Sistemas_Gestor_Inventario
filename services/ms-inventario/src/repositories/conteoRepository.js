@@ -35,19 +35,22 @@ async function insertarConteo(dbOrTrx, { idBodega, fechaProgramada }) {
  * Crea las líneas de un conteo con `cantidad_sistema` = el saldo de ese instante en la bodega del conteo (D11, D32(f)), en UNA
  * sentencia (INSERT … SELECT): todas las líneas ven la misma instantánea de los saldos. Lectura SIN bloqueo: es una foto, la
  * aprobación ajusta por la diferencia que se guarde al contar (D32(a)).
- * - `idsProducto` null: los productos con `cantidad_disponible > 0` en esa bodega, por id_producto.
+ * - `idsProducto` null: los productos con `cantidad_disponible > 0` en esa bodega, por id_producto, como mucho `limite` (D33: el
+ *   servicio pide el tope + 1 para saber si se pasa sin leer toda la bodega).
  * - `idsProducto` arreglo (sin repetidos, ya validado): una línea por id, en el ORDEN recibido; 0 si no hay saldo.
- * @param {{idConteo: number, idBodega: number, idsProducto: number[]|null}} datos
+ * @param {{idConteo: number, idBodega: number, idsProducto: number[]|null, limite?: number}} datos `limite` solo aplica sin
+ *   idsProducto (la lista ya llega acotada); por omisión, sin límite
  * @returns {Promise<number>} cuántas líneas creó (0 si la bodega no tiene existencias y no se pidió ninguna)
  */
-async function insertarDetalles(dbOrTrx, { idConteo, idBodega, idsProducto }) {
+async function insertarDetalles(dbOrTrx, { idConteo, idBodega, idsProducto, limite = null }) {
   const resultado = idsProducto === null
     ? await dbOrTrx.raw(`
         INSERT INTO detalles_conteo (id_conteo, id_producto, cantidad_sistema)
         SELECT ?, s.id_producto, s.cantidad_disponible
         FROM saldos s
         WHERE s.id_bodega = ? AND s.cantidad_disponible > 0
-        ORDER BY s.id_producto`, [idConteo, idBodega])
+        ORDER BY s.id_producto
+        LIMIT ?`, [idConteo, idBodega, limite])
     : await dbOrTrx.raw(`
         INSERT INTO detalles_conteo (id_conteo, id_producto, cantidad_sistema)
         SELECT ?, p.id_producto, COALESCE(s.cantidad_disponible, 0)

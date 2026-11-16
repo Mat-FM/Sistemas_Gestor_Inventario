@@ -22,6 +22,15 @@ const stockService = require('./stockService');
 const relojReal = () => new Date();
 
 /**
+ * Máximo de líneas de un conteo (D33). Aprobar bloquea a la vez los saldos de TODAS sus líneas: un conteo enorme (con 100 kB de
+ * cuerpo caben ~14 000 ids) dejaría media bodega sin poder moverse varios segundos. Más de esto se cuenta por partes.
+ */
+const MAX_LINEAS_CONTEO = 1000;
+
+// 422 de un conteo con demasiadas líneas, sobre `campo` (D33).
+const demasiadasLineas = (campo, mensaje) => e.datosNoValidos([{ campo, mensaje }]);
+
+/**
  * El día UTC (YYYY-MM-DD) del instante que da el reloj (D29: todos los servicios usan UTC). Un reloj que no devuelva un Date
  * válido es un error de programación: TypeError (un 500), nunca un 422 inventado.
  */
@@ -47,6 +56,10 @@ function leerIdsProducto(valor) {
   if (valor === undefined || valor === null) return null;
   if (!Array.isArray(valor) || valor.length === 0) {
     throw e.datosNoValidos([{ campo: 'ids_producto', mensaje: 'debe ser una lista no vacía de id_producto (omítala para contar todos los productos con existencia)' }]);
+  }
+  // D33: la longitud antes que cada elemento, para que una lista enorme no cueste nada.
+  if (valor.length > MAX_LINEAS_CONTEO) {
+    throw demasiadasLineas('ids_producto', `un conteo admite como máximo ${MAX_LINEAS_CONTEO} productos`);
   }
   const detalles = [];
   const vistos = new Set();
@@ -97,7 +110,11 @@ async function programar({ db, now }, { body, identity }) {
 
   return db.transaction(async (trx) => {
     const { id_conteo: idConteo } = await conteoRepository.insertarConteo(trx, { idBodega, fechaProgramada });
-    const lineas = await conteoRepository.insertarDetalles(trx, { idConteo, idBodega, idsProducto });
+    // Sin ids_producto la consulta se corta en MAX + 1 filas: basta para saber si se pasa del tope sin leer toda la bodega (D33).
+    const lineas = await conteoRepository.insertarDetalles(trx, { idConteo, idBodega, idsProducto, limite: MAX_LINEAS_CONTEO + 1 });
+    if (lineas > MAX_LINEAS_CONTEO) {
+      throw demasiadasLineas('ids_producto', `la bodega tiene más de ${MAX_LINEAS_CONTEO} productos con existencia: cuéntelos por partes indicando ids_producto (máximo ${MAX_LINEAS_CONTEO} por conteo)`);
+    }
     if (lineas === 0) {
       throw e.datosNoValidos([{ campo: 'ids_producto', mensaje: 'la bodega no tiene productos con existencia: indique los productos a contar' }]);
     }
@@ -138,6 +155,18 @@ async function listar({ db }, { estado, idBodega, limit, offset, identity }) {
 const estadoInvalido = (mensaje) => e.conflicto('CONTEO_ESTADO_INVALIDO', mensaje);
 
 /**
+ * D33: un PUT con más de MAX_LINEAS_CONTEO líneas es 422 sobre `detalles`. Se llama ANTES de leer el conteo (sin tocar la base:
+ * ningún conteo puede tener tantas líneas) y otra vez dentro de leerCuerpoDetalles. Un cuerpo que no es un objeto o sin
+ * arreglo se deja a leerCuerpoDetalles.
+ */
+function rechazarDemasiadosDetalles(cuerpo) {
+  const detalles = cuerpo !== null && typeof cuerpo === 'object' ? cuerpo.detalles : undefined;
+  if (Array.isArray(detalles) && detalles.length > MAX_LINEAS_CONTEO) {
+    throw demasiadasLineas('detalles', `un conteo tiene como máximo ${MAX_LINEAS_CONTEO} líneas`);
+  }
+}
+
+/**
  * Cuerpo de PUT /conteos/{id}/detalles: {detalles: [{id_producto, cantidad_contada}]} (Tabla 9, D32(b)). `detalles` es un
  * arreglo NO vacío; cada elemento, un objeto con `id_producto` (entero positivo) y `cantidad_contada` (entero ≥ 0, techo
  * INTEGER). Un id_producto repetido es 422 sobre la posición repetida. Informa todos los problemas a la vez
@@ -149,6 +178,7 @@ function leerCuerpoDetalles(cuerpo) {
   if (!Array.isArray(detalles) || detalles.length === 0) {
     throw e.datosNoValidos([{ campo: 'detalles', mensaje: 'debe ser una lista no vacía de { id_producto, cantidad_contada }' }]);
   }
+  rechazarDemasiadosDetalles(cuerpo);
   const errores = [];
   const vistos = new Set();
   const lineas = detalles.map((linea, posicion) => {
@@ -172,7 +202,8 @@ function leerCuerpoDetalles(cuerpo) {
 /**
  * Registra lo contado (PUT /conteos/{id}/detalles). Orden (cada paso decide antes que el siguiente):
  * 1. requireUser: sin X-User-Id → 401 (D8, D22). 2. {id} de la ruta inválido → 404.
- * 3. Un operador sin bodega asignada → 403 antes de tocar la base. 4. Conteo inexistente → 404.
+ * 3. Un operador sin bodega asignada → 403 antes de tocar la base; más de MAX_LINEAS_CONTEO líneas → 422 (D33), también antes.
+ * 4. Conteo inexistente → 404.
  * 5. Un operador de otra bodega → 403 (scopeBodega sobre la bodega DEL CONTEO, D32(h)). 6. Cuerpo → 422.
  * 7. Transacción: bloquea la fila del conteo (FOR UPDATE) ANTES de mirar el estado (una aprobación simultánea se pone en fila y
  *    este PUT ve APROBADO → 409 CONTEO_ESTADO_INVALIDO); un producto que no está en el conteo → 422 sobre su posición (nada
@@ -188,6 +219,7 @@ async function registrarDetalles({ db }, { idConteo, body, identity }) {
   requireUser(identity);
   const id = leerIdConteo(idConteo);
   scopeBodega(identity);
+  rechazarDemasiadosDetalles(body);
   const actual = await conteoRepository.findById(db, id);
   if (!actual) throw conteoNoExiste();
   scopeBodega(identity, actual.id_bodega);
@@ -338,4 +370,4 @@ function crearConteoService(deps = {}) {
   };
 }
 
-module.exports = { programar, registrarDetalles, aprobar, obtener, listar, crearConteoService };
+module.exports = { MAX_LINEAS_CONTEO, programar, registrarDetalles, aprobar, obtener, listar, crearConteoService };
