@@ -238,7 +238,7 @@ describe('el Dockerfile', () => {
     for (const origen of origenes) expect(fs.existsSync(path.join(RAIZ, origen))).toBe(true);
     for (const necesario of ['package.json', 'package-lock.json', 'src', 'migrations', 'knexfile.js', 'openapi.yaml']) expect(origenes).toContain(necesario);
     // lo que NO va en la imagen
-    for (const sobrante of ['tests', 'coverage', 'node_modules', 'README.md', 'jest.config.js', '.env', '.env.example']) expect(origenes).not.toContain(sobrante);
+    for (const sobrante of ['tests', 'coverage', 'node_modules', 'README.md', 'DECISIONES.md', 'jest.config.js', '.env', '.env.example']) expect(origenes).not.toContain(sobrante);
     for (const origen of origenes) {
       expect(origen).not.toMatch(/^(\.|\.\/|\/|\*+|\.\/\*+)$/); // ni `COPY . .` ni `COPY * .`: copiar a ciegas metería el .env
       expect(origen).not.toMatch(/(^|\/)\.env/);
@@ -270,6 +270,15 @@ describe('.dockerignore', () => {
     for (const ruta of ['.env', '.env.local', '.env.production', 'node_modules', 'node_modules/express/package.json', 'tests', 'tests/dockerfile.test.js', 'coverage', 'coverage/lcov.info']) {
       expect({ ruta, ignorada: estaIgnorada(ruta, patrones) }).toEqual({ ruta, ignorada: true });
     }
+  });
+
+  it('deja fuera la documentación que el servicio no lee en ejecución (README.md y DECISIONES.md), pero no la de otra carpeta', () => {
+    const patrones = patronesDeIgnore();
+    for (const ruta of ['README.md', 'DECISIONES.md']) {
+      expect(fs.existsSync(path.join(RAIZ, ruta))).toBe(true); // control: el archivo existe, así que la exclusión no es de un fantasma
+      expect({ ruta, ignorada: estaIgnorada(ruta, patrones) }).toEqual({ ruta, ignorada: true });
+    }
+    expect(estaIgnorada('src/DECISIONES.md', patrones)).toBe(false);
   });
 
   it('secretos y basura se excluyen en CUALQUIER carpeta, no solo en la raíz: COPY src copia el directorio entero (src/.env, src/.DS_Store, src/node_modules…)', () => {

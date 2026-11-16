@@ -168,6 +168,8 @@ pasa por un único motor (`stockService.aplicarMovimiento`).
 | `migrations/` | Migraciones de Knex; `knexfile.js` las configura |
 | `tests/` | Pruebas de Jest y Supertest, con sus ayudas en `tests/helpers/` |
 
+Las decisiones de diseño que citan los comentarios (`D1` a `D34`, `Ruling n`) están en [`DECISIONES.md`](DECISIONES.md).
+
 ## Datos
 
 Base propia `inventario_db` en PostgreSQL 16 (RNF02): ningún otro servicio la ve. No hay claves foráneas hacia otros servicios:

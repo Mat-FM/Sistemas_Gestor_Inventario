@@ -16,5 +16,6 @@ tests
 coverage
 jest.config.js
 README.md
+DECISIONES.md
 Dockerfile
 .dockerignore
