@@ -92,6 +92,11 @@ services:
       - "127.0.0.1:${NOTIFICACIONES_DB_PORT:-5435}:5432"
     volumes:
       - db-ms-notificaciones:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICACIONES_DB_USER:-notificaciones} -d ${NOTIFICACIONES_DB_NAME:-notificaciones_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-reportes:
     <<: *postgres
@@ -122,6 +127,30 @@ services:
       - "127.0.0.1:${COMPRAS_PORT:-3002}:3000"
     depends_on:
       db-ms-compras:
+        condition: service_healthy
+
+  ms-notificaciones:
+    build: ./services/ms-notificaciones
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-ms-notificaciones
+      DB_PORT: "5432"
+      DB_NAME: ${NOTIFICACIONES_DB_NAME:-notificaciones_db}
+      DB_USER: ${NOTIFICACIONES_DB_USER:-notificaciones}
+      DB_PASSWORD: ${NOTIFICACIONES_DB_PASSWORD:-change_me}
+      # Dirección real de ms-inventario en la red de Compose (la misma del clúster, RNF14).
+      # Mientras ms-inventario no esté levantado, la revisión diaria solo registra el fallo.
+      MS_INVENTARIO_URL: ${NOTIFICACIONES_INVENTARIO_URL:-http://ms-inventario:3000}
+      # Servidor de correo externo; sin SMTP_HOST las alertas solo se ven en la interfaz.
+      SMTP_HOST: ${NOTIFICACIONES_SMTP_HOST:-}
+      SMTP_PORT: ${NOTIFICACIONES_SMTP_PORT:-587}
+      SMTP_USER: ${NOTIFICACIONES_SMTP_USER:-}
+      SMTP_PASSWORD: ${NOTIFICACIONES_SMTP_PASSWORD:-}
+      MAIL_FROM: ${NOTIFICACIONES_MAIL_FROM:-}
+    ports:
+      - "127.0.0.1:${NOTIFICACIONES_PORT:-5001}:5000"
+    depends_on:
+      db-ms-notificaciones:
         condition: service_healthy
 
 volumes:
