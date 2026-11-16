@@ -20,6 +20,9 @@ const config = {
     user: process.env.DB_USER || 'compras',
     password: process.env.DB_PASSWORD || 'change_me',
     max: entero('DB_POOL_MAX', 10),
+    // Si el pool está lleno, una petición espera como máximo esto por una conexión y luego responde 503,
+    // en vez de esperar para siempre y dejar el servicio colgado.
+    connectionTimeoutMillis: entero('DB_POOL_TIMEOUT_MS', 5000),
   },
 
   servicios: {
