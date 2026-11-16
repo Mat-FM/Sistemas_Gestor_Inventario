@@ -191,6 +191,42 @@ describe('iniciar (arranque con captura de errores)', () => {
     ]);
   });
 
+  it('varios errores seguidos del servidor (EMFILE en cada conexión) se atienden UNA sola vez: una salida con 1, el pool suelto una vez, un solo registro y ningún error que vuelva a lanzar', async () => {
+    const nuevos = vigilarSenales();
+    const log = loggerEspia();
+    const salidas = [];
+    let arrancado;
+    const salida = new Promise((resolver) => {
+      arrancado = iniciar(entornoDePrueba(), log, (codigo) => {
+        salidas.push(codigo);
+        resolver(codigo);
+      });
+    });
+    cerrar.push(async () => {
+      if (arrancado.server.listening) await new Promise((resolver) => arrancado.server.close(resolver));
+      await arrancado.db.destroy().catch(() => {});
+    });
+    if (!arrancado.server.listening) await new Promise((resolver) => arrancado.server.once('listening', resolver));
+    const destruirPool = jest.spyOn(arrancado.db.client.pool, 'destroy'); // Knex lo llama una vez por cada db.destroy() mientras el pool existe
+    const emfile = (n) => Object.assign(new Error(`EMFILE ${n}`), { code: 'EMFILE' });
+
+    // Sin manejador para el segundo, Node lanzaría «Unhandled 'error' event» con su pila: emit() lanza si nadie escucha.
+    expect(() => {
+      arrancado.server.emit('error', emfile(1));
+      arrancado.server.emit('error', emfile(2));
+      arrancado.server.emit('error', emfile(3));
+    }).not.toThrow();
+    await expect(salida).resolves.toBe(1);
+    expect(() => arrancado.server.emit('error', emfile(4))).not.toThrow(); // ya con la salida pedida
+    await new Promise((resolver) => { setImmediate(resolver); });
+
+    expect(salidas).toEqual([1]); // una sola salida, no una por error
+    expect(destruirPool).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledTimes(1); // solo el primero: es la causa de que el servicio caiga
+    expect(log.error.mock.calls[0][0]).toMatchObject({ mensaje: 'Error del servidor', error: { nombre: 'Error', mensaje: 'EMFILE 1' } });
+    for (const senal of SENALES) expect(nuevos()[senal]).toHaveLength(0);
+  });
+
   it('D17 sigue igual: con variables obligatorias ausentes arranca (no sale) y /health responde 503', async () => {
     vigilarSenales();
     const log = loggerEspia();

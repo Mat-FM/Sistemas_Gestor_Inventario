@@ -54,7 +54,8 @@ function describirError(err) {
  * no un defecto: sin pila ni TypeError volcado por Node), y el proceso sale con código 1 para que Kubernetes lo reinicie y lo muestre.
  * Con variables obligatorias ausentes o URL inválidas NO es un error de arranque: el servicio escucha y /health responde 503 (D17).
  * Un fallo del servidor de red (puerto ocupado, EADDRINUSE; sin permiso, EACCES) llega después, como evento `error`, y recibe el
- * mismo trato: se registra, se suelta el pool y se sale con 1. Sin manejador Node lo volcaría como excepción no capturada.
+ * mismo trato: se registra, se suelta el pool y se sale con 1, una sola vez aunque lleguen varios errores seguidos. Sin manejador
+ * Node lo volcaría como excepción no capturada.
  * @param {NodeJS.ProcessEnv} env
  * @param {{info: Function, error: Function}} log
  * @param {(codigo: number) => void} salir termina el proceso (inyectable en las pruebas)
@@ -81,7 +82,13 @@ function iniciar(env = process.env, log = logger, salir = (codigo) => process.ex
 
   // Registrado antes de escuchar: el fallo de listen (EADDRINUSE…) se emite de forma asíncrona. Con el servidor roto ya no hay nada
   // que cerrar con SIGTERM: se quitan esos manejadores. El pool no abrió conexiones, pero se destruye igual antes de salir.
-  server.once('error', (err) => {
+  // El manejador es PERMANENTE (`on`, no `once`) y solo el primer error cuenta: un servidor sin conexiones libres emite un EMFILE
+  // por cada intento de aceptar, y un segundo `error` sin manejador volvería a lanzar «Unhandled 'error' event» con su pila, justo
+  // lo que este manejador evita. Los siguientes se ignoran: el primero es la causa y ya se registró.
+  let fallido = false;
+  server.on('error', (err) => {
+    if (fallido) return;
+    fallido = true;
     for (const [senal, alRecibirla] of senales) process.removeListener(senal, alRecibirla);
     log.error({ mensaje: server.listening ? 'Error del servidor' : 'No se pudo escuchar', puerto: config.puerto, error: describirError(err) });
     Promise.resolve()
