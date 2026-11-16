@@ -199,7 +199,7 @@ Toda la configuración viene del entorno; ninguna dirección ni credencial está
 | Variable | Obligatoria | Por defecto | Uso |
 | --- | --- | --- | --- |
 | `SERVICE_NAME` | No | — | Está en `.env.example`, pero el servicio no la lee: su nombre (`ms-inventario`) es fijo |
-| `PORT` | No | `3000` | Puerto HTTP |
+| `PORT` | No | `3000` | Puerto HTTP, entero de 1 a 65 535 (el 0 no vale: no habría un puerto conocido). En la imagen Docker ya vale 3000 |
 | `LOG_LEVEL` | No | — | Está en `.env.example`, pero el servicio no la lee: escribe siempre los registros `info` y `error` |
 | `DB_HOST` | Sí | — | Servidor de PostgreSQL |
 | `DB_PORT` | Sí | — | Puerto de PostgreSQL |
@@ -216,8 +216,12 @@ Toda la configuración viene del entorno; ninguna dirección ni credencial está
   **cada** llamada a `/health`, no solo al arrancar. `/health` es una sonda de vida: no consulta la base de datos (D17, RNF10).
   Si los manifiestos de `k8s/` la usaran como sonda de disponibilidad (*readiness*), un contenedor mal configurado quedaría
   fuera de tráfico; esa elección es de los manifiestos, no del servicio.
-- Un `CALL_TIMEOUT_MS` definido pero inválido (vacío, con decimales, fuera de rango) **impide arrancar**: el proceso escribe
-  un registro `ErrorDeConfiguracion` y sale con código 1. Si no está definido, vale 3000.
+- Un `PORT` o un `CALL_TIMEOUT_MS` definido pero inválido (vacío, con decimales, en notación científica o hexadecimal, o fuera
+  de rango) **impide arrancar**: el proceso escribe un registro `ErrorDeConfiguracion` y sale con código 1, sin pila. Si no
+  están definidos, valen 3000 y 3000. `knexfile.js` lee la misma configuración: con un `PORT` inválido también falla
+  `knex migrate:latest`.
+- Un fallo al escuchar (puerto ocupado, `EADDRINUSE`; sin permiso, `EACCES`) recibe el mismo trato: un registro
+  `No se pudo escuchar` con el puerto, el nombre y el mensaje del error, y salida con código 1.
 - `NODE_ENV` no figura en `.env.example`. Jest lo fija en `test`, y con `NODE_ENV=test` el servicio usa `TEST_DB_NAME` en lugar
   de `DB_NAME`, para que ninguna prueba toque la base de desarrollo.
 
@@ -248,6 +252,55 @@ npm start                                # http://127.0.0.1:3000/docs
   (umbrales, movimientos y traslados nuevos) responde 503.
 - Al recibir `SIGTERM` o `SIGINT` (Kubernetes al escalar hacia abajo) atiende las peticiones en curso, cierra las conexiones
   a la base y termina.
+
+## Docker (RNF03)
+
+La imagen parte de `node:22-slim` y arranca con `node src/server.js`, con un usuario sin privilegios (UID 10001). Lleva `src/`
+(con la página de `/docs`), `migrations/`, `knexfile.js`, `openapi.yaml` y solo las dependencias de producción; no lleva el
+`.env`, las pruebas ni la cobertura (`.dockerignore`): toda la configuración llega por variables de entorno (RNF14). Pesa
+unos 370 MB.
+
+Desde la raíz del repositorio, con la base del compose levantada:
+
+```bash
+docker compose up -d db-ms-inventario
+docker build -t ms-inventario services/ms-inventario
+```
+
+Dentro de la red del compose (`gestor-inventario_default`) la base se llama `db-ms-inventario` y escucha en el 5432 (no en el
+5433, que es el puerto publicado en el equipo). Las migraciones no se aplican solas al arrancar: se ejecutan una vez, antes de
+arrancar el servicio (con varias copias, una sola vez para todas):
+
+```bash
+docker run --rm --network gestor-inventario_default \
+  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD=change_me \
+  ms-inventario node_modules/.bin/knex migrate:latest
+
+docker run -d --name ms-inventario --network gestor-inventario_default -p 127.0.0.1:3000:3000 \
+  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD=change_me \
+  -e MS_CATALOGO_URL=http://ms-catalogo:8000 -e MS_NOTIFICACIONES_URL=http://ms-notificaciones:5000 \
+  ms-inventario
+```
+
+El servicio queda en `http://127.0.0.1:3000/docs` (documentación) y `http://127.0.0.1:3000/health`.
+
+- **Si el puerto 3000 del equipo está ocupado**, no lo publique: cambie solo el de la izquierda (`-p 127.0.0.1:<puerto-libre>:3000`).
+  Dentro del contenedor el servicio sigue en el 3000. Publique siempre en `127.0.0.1`, nunca en todas las interfaces: el
+  servicio no autentica a quien le llama (ver «Seguridad de red»). Con `-e PORT=3055` el servicio escucha en el 3055 dentro del
+  contenedor, y entonces es el de la derecha el que se cambia; el `HEALTHCHECK` sigue al `PORT`.
+- **ms-catalogo y ms-notificaciones** todavía no están en el compose. Con esas direcciones sin servicio detrás, `/health`
+  responde 200 (solo comprueba que las variables estén bien escritas) y lo que consulta al catálogo o avisa a notificaciones
+  responde 503; ver «Variables de entorno».
+- **`HEALTHCHECK`:** cada 30 s la imagen consulta `/health` con el propio Node (la imagen slim no trae `curl`) y marca el
+  contenedor como no sano (`docker inspect -f '{{.State.Health.Status}}' ms-inventario`) si responde 503. `/health` es una sonda
+  de vida: no consulta la base de datos, así que PostgreSQL caído no lo pone en `unhealthy`.
+- **Apagado ordenado:** `docker stop` envía `SIGTERM` y Node es el proceso principal de la imagen: atiende las peticiones en
+  curso, cierra las conexiones a la base y sale con código 0 (`docker inspect -f '{{.State.ExitCode}}' ms-inventario`).
+- **Si falta `openapi.yaml` o `src/docs/swagger-ui.html`**, el servicio no arranca: se leen al construirse la aplicación. Con el
+  `Dockerfile` del repositorio la falta se nota antes, porque `docker build` falla en el `COPY` («"/openapi.yaml": not found»); en
+  una imagen que se construyó sin ellos, el contenedor sale con código 1 y el registro `No se pudo iniciar el servicio` con la
+  ruta que falta, y el orquestador lo reiniciaría sin parar. No los excluya del `.dockerignore`: `tests/dockerfile.test.js`
+  comprueba que sigan dentro de la imagen.
 
 ## Registros (RNF10)
 
@@ -386,5 +439,4 @@ hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
 
 ## Pendiente
 
-- Dockerfile de la imagen del servicio (RNF03).
 - Manifiestos de Kubernetes, incluida la `NetworkPolicy`.
