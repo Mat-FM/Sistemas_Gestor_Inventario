@@ -27,19 +27,19 @@ beforeAll(() => {
 });
 afterAll(() => db.destroy());
 
-// La respuesta del servicio a un cuerpo ya leído puede ser cualquiera (404 antes de que exista la ruta, 400 o 422 después); lo
-// que se fija aquí es que el ANALIZADOR lo dejó pasar: ni 413 ni un 4xx del propio analizador.
-function pasoElAnalizador(res) {
-  expect(res.status).not.toBe(413);
-  expect(res.status).toBeLessThan(500);
-  if (res.status === 400) expect(res.body.error.mensaje).not.toMatch(/JSON|cuerpo/i);
+// El cuerpo de las pruebas es `{ relleno }`, que no es una carga ni un movimiento: si el ANALIZADOR lo dejó pasar, la respuesta es
+// la de la ruta, y es siempre un 422 DATOS_NO_VALIDOS (falta `filas`, o faltan los campos del movimiento). Un 413 del analizador,
+// un 400 de un JSON mal leído o un 500 de la ruta NO pasan.
+function llegoAlServicio(res) {
+  expect(res.status).toBe(422);
+  expect(res.body.error.codigo).toBe('DATOS_NO_VALIDOS');
 }
 
 describe('la carga inicial admite hasta 1 MB (D34(c))', () => {
   it('500 kB y exactamente 1 MiB pasan el analizador; 1 MiB + 1 byte → 413 PETICION_MAL_FORMADA', async () => {
     /* Control positivo antes del rechazo: el tope es `>` y no `>=`, y está en 1 MiB. */
-    pasoElAnalizador(await request.post(RUTA).set(ADM).send(cuerpoDe(500 * 1000)));
-    pasoElAnalizador(await request.post(RUTA).set(ADM).send(cuerpoDe(CARGA)));
+    llegoAlServicio(await request.post(RUTA).set(ADM).send(cuerpoDe(500 * 1000)));
+    llegoAlServicio(await request.post(RUTA).set(ADM).send(cuerpoDe(CARGA)));
     const res = await request.post(RUTA).set(ADM).send(cuerpoDe(CARGA + 1));
     esError(res, 413, 'PETICION_MAL_FORMADA');
     expect(res.body.error.mensaje).toBe('El cuerpo de la petición supera el tamaño máximo permitido');
@@ -48,14 +48,14 @@ describe('la carga inicial admite hasta 1 MB (D34(c))', () => {
   it('un cuerpo mayor de 100 kB y menor de 1 MB ya NO es 413 en esta ruta, y sí lo es en cualquier otra', async () => {
     /* La diferencia entre las dos rutas es lo único que cambió. */
     const cuerpo = cuerpoDe(GLOBAL + 1);
-    pasoElAnalizador(await request.post(RUTA).set(ADM).send(cuerpo));
+    llegoAlServicio(await request.post(RUTA).set(ADM).send(cuerpo));
     esError(await request.post('/movimientos').set(ADM).send(cuerpo), 413, 'PETICION_MAL_FORMADA');
   });
 
   it('las variantes de la misma ruta siguen la regla del enrutador de Express (barra final, mayúsculas): el analizador y la ruta coinciden', async () => {
     /* Con app.post(RUTA, …) el analizador usa el mismo emparejamiento que la ruta; con un `if (req.path === …)` a mano no. */
     for (const variante of [`${RUTA}/`, RUTA.toUpperCase()]) {
-      pasoElAnalizador(await request.post(variante).set(ADM).send(cuerpoDe(500 * 1000)));
+      llegoAlServicio(await request.post(variante).set(ADM).send(cuerpoDe(500 * 1000)));
     }
   });
 
@@ -92,7 +92,7 @@ describe('la carga inicial admite hasta 1 MB (D34(c))', () => {
 describe('el resto de las rutas conserva los 100 kB (D18)', () => {
   it('POST /movimientos: exactamente 100 KiB pasa el analizador y 101 KiB → 413 PETICION_MAL_FORMADA', async () => {
     /* Control positivo antes del rechazo; el analizador de 1 MB no se aplica a todas las rutas. */
-    pasoElAnalizador(await request.post('/movimientos').set(ADM).send(cuerpoDe(GLOBAL)));
+    llegoAlServicio(await request.post('/movimientos').set(ADM).send(cuerpoDe(GLOBAL)));
     const res = await request.post('/movimientos').set(ADM).send(cuerpoDe(101 * 1024));
     esError(res, 413, 'PETICION_MAL_FORMADA');
   });
@@ -111,14 +111,14 @@ describe('el resto de las rutas conserva los 100 kB (D18)', () => {
 });
 
 describe('la misma regla en el servidor real (createServer, HTTP de verdad)', () => {
-  it('500 kB y 1 MiB a la carga inicial no son 413; 1 MiB + 1 byte sí; POST /movimientos con 101 KiB sí', async () => {
+  it('500 kB y 1 MiB a la carga inicial llegan a la ruta (422 por falta de `filas`); 1 MiB + 1 byte da 413; POST /movimientos con 101 KiB también da 413', async () => {
     const env = { ...entornoValido(), NODE_ENV: 'test', TEST_DB_NAME: 'inventario_test', PORT: '3457' };
     const { server, db: dbReal } = createServer(env, { info() {}, error() {} });
     try {
       await new Promise((resolver) => server.listen(0, '127.0.0.1', resolver));
       const base = `http://127.0.0.1:${server.address().port}`;
       const enviar = (ruta, cuerpo) => fetch(`${base}${ruta}`, { method: 'POST', headers: ADM, body: cuerpo });
-      for (const bytes of [500 * 1000, CARGA]) expect((await enviar(RUTA, cuerpoDe(bytes))).status).not.toBe(413);
+      for (const bytes of [500 * 1000, CARGA]) expect((await enviar(RUTA, cuerpoDe(bytes))).status).toBe(422); // pasó el analizador y la ruta pidió `filas`
       expect((await enviar(RUTA, cuerpoDe(CARGA + 1))).status).toBe(413);
       expect((await enviar('/movimientos', cuerpoDe(101 * 1024))).status).toBe(413);
     } finally {

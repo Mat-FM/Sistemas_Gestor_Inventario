@@ -106,6 +106,19 @@ describe('cargaInicialService', () => {
       });
     });
 
+    it('un error que no es de negocio (un 40P01, un TypeError) con la relectura sana y SIN movimiento con la clave se relanza TAL CUAL: `cargar` rechaza con ese mismo objeto', async () => {
+      /* Control positivo antes del rechazo: con el motor real la misma fila se aplica. */
+      expect(await cargar({ db }, { filas: [FILA], claveIdempotencia: 'k-control', identity: IDENTIDAD })).toEqual({ creados: 1, rechazados: [] });
+      const deadlock = Object.assign(new Error('deadlock simulado'), { code: '40P01' });
+      const deCodigo = new TypeError('argumento imposible simulado');
+      for (const error of [deadlock, deCodigo]) {
+        jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(error);
+        await expect(cargar({ db }, { filas: [{ ...FILA, id_producto: 6 }], claveIdempotencia: 'k-40p01', identity: IDENTIDAD })).rejects.toBe(error);
+        jest.restoreAllMocks();
+      }
+      expect(await db('movimientos').count({ n: '*' })).toEqual([{ n: 1 }]); // solo el del control: nada se aplicó a medias
+    });
+
     it('un motivo de rechazo es texto legible: nunca el mensaje de PostgreSQL, el objeto del error ni una traza', async () => {
       const resultado = await cargar({ db }, { filas: [{ ...FILA, id_bodega: 404 }, { ...FILA, cantidad: 2147483648 }, 'x'], claveIdempotencia: 'k-motivos', identity: IDENTIDAD });
       expect(resultado.rechazados).toHaveLength(3);

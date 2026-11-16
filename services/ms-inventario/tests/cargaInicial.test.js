@@ -326,6 +326,25 @@ describe('POST /internas/saldos/carga-inicial: filas inválidas → rechazados (
     expect(res.text).not.toMatch(/violates|constraint|PostgreSQL|duplicate key|\.js:/i); // nunca un mensaje de la base ni una traza
   });
 
+  it.each([
+    ['codigo_lote vacío', '', 'codigo_lote: no puede estar vacío'],
+    ['codigo_lote solo espacios', '   ', 'codigo_lote: no puede estar vacío'],
+    ['codigo_lote el número 0', 0, 'codigo_lote: debe ser un texto'],
+    ['codigo_lote el número 7', 7, 'codigo_lote: debe ser un texto'],
+  ])('%s con una fecha_vencimiento VÁLIDA → UN solo motivo, el de codigo_lote: la fecha no se rechaza por «falta de lote»', async (_descripcion, codigoInvalido, motivo) => {
+    /* Un codigo_lote PRESENTE pero inválido no cuenta como ausente: la fecha no se rechaza además por «solo se admite junto con
+       codigo_lote». Control positivo: con un codigo_lote válido, la misma fecha se admite. */
+    const control = await cargar([fila({ id_producto: 1, codigo_lote: 'L-OK', fecha_vencimiento: '2027-01-31' })]);
+    expect(control.body).toEqual({ creados: 1, rechazados: [] });
+    const res = await cargar([fila({ id_producto: 2, codigo_lote: codigoInvalido, fecha_vencimiento: '2027-01-31' })]);
+    expect(res.status).toBe(200);
+    expect(res.body.creados).toBe(0);
+    expect(res.body.rechazados).toHaveLength(1);
+    expect(res.body.rechazados[0].fila).toBe(1);
+    expect(res.body.rechazados[0].motivo).toBe(motivo);
+    expect(res.text).not.toMatch(/fecha_vencimiento/);
+  });
+
   it('el límite exacto de cada campo es válido: cantidad 2147483647, id_producto e id_bodega 1, codigo_lote de 50 caracteres', async () => {
     /* Controles positivos de los casos de arriba (el techo del INTEGER y el largo exacto de la columna). */
     const res = await cargar([fila({ id_producto: 1, cantidad: MAXIMO }), fila({ id_producto: 2, codigo_lote: 'x'.repeat(50), fecha_vencimiento: '2027-02-28' })]);
@@ -739,7 +758,7 @@ describe('POST /internas/saldos/carga-inicial: fallos a mitad de la carga', () =
     expect(await discrepanciasDeKardex()).toEqual([]);
   });
 
-  it('un fallo que no es de negocio cuando NO hay movimiento con la clave relanza el MISMO error (no lo oculta la relectura)', async () => {
+  it('un fallo que no es de negocio (un 40P01) cuando NO hay movimiento con la clave se propaga como 500 ERROR_INTERNO genérico (que se relance el MISMO error lo fija cargaInicialCapas.test.js)', async () => {
     jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(Object.assign(new Error('deadlock simulado'), { code: '40P01' }));
     const res = await cargar(cinco(), { clave: 'k-40p01' });
     expect(res.status).toBe(500);
