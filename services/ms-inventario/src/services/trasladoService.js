@@ -302,13 +302,13 @@ async function recibir({ db }, { idTraslado, body, claveIdempotencia, identity }
  * (scopeBodega, D31(g)): sin `idBodega` se usa la suya y con otra es 403 (también sin bodega asignada); los demás roles y las
  * llamadas internas (sin X-User-Id, D8) ven todos. `total` es el del filtro EFECTIVO: no revela cuántos traslados hay entre otras
  * bodegas. Una lectura: no llama a otros servicios.
- * @param {object} db instancia de Knex
- * @param {{estado?: string, idBodega?: number, limit: number, offset: number}} filtros ya validados por el controlador
- * @param {object} identity
+ * @param {{db: object}} deps
+ * @param {{estado?: string, idBodega?: number, limit: number, offset: number, identity: object}} consulta ya validada por el
+ *   controlador; como en movimientos y conteos, la identidad va dentro de la consulta
  * @returns {Promise<{filas: Traslado[], total: number}>}
  * @throws 403 SIN_PERMISO
  */
-async function listar(db, { estado, idBodega, limit, offset }, identity) {
+async function listar({ db }, { estado, idBodega, limit, offset, identity }) {
   const bodegaEfectiva = scopeBodega(identity, idBodega);
   return trasladoRepository.listar(db, { estado, idBodega: bodegaEfectiva, limit, offset });
 }
@@ -318,7 +318,7 @@ function crearTrasladoService(deps = {}) {
   return {
     crear: (peticion) => crear(deps, peticion),
     recibir: (peticion) => recibir(deps, peticion),
-    listar: (filtros, identity) => listar(deps.db, filtros, identity),
+    listar: (consulta) => listar(deps, consulta),
   };
 }
 

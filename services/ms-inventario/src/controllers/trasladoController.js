@@ -29,7 +29,9 @@ function crearTrasladoController({ trasladoService }) {
     // GET /traslados?estado&id_bodega&pagina&por_pagina → 200 {datos, meta}, del envío más reciente al más antiguo
     async listar(req, res) {
       const { paginacion, ...filtros } = leerFiltros(req.query);
-      const { filas, total } = await trasladoService.listar({ ...filtros, limit: paginacion.porPagina, offset: paginacion.offset }, req.identity);
+      const { filas, total } = await trasladoService.listar({
+        ...filtros, limit: paginacion.porPagina, offset: paginacion.offset, identity: req.identity,
+      });
       res.json(envelope(filas, { pagina: paginacion.pagina, porPagina: paginacion.porPagina, total }));
     },
 

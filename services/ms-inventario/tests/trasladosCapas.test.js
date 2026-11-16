@@ -180,17 +180,17 @@ describe('trasladoService.listar', () => {
   it('un operador sin id_bodega recibe el filtro de SU bodega; con otra → 403 SIN consultar el repositorio', async () => {
     /* El alcance se decide en el servicio. */
     const espia = jest.spyOn(trasladoRepository, 'listar').mockResolvedValue({ filas: [], total: 0 });
-    await trasladoService.listar(db, FILTROS, OPERADOR);
+    await trasladoService.listar({ db }, { ...FILTROS, identity: OPERADOR });
     expect(espia).toHaveBeenCalledWith(db, { ...FILTROS, idBodega: 2 });
-    await expect(trasladoService.listar(db, { ...FILTROS, idBodega: 3 }, OPERADOR)).rejects.toMatchObject({ status: 403 });
-    await expect(trasladoService.listar(db, FILTROS, { ...OPERADOR, idBodega: null })).rejects.toMatchObject({ status: 403 });
+    await expect(trasladoService.listar({ db }, { ...FILTROS, idBodega: 3, identity: OPERADOR })).rejects.toMatchObject({ status: 403 });
+    await expect(trasladoService.listar({ db }, { ...FILTROS, identity: { ...OPERADOR, idBodega: null } })).rejects.toMatchObject({ status: 403 });
     expect(espia).toHaveBeenCalledTimes(1);
   });
 
   it('una llamada interna pasa el filtro tal cual; crearTrasladoService.listar usa la db de sus dependencias', async () => {
     /* D8. */
     const espia = jest.spyOn(trasladoRepository, 'listar').mockResolvedValue({ filas: [], total: 0 });
-    expect(await trasladoService.crearTrasladoService({ db }).listar(FILTROS, INTERNA)).toEqual({ filas: [], total: 0 });
+    expect(await trasladoService.crearTrasladoService({ db }).listar({ ...FILTROS, identity: INTERNA })).toEqual({ filas: [], total: 0 });
     expect(espia).toHaveBeenCalledWith(db, { ...FILTROS, idBodega: undefined });
   });
 });
