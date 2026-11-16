@@ -99,7 +99,9 @@ function derivada(almacenada, sufijo) {
  * - Si no hay movimiento, relanza el MISMO objeto de error original (nunca uno nuevo): un 40P01, un 40001 o una conexión
  *   cortada no se ocultan, y un 23505 de la clave sin movimiento llega al manejador como 500 con su causa registrada. Si la
  *   relectura también falla, se relanza el error original.
- * La usan registrarMovimiento (clave `mov`) y las Tareas 11, 12 y 13 con su clave base o la derivada que elijan.
+ * La usan registrarMovimiento (clave `mov`) y los traslados (Tarea 11) con su clave base o la derivada que elijan. La carga inicial
+ * (Tarea 13) NO la usa: relee con movimientoRepository.findByClave porque, si la relectura falla, debe propagar ESE error y no el
+ * original (que aquí se relanza): un 4xx del motor clasificado sin haber podido comprobar la clave sería un rechazo falso (Ruling 61).
  * @param {object} db instancia de Knex (no la transacción)
  * @param {string} almacenada la clave tal como se guardó (claveAlmacenada o derivada)
  * @param {unknown} error el error con el que falló la transacción

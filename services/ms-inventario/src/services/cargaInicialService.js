@@ -2,7 +2,7 @@ const { AppError, e } = require('../errors');
 const { entero, fecha, texto, validarCampos } = require('../http/validate');
 const { requireUser } = require('../middleware/identity');
 const movimientoRepository = require('../repositories/movimientoRepository');
-const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia, resolverFallo } = require('./idempotencia');
+const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia } = require('./idempotencia');
 const stockService = require('./stockService');
 
 // Lógica de negocio de la carga inicial de saldos (RF16, D34; RNF13): POST /internas/saldos/carga-inicial, que solo llama
@@ -21,11 +21,14 @@ const stockService = require('./stockService');
 //   puede SOLAPARSE con la primera ejecución. Dos defensas, y ninguna depende del tiempo:
 //     1) antes de procesar, UNA consulta (clavesExistentes) dice cuáles de las claves de fila ya existen: esas filas ya están
 //        aplicadas, cuentan como `creados` y no se tocan ni se vuelven a validar;
-//     2) si una fila falla, ANTES de clasificar el error se relee su clave (resolverFallo, fuera de la transacción ya
-//        deshecha): si otra petición la aplicó entre medias (el 23505 de la clave, o cualquier rechazo del motor que dependa de lo
-//        que esa petición escribió, p. ej. un desborde porque ya sumó), la fila cuenta como `creados`. Solo si no hay movimiento se
-//        decide: un AppError 4xx es un rechazo de la fila; cualquier otro error se propaga (500) y el llamador reintenta con la
-//        misma clave sin duplicar nada, porque lo ya aplicado se reconoce por (1).
+//     2) si una fila falla, ANTES de clasificar el error se relee su clave con movimientoRepository.findByClave (fuera de la
+//        transacción ya deshecha; no con resolverFallo, que ante un fallo de la relectura relanza el error ORIGINAL): si otra
+//        petición la aplicó entre medias (el 23505 de la clave, o cualquier rechazo del motor que dependa de lo que esa petición
+//        escribió, p. ej. un desborde porque ya sumó), la fila cuenta como `creados`. Solo si la relectura SE HIZO y no hay
+//        movimiento se decide: un AppError 4xx es un rechazo de la fila; cualquier otro error se propaga (500). Si la propia
+//        relectura falla (se corta la conexión), se propaga ESE error (500 y el llamador reintenta con la misma clave sin
+//        duplicar nada, porque lo ya aplicado se reconoce por (1)): nunca se clasifica el error original cuando no se pudo
+//        comprobar si la fila existe, porque informar como «rechazada» una fila que sí se creó es un dato falso (Ruling 61).
 //   Una clave (usuario, operación, clave) identifica CADA FILA por su posición: la repetición con la misma clave no vuelve a
 //   leer el cuerpo de las filas ya aplicadas (D7).
 // - No consulta ms-catalogo (llamador interno de confianza: mil llamadas HTTP por carga serían inviables con el plazo de 3 s de
@@ -103,8 +106,10 @@ function motivoDelMotor(error) {
  * Aplica una fila válida en SU transacción. Dentro del callback solo se usa `trx` (con un pool pequeño, una conexión más ocupada
  * por la misma petición la dejaría sin conexiones). Lo llama por el objeto del módulo (stockService.aplicarMovimiento): las
  * pruebas lo sustituyen.
+ * Si la transacción falla, se relee la clave de la fila ANTES de clasificar el error (ver la cabecera del módulo, defensa 2).
  * @returns {Promise<{motivo?: string}>} `{}` si la fila quedó aplicada (por esta petición o por otra con la misma clave);
- *   `{ motivo }` si se rechaza. Cualquier otro error se propaga.
+ *   `{ motivo }` si se rechaza (un AppError 4xx del motor y NO hay movimiento con la clave). Cualquier otro error se propaga; si
+ *   falla la relectura de la clave, se propaga el error de la relectura y no el original.
  */
 async function aplicarFila(db, { datos, clave, idUsuario }) {
   try {
@@ -120,15 +125,11 @@ async function aplicarFila(db, { datos, clave, idUsuario }) {
     return {};
   } catch (error) {
     // La transacción ya se deshizo. ¿La aplicó otra petición con la misma clave (un reintento solapado)? Se relee ANTES de
-    // clasificar: si hay movimiento, la fila cuenta como creada, sea cual sea el error que vio ésta; si no, resolverFallo
-    // relanza este mismo error.
-    try {
-      await resolverFallo(db, clave, error);
-      return {};
-    } catch {
-      if (esRechazoDeNegocio(error)) return { motivo: motivoDelMotor(error) };
-      throw error;
-    }
+    // clasificar: si hay movimiento, la fila cuenta como creada, sea cual sea el error que vio ésta. Si la relectura falla, su
+    // error se propaga tal cual: sin saber si la fila existe, no se puede decir que se rechazó.
+    if (await movimientoRepository.findByClave(db, clave)) return {};
+    if (esRechazoDeNegocio(error)) return { motivo: motivoDelMotor(error) };
+    throw error;
   }
 }
 

@@ -1,6 +1,9 @@
 const { crearCargaInicialController } = require('../src/controllers/cargaInicialController');
+const { AppError, e } = require('../src/errors');
+const movimientoRepository = require('../src/repositories/movimientoRepository');
 const { RUTA_CARGA_INICIAL, rutasInternas } = require('../src/routes/internas');
 const { MAX_FILAS_CARGA_INICIAL, cargar, crearCargaInicialService } = require('../src/services/cargaInicialService');
+const stockService = require('../src/services/stockService');
 const { createTestDb, truncateAll } = require('./helpers/db');
 const { crearBodega } = require('./helpers/fixtures');
 
@@ -50,6 +53,7 @@ describe('cargaInicialService', () => {
       await truncateAll(db);
       await crearBodega(db, { codigo: 'B1' });
     });
+    afterEach(() => jest.restoreAllMocks());
     afterAll(() => db.destroy());
 
     it('devuelve exactamente { creados, rechazados } con `fila` base 1 y rechazados ordenados; no modifica las filas que recibe', async () => {
@@ -67,6 +71,39 @@ describe('cargaInicialService', () => {
       const servicio = crearCargaInicialService({ db });
       expect(await servicio.cargar({ filas: [FILA], claveIdempotencia: 'k-deps', identity: IDENTIDAD })).toEqual({ creados: 1, rechazados: [] });
       expect(Object.keys(servicio)).toEqual(['cargar']);
+    });
+
+    describe('cuando el motor rechaza una fila con un 4xx se relee su clave ANTES de clasificarlo (Ruling 61)', () => {
+      const rechazoDelMotor = () => e.datosNoValidos([{ campo: 'cantidad', mensaje: 'el saldo resultante superaría el máximo permitido (2147483647)' }]);
+      const pedir = () => cargar({ db }, { filas: [FILA], claveIdempotencia: 'k-relee', identity: IDENTIDAD });
+
+      it('si la relectura FALLA, `cargar` rechaza con ESE error (el de la relectura: no un AppError, ni el 4xx del motor, ni un rechazo de la fila)', async () => {
+        jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(rechazoDelMotor());
+        const errorDeRelectura = new Error('Connection terminated unexpectedly');
+        jest.spyOn(movimientoRepository, 'findByClave').mockRejectedValue(errorDeRelectura);
+        const error = await atrapar(pedir());
+        expect(error).toBe(errorDeRelectura);
+        expect(error).not.toBeInstanceOf(AppError);
+      });
+
+      it('control: con la relectura sana y sin movimiento, el mismo 4xx es un rechazo de la fila y no se lanza nada', async () => {
+        jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(rechazoDelMotor());
+        const relectura = jest.spyOn(movimientoRepository, 'findByClave');
+        expect(await pedir()).toEqual({ creados: 0, rechazados: [{ fila: 1, motivo: 'cantidad: el saldo resultante superaría el máximo permitido (2147483647)' }] });
+        expect(relectura).toHaveBeenCalledTimes(1);
+        expect(relectura).toHaveBeenCalledWith(db, '7:ini:k-relee#1');
+      });
+
+      it('control: con la relectura sana y CON movimiento (otra petición la aplicó), el mismo 4xx deja la fila como creada', async () => {
+        await db.transaction((trx) => stockService.aplicarMovimiento(trx, {
+          tipo: 'CARGA_INICIAL', idProducto: 5, idBodega: 1, cantidad: 10, claveIdempotencia: '7:ini:k-relee#1', idUsuario: 7,
+        }));
+        const aplicar = jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(rechazoDelMotor());
+        // La consulta inicial ya la ve aplicada: sin llamar al motor. Se oculta para forzar el camino de la relectura.
+        jest.spyOn(movimientoRepository, 'clavesExistentes').mockResolvedValue(new Set());
+        expect(await pedir()).toEqual({ creados: 1, rechazados: [] });
+        expect(aplicar).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('un motivo de rechazo es texto legible: nunca el mensaje de PostgreSQL, el objeto del error ni una traza', async () => {

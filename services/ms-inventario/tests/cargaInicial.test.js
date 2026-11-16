@@ -691,6 +691,54 @@ describe('POST /internas/saldos/carga-inicial: fallos a mitad de la carga', () =
     expect(await cuentaDe('movimientos')).toBe(5);
   });
 
+  // El 422 de desborde que el motor lanza cuando el saldo ya sumó la fila (porque OTRA petición con la misma clave la aplicó).
+  const desborde = () => e.datosNoValidos([{ campo: 'cantidad', mensaje: 'el saldo resultante superaría el máximo permitido (2147483647)' }]);
+
+  it('control: un 4xx del motor SIN movimiento con la clave y con la relectura sana SÍ es un rechazo de esa fila (200 con su motivo)', async () => {
+    /* El control de la prueba siguiente: lo único que cambia allí es que la relectura falla. */
+    const original = stockService.aplicarMovimiento;
+    jest.spyOn(stockService, 'aplicarMovimiento').mockImplementation(async (trx, datos) => {
+      if (datos.idProducto === 12) throw desborde();
+      return original(trx, datos);
+    });
+    const res = await cargar(cinco(), { clave: 'k-relectura-sana' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ creados: 4, rechazados: [{ fila: 2, motivo: 'cantidad: el saldo resultante superaría el máximo permitido (2147483647)' }] });
+  });
+
+  it('si la RELECTURA de la clave falla, un 4xx del motor NO se informa como rechazo de la fila (que quizá sí se creó): la petición es un 500 genérico y la repetición cuenta la fila como creada', async () => {
+    /* Ruling 61. La otra petición con la misma clave confirmó la fila 2 y esta recibe del motor el desborde que depende de eso;
+       justo entonces la base corta la conexión al releer. Clasificar el 4xx original daría un 200 con una fila «rechazada»
+       que existe. */
+    const original = stockService.aplicarMovimiento;
+    jest.spyOn(stockService, 'aplicarMovimiento').mockImplementation(async (trx, datos) => {
+      if (datos.idProducto !== 12) return original(trx, datos);
+      await db.transaction((otra) => original(otra, datos)); // la otra petición confirma su transacción completa (saldo + movimiento)
+      throw desborde();
+    });
+    const relecturaReal = movimientoRepository.findByClave;
+    const relectura = jest.spyOn(movimientoRepository, 'findByClave').mockImplementation(async (conexion, clave) => {
+      if (clave.endsWith('#2')) throw new Error('Connection terminated unexpectedly');
+      return relecturaReal(conexion, clave);
+    });
+    const res = await cargar(cinco(), { clave: 'k-relectura-falla' });
+    expect(relectura.mock.calls.map(([, clave]) => clave)).toEqual([`${USUARIO}:ini:k-relectura-falla#2`]); // se intentó releer ESA fila
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: { codigo: 'ERROR_INTERNO', mensaje: expect.any(String), detalles: [] } });
+    expect(JSON.stringify(res.body)).not.toMatch(/Connection terminated|cantidad|máximo/); // ni el error de la relectura ni el 4xx del motor salen
+    expect((await movimientos()).map((m) => m.id_producto)).toEqual([11, 12]); // la fila 1 y la que aplicó la otra; se detuvo ahí
+
+    jest.restoreAllMocks();
+    const aplicar = jest.spyOn(stockService, 'aplicarMovimiento');
+    const repeticion = await cargar(cinco(), { clave: 'k-relectura-falla' });
+    expect(repeticion.status).toBe(200);
+    expect(repeticion.body).toEqual({ creados: 5, rechazados: [] }); // la 2 cuenta como creada (la reconoce clavesExistentes) y no queda en rechazados
+    expect(aplicar.mock.calls.map(([, datos]) => datos.idProducto)).toEqual([13, 14, 15]);
+    expect(await saldoDe(12)).toBe(2); // aplicada UNA vez
+    expect(await cuentaDe('movimientos')).toBe(5);
+    expect(await discrepanciasDeKardex()).toEqual([]);
+  });
+
   it('un fallo que no es de negocio cuando NO hay movimiento con la clave relanza el MISMO error (no lo oculta la relectura)', async () => {
     jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValue(Object.assign(new Error('deadlock simulado'), { code: '40P01' }));
     const res = await cargar(cinco(), { clave: 'k-40p01' });
