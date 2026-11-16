@@ -46,6 +46,9 @@ beforeEach(async () => {
 // Lo que se ejercitó: cada campo anulable debe verse en sus DOS estados (null y no null) y cada campo opcional de una respuesta,
 // presente y ausente; si no, el esquema podría prometer algo que nunca se comprobó. Lo recoge el observador del validador.
 // ---------------------------------------------------------------------------------------------------------------------------
+// Cuántos escenarios (los de PRINCIPALES, los de ADICIONALES y el del 500) llegaron a comprobar su respuesta: las dos pruebas de cobertura
+// del final miden lo que ellos ejercitaron y solo valen si corrieron todos.
+let escenariosEjecutados = 0;
 const nulos = new Map(); // esquema anulable → { nulo, noNulo }
 const opcionales = new Map(); // esquema de objeto → Map(propiedad → { presente, ausente })
 const observador = {
@@ -660,6 +663,7 @@ describe('conformidad: una operación de éxito por cada operación del document
     const res = await enviar(clave, peticion);
     expect({ clave, estado: res.status, cuerpo: res.body }).toEqual({ clave, estado: escenario.estado, cuerpo: res.body });
     comprobarRespuesta(clave, res);
+    escenariosEjecutados += 1;
   });
 });
 
@@ -682,6 +686,7 @@ describe('conformidad: más respuestas reales (repeticiones idempotentes, errore
     }
     expect({ op: adicional.op, estado: res.status, cuerpo: res.body }).toEqual({ op: adicional.op, estado: adicional.estado, cuerpo: res.body });
     comprobarRespuesta(adicional.op, res, { admiteVacios: adicional.admiteVacios });
+    escenariosEjecutados += 1;
   });
 
   it('el 500 de una falla inesperada cumple el esquema de ERROR_INTERNO (con una base que falla)', async () => {
@@ -692,6 +697,7 @@ describe('conformidad: más respuestas reales (repeticiones idempotentes, errore
     const res = await supertest(app).get('/bodegas').set(ADM);
     expect(res.status).toBe(500);
     comprobarRespuesta('GET /bodegas', res);
+    escenariosEjecutados += 1;
     expect(res.body.error.codigo).toBe('ERROR_INTERNO');
   });
 });
@@ -1129,14 +1135,26 @@ describe('conformidad: lo que los escenarios ejercitaron de cada esquema', () =>
     return lista;
   }
 
-  it('todo campo anulable de una respuesta se vio con valor y con null (si no, el esquema no está comprobado en uno de sus estados)', () => {
+  // Los 25 escenarios de éxito, los adicionales y el 500 de la base rota. Si alguno falla antes de comprobar su respuesta, o si esta
+  // prueba se ejecuta sola, lo que se midió está incompleto: el fallo debe decir ESA causa y no «campo sin ver».
+  const TOTAL_ESCENARIOS = Object.keys(PRINCIPALES).length + ADICIONALES.length + 1;
+  const exigirEscenariosEjecutados = () => {
+    if (escenariosEjecutados !== TOTAL_ESCENARIOS) {
+      throw new Error(`Esta prueba mide lo que ejercitaron los ${TOTAL_ESCENARIOS} escenarios anteriores de este archivo y solo ${escenariosEjecutados} llegaron a comprobar su respuesta: `
+        + 'ejecute el archivo completo (no la ejecute sola con -t) y arregle antes los escenarios que fallen.');
+    }
+  };
+
+  it('todo campo anulable de una respuesta se vio con valor y con null (mide lo que ejercitaron las pruebas anteriores: no la ejecute sola con -t)', () => {
+    exigirEscenariosEjecutados();
     const anulables = esquemasDeRespuesta().filter(({ esquema }) => esquema.nullable === true);
     expect(anulables.length).toBeGreaterThanOrEqual(15); // control: los campos anulables de movimientos, lotes, traslados y conteos
     const sinVer = anulables.filter(({ esquema }) => !(nulos.get(esquema)?.nulo && nulos.get(esquema)?.noNulo));
     expect(sinVer.map(({ donde, esquema }) => ({ donde, visto: nulos.get(esquema) ?? 'nunca' }))).toEqual([]);
   });
 
-  it('todo campo opcional de una respuesta se vio presente y ausente', () => {
+  it('todo campo opcional de una respuesta se vio presente y ausente (mide lo que ejercitaron las pruebas anteriores: no la ejecute sola con -t)', () => {
+    exigirEscenariosEjecutados();
     const objetos = esquemasDeRespuesta().map(({ esquema }) => esquema).filter((esquema) => esquema.type === 'object' && esquema.properties);
     const faltan = [];
     let opcionalesVistos = 0;
