@@ -309,7 +309,7 @@ describe('proceso real: node src/server.js', () => {
       expect(conexiones).toBe(0);
 
       const respuesta = await fetch(`http://127.0.0.1:${PUERTO}/bodegas`, { headers: { 'X-User-Id': '1', 'X-User-Rol': 'ADMINISTRADOR' } });
-      expect(respuesta.status).toBe(500); // el señuelo cuelga la conexión: no es una base de datos
+      expect(respuesta.status).toBe(500); // el señuelo CIERRA la conexión al instante: no es una base de datos
       await esperarHasta(() => conexiones >= 1, 'el señuelo cuenta la conexión que abrió el hijo');
       expect(conexiones).toBeGreaterThanOrEqual(1);
 

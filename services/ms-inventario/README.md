@@ -257,8 +257,8 @@ npm start                                # http://127.0.0.1:3000/docs
 
 La imagen parte de `node:22-slim` y arranca con `node src/server.js`, con un usuario sin privilegios (UID 10001). Lleva `src/`
 (con la página de `/docs`), `migrations/`, `knexfile.js`, `openapi.yaml` y solo las dependencias de producción; no lleva el
-`.env`, las pruebas ni la cobertura (`.dockerignore`): toda la configuración llega por variables de entorno (RNF14). Pesa
-unos 370 MB.
+`.env` (ni uno suelto en otra carpeta), las pruebas ni la cobertura (`.dockerignore`): toda la configuración llega por
+variables de entorno (RNF14). Pesa unos 366 MB.
 
 Desde la raíz del repositorio, con la base del compose levantada:
 
@@ -269,25 +269,35 @@ docker build -t ms-inventario services/ms-inventario
 
 Dentro de la red del compose (`gestor-inventario_default`) la base se llama `db-ms-inventario` y escucha en el 5432 (no en el
 5433, que es el puerto publicado en el equipo). Las migraciones no se aplican solas al arrancar: se ejecutan una vez, antes de
-arrancar el servicio (con varias copias, una sola vez para todas):
+arrancar el servicio (con varias copias, una sola vez para todas).
+
+Antes de ejecutar los comandos, dos datos que dependen de su equipo y que **no van escritos en ellos**:
+
+- **El puerto del equipo.** El 3000 puede estar ocupado por otro proyecto, así que el comando no lo usa: elija un puerto libre y
+  guárdelo en `PUERTO_LIBRE` (por ejemplo, `export PUERTO_LIBRE=3055`). El servicio se publica solo en `127.0.0.1`, nunca en
+  todas las interfaces, porque no autentica a quien le llama (ver «Seguridad de red»); dentro del contenedor sigue en el 3000. Si
+  ese puerto estuviera ocupado, `docker run` falla pero deja el contenedor creado: bórrelo con `docker rm ms-inventario` antes de
+  repetir el comando con otro puerto.
+- **La contraseña de la base.** No se fija en el comando: guárdela en la variable `DB_PASSWORD` del shell (la misma que
+  `INVENTARIO_DB_PASSWORD` en el `.env` de la raíz) con `read -rs DB_PASSWORD && export DB_PASSWORD`, que la pide sin mostrarla
+  ni dejarla en el historial, y el `-e DB_PASSWORD` sin valor la toma de ahí. Con un archivo local, fuera del repositorio, que
+  defina esa variable, `--env-file <archivo>` hace lo mismo (y entonces se quita el `-e DB_PASSWORD`).
 
 ```bash
 docker run --rm --network gestor-inventario_default \
-  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD=change_me \
+  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD \
   ms-inventario node_modules/.bin/knex migrate:latest
 
-docker run -d --name ms-inventario --network gestor-inventario_default -p 127.0.0.1:3000:3000 \
-  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD=change_me \
+docker run -d --name ms-inventario --network gestor-inventario_default -p 127.0.0.1:$PUERTO_LIBRE:3000 \
+  -e DB_HOST=db-ms-inventario -e DB_PORT=5432 -e DB_NAME=inventario_db -e DB_USER=inventario -e DB_PASSWORD \
   -e MS_CATALOGO_URL=http://ms-catalogo:8000 -e MS_NOTIFICACIONES_URL=http://ms-notificaciones:5000 \
   ms-inventario
 ```
 
-El servicio queda en `http://127.0.0.1:3000/docs` (documentación) y `http://127.0.0.1:3000/health`.
+El servicio queda en `http://127.0.0.1:$PUERTO_LIBRE/docs` (documentación) y en `/health` del mismo puerto.
 
-- **Si el puerto 3000 del equipo está ocupado**, no lo publique: cambie solo el de la izquierda (`-p 127.0.0.1:<puerto-libre>:3000`).
-  Dentro del contenedor el servicio sigue en el 3000. Publique siempre en `127.0.0.1`, nunca en todas las interfaces: el
-  servicio no autentica a quien le llama (ver «Seguridad de red»). Con `-e PORT=3055` el servicio escucha en el 3055 dentro del
-  contenedor, y entonces es el de la derecha el que se cambia; el `HEALTHCHECK` sigue al `PORT`.
+- **`PORT` dentro del contenedor.** Con `-e PORT=3055` el servicio escucha en el 3055 en vez del 3000, y entonces es el número de
+  la derecha del `-p` el que cambia (`-p 127.0.0.1:$PUERTO_LIBRE:3055`); el `HEALTHCHECK` sigue al `PORT`.
 - **ms-catalogo y ms-notificaciones** todavía no están en el compose. Con esas direcciones sin servicio detrás, `/health`
   responde 200 (solo comprueba que las variables estén bien escritas) y lo que consulta al catálogo o avisa a notificaciones
   responde 503; ver «Variables de entorno».
@@ -336,8 +346,9 @@ no hace falta ningún otro servicio.
 - **El huso horario del equipo no importa:** la suite pasa igual con `TZ=UTC`, `America/Bogota`, `Pacific/Auckland` y
   `America/Los_Angeles`. Las pruebas que dependen del huso del proceso (el día UTC de un conteo, las fechas de vencimiento) lo
   fijan en un proceso hijo y no leen el de la máquina.
-- Una corrida completa tarda alrededor de un minuto. La cobertura medida al escribir este README es de más del 99 % de
-  sentencias, funciones y líneas y del 95 % de ramas, muy por encima del 60 % que exige RNF20.
+- Una corrida completa tarda de uno a tres minutos según el disco de la base de datos; con un PostgreSQL desechable sin volumen,
+  unas tres veces menos. La cobertura medida al escribir este README es de más del 99 % de sentencias, funciones y líneas y del
+  95 % de ramas, muy por encima del 60 % que exige RNF20.
 
 ### Integración continua
 

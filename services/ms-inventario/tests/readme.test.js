@@ -212,3 +212,42 @@ describe('contraseñas', () => {
     expect(urlsConClave).toEqual([]);
   });
 });
+
+describe('la sección «Docker (RNF03)»: lo que los comandos no deben fijar', () => {
+  const seccion = () => {
+    const texto = readme();
+    const inicio = texto.indexOf('## Docker (RNF03)');
+    expect(inicio).toBeGreaterThan(-1);
+    return texto.slice(inicio, texto.indexOf('\n## ', inicio + 1));
+  };
+  // Los `docker run` de los bloques de código: cada orden con sus líneas de continuación (`\`) unidas.
+  const ordenesDockerRun = () => [...seccion().matchAll(/```bash\n([\s\S]*?)```/g)]
+    .flatMap((bloque) => bloque[1].replace(/\\\n\s*/g, ' ').split('\n'))
+    .filter((linea) => linea.startsWith('docker run'));
+
+  it('tiene los dos `docker run` (migrar y arrancar) y ninguno fija la contraseña de la base: `-e DB_PASSWORD` sin valor', () => {
+    const ordenes = ordenesDockerRun();
+    expect(ordenes).toHaveLength(2);
+    for (const orden of ordenes) {
+      expect(orden).toMatch(/-e DB_PASSWORD(\s|$)/);
+      expect(orden).not.toMatch(/DB_PASSWORD=/);
+    }
+  });
+
+  it('no publica el 3000 del equipo (otro proyecto puede tenerlo): el puerto sale de PUERTO_LIBRE y solo en 127.0.0.1', () => {
+    const arranque = ordenesDockerRun().find((orden) => orden.includes('-p '));
+    expect(arranque).toContain('-p 127.0.0.1:$PUERTO_LIBRE:3000');
+    expect(seccion()).not.toMatch(/127\.0\.0\.1:3000:|-p 3000:|-p \d+:\d+(\s|$)/); // ni el 3000 del equipo ni «todas las interfaces»
+  });
+
+  it('avisa del puerto ocupado y de la contraseña ANTES de los comandos', () => {
+    const texto = seccion();
+    const primeraOrden = texto.indexOf('```bash\ndocker run');
+    expect(primeraOrden).toBeGreaterThan(-1);
+    const antes = texto.slice(0, primeraOrden);
+    expect(antes).toContain('PUERTO_LIBRE');
+    expect(antes).toMatch(/puede estar ocupado/);
+    expect(antes).toContain('docker rm ms-inventario');
+    expect(antes).toContain('read -rs DB_PASSWORD');
+  });
+});
