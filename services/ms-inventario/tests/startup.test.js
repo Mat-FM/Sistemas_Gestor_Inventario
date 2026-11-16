@@ -6,6 +6,7 @@ const { iniciar } = require('../src/server');
 const { entornoValido } = require('./helpers/app');
 const { ejecutarHijo, lanzarHijo } = require('./helpers/hijos');
 const { ocuparPuerto, puertoLibre } = require('./helpers/puertos');
+const { pedir } = require('./helpers/red');
 
 // Arranque del servicio: la función iniciar (con `salir` inyectado) y el proceso real (node src/server.js).
 
@@ -14,6 +15,11 @@ const loggerEspia = () => ({ info: jest.fn(), error: jest.fn() });
 
 // PORT=0 (puerto efímero) ya no es válido: las pruebas que arrancan el servicio usan un puerto libre concreto, el mismo para todo el
 // archivo (cada prueba cierra su servidor antes de la siguiente).
+//
+// Por eso las peticiones a ese puerto van con `pedir` (helpers/red.js) y no con `fetch`: un `fetch` normal deja su conexión keep-alive
+// en el depósito del cliente, y la petición de una prueba posterior, ya con OTRO servidor en el mismo puerto, podía reutilizar la
+// conexión del servidor anterior (cerrado) antes de que el cliente se enterara del cierre y fallar con `fetch failed / ECONNRESET`
+// (entre 1 de cada 25 y 1 de cada 6 corridas del archivo; ver helpers/red.js y pedir.test.js).
 let PUERTO;
 beforeAll(async () => {
   PUERTO = await puertoLibre();
@@ -95,7 +101,7 @@ describe('iniciar (arranque con captura de errores)', () => {
     });
     if (!server.listening) await new Promise((resolver) => server.once('listening', resolver));
 
-    const respuesta = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+    const respuesta = await pedir(`http://127.0.0.1:${server.address().port}/health`);
     expect(respuesta.status).toBe(200);
     expect(server.address().port).toBe(PUERTO);
     expect(log.info).toHaveBeenCalledWith({ mensaje: 'Servidor iniciado', puerto: PUERTO });
@@ -238,7 +244,7 @@ describe('iniciar (arranque con captura de errores)', () => {
       await arrancado.db.destroy().catch(() => {});
     });
     if (!arrancado.server.listening) await new Promise((resolver) => arrancado.server.once('listening', resolver));
-    const respuesta = await fetch(`http://127.0.0.1:${arrancado.server.address().port}/health`);
+    const respuesta = await pedir(`http://127.0.0.1:${arrancado.server.address().port}/health`);
     expect(respuesta.status).toBe(503);
     expect(salir).not.toHaveBeenCalled();
   });
@@ -308,7 +314,7 @@ describe('proceso real: node src/server.js', () => {
       await esperarArranque(proceso);
       expect(conexiones).toBe(0);
 
-      const respuesta = await fetch(`http://127.0.0.1:${PUERTO}/bodegas`, { headers: { 'X-User-Id': '1', 'X-User-Rol': 'ADMINISTRADOR' } });
+      const respuesta = await pedir(`http://127.0.0.1:${PUERTO}/bodegas`, { headers: { 'X-User-Id': '1', 'X-User-Rol': 'ADMINISTRADOR' } });
       expect(respuesta.status).toBe(500); // el señuelo CIERRA la conexión al instante: no es una base de datos
       await esperarHasta(() => conexiones >= 1, 'el señuelo cuenta la conexión que abrió el hijo');
       expect(conexiones).toBeGreaterThanOrEqual(1);
