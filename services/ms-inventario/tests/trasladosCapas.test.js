@@ -301,3 +301,23 @@ describe('trasladoService.recibir', () => {
     expect((await servicio.recibir(peticion())).traslado.estado).toBe('RECIBIDO');
   });
 });
+
+describe('trasladoService.conflictoDeFecha (ronda 1)', () => {
+  it.each([
+    ['dos fechas', '2028-03-01', '2027-01-31', '(2028-03-01)', '(2027-01-31)'],
+    ['destino sin fecha', null, '2027-01-31', '(sin fecha de vencimiento)', '(2027-01-31)'],
+    ['origen sin fecha', '2028-03-01', null, '(2028-03-01)', '(sin fecha de vencimiento)'],
+  ])('%s: 409 CONFLICTO sobre id_lote con el código y las dos fechas; la consecuencia depende de enTransito', (_caso, destino, origen, textoDestino, textoOrigen) => {
+    /* Un único formato para crear y recibir. */
+    const diferencia = `El lote L-9 de la bodega de destino ${textoDestino} tiene otra fecha de vencimiento que el de la bodega de origen ${textoOrigen}.`;
+    for (const [opciones, consecuencia] of [
+      [undefined, 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.'],
+      [{ enTransito: false }, 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.'],
+      [{ enTransito: true }, 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.'],
+    ]) {
+      const error = trasladoService.conflictoDeFecha('L-9', destino, origen, opciones);
+      const mensaje = `${diferencia} ${consecuencia}`;
+      expect(error).toMatchObject({ status: 409, codigo: 'CONFLICTO', message: mensaje, detalles: [{ campo: 'id_lote', mensaje }] });
+    }
+  });
+});

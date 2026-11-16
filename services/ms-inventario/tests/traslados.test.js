@@ -4,6 +4,7 @@ const { createApp } = require('../src/app');
 const { construirConfigKnex } = require('../src/config/db');
 const { delta } = require('../src/domain/tipos');
 const saldoRepository = require('../src/repositories/saldoRepository');
+const trasladoRepository = require('../src/repositories/trasladoRepository');
 const movimientoRepository = require('../src/repositories/movimientoRepository');
 const { OPERACIONES, claveAlmacenada } = require('../src/services/idempotencia');
 const stockService = require('../src/services/stockService');
@@ -79,6 +80,14 @@ const movimientos = () => db('movimientos').select('*').orderBy('id_movimiento')
 // Foto de todo lo que un rechazo no debe cambiar.
 const foto = async () => ({ saldos: await db('saldos').select('*').orderBy('id_saldo'), lotes: await lotes(), traslados: await traslados(), movimientos: await movimientos() });
 const catalogoSinLlamadas = () => expect(clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
+// 409 CONFLICTO de un lote del destino con otra fecha (conflictoDeFecha): un único formato, sobre `id_lote`, con el texto exacto.
+const TEXTO_CREAR = 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.';
+const TEXTO_RECIBIR = 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.';
+function conflictoDeLote(res, codigo, fechaDestino, fechaOrigen, consecuencia) {
+  const mensaje = `El lote ${codigo} de la bodega de destino (${fechaDestino}) tiene otra fecha de vencimiento que el de la bodega de origen (${fechaOrigen}). ${consecuencia}`;
+  expect(res.status).toBe(409);
+  expect(res.body).toEqual({ error: { codigo: 'CONFLICTO', mensaje, detalles: [{ campo: 'id_lote', mensaje }] } });
+}
 const sinCincoXX = (respuestas) => expect(respuestas.filter((res) => res.status >= 500).map((res) => res.body)).toEqual([]);
 
 async function comprobarInvariantes() {
@@ -222,7 +231,7 @@ describe('POST /traslados: stock y lotes (409/404 sin dejar NADA escrito)', () =
     await crearLote(db, { idBodega: b3, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 1 });
     const antes = await foto();
     const res = await crear(traslado({ id_lote: origen.id_lote }));
-    esError(res, 409, 'CONFLICTO', ['id_lote']);
+    conflictoDeLote(res, 'L1', '2027-02-28', '2027-01-31', TEXTO_CREAR);
     expect(await foto()).toEqual(antes);
     expect((await crear(traslado({ id_lote: origen.id_lote, id_bodega_destino: b3 }))).status).toBe(201); // control: misma fecha
   });
@@ -236,8 +245,8 @@ describe('POST /traslados: stock y lotes (409/404 sin dejar NADA escrito)', () =
     await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'N', fechaVencimiento: '2027-01-01', cantidad: 1 });
     await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: null, cantidad: 1 });
     const antes = await foto();
-    esError(await crear(traslado({ id_lote: sinFecha.id_lote })), 409, 'CONFLICTO', ['id_lote']);
-    esError(await crear(traslado({ id_lote: conFecha.id_lote })), 409, 'CONFLICTO', ['id_lote']);
+    conflictoDeLote(await crear(traslado({ id_lote: sinFecha.id_lote })), 'N', '2027-01-01', 'sin fecha de vencimiento', TEXTO_CREAR);
+    conflictoDeLote(await crear(traslado({ id_lote: conFecha.id_lote })), 'F', 'sin fecha de vencimiento', '2027-01-01', TEXTO_CREAR);
     expect(await foto()).toEqual(antes);
   });
 });
@@ -621,10 +630,48 @@ describe('POST /traslados/{id}/recepcion: recepción (200)', () => {
     await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-12-31', cantidad: 1 });
     await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'N', fechaVencimiento: '2027-12-31', cantidad: 1 });
     const antes = await foto();
-    expect((await recibir(uno.id_traslado)).body.error.codigo).toBe('CONFLICTO');
-    esError(await recibir(dos.id_traslado), 409, 'CONFLICTO', ['id_lote']);
+    // Del motor (fecha distinta no nula), traducido; y de comprobarLoteDeDestino (origen sin fecha): el MISMO formato.
+    conflictoDeLote(await recibir(uno.id_traslado), 'F', '2027-12-31', '2027-01-31', TEXTO_RECIBIR);
+    conflictoDeLote(await recibir(dos.id_traslado), 'N', '2027-12-31', 'sin fecha de vencimiento', TEXTO_RECIBIR);
     expect(await foto()).toEqual(antes);
     expect((await traslados()).map((t) => t.estado)).toEqual(['EN_TRANSITO', 'EN_TRANSITO']);
+  });
+
+  it('ronda 1: el conflicto de fecha al recibir (detectado por el motor) da el texto de conflictoDeFecha; saldos y lotes IDÉNTICOS; control: el mismo código con la MISMA fecha suma y da 200', async () => {
+    /* El cliente de la recepción nunca envió `lote.fecha_vencimiento`: el campo es `id_lote` y el texto dice que sigue EN_TRANSITO. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 6 });
+    const f = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    const g = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'G', fechaVencimiento: '2027-05-31', cantidad: 3 });
+    const conflictivo = await enTransito({ id_lote: f.id_lote });
+    const control = await enTransito({ id_lote: g.id_lote });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 2 });
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2028-03-01', cantidad: 1 });
+    const gDestino = await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'G', fechaVencimiento: '2027-05-31', cantidad: 1 });
+    const saldos = () => db('saldos').select('*').orderBy('id_saldo');
+    const [saldosAntes, lotesAntes] = [await saldos(), await lotes()];
+    conflictoDeLote(await recibir(conflictivo.id_traslado, {}, { clave: 'k-f' }), 'F', '2028-03-01', '2027-01-31', TEXTO_RECIBIR);
+    expect(await saldos()).toEqual(saldosAntes);
+    expect(await lotes()).toEqual(lotesAntes);
+    expect((await trasladoRepository.findById(db, conflictivo.id_traslado)).estado).toBe('EN_TRANSITO');
+    const res = await recibir(control.id_traslado);
+    expect(res.status).toBe(200);
+    expect(res.body.movimiento.id_lote).toBe(gDestino.id_lote);
+    expect((await lotes()).find((l) => l.id_lote === gDestino.id_lote).cantidad_disponible).toBe(4);
+  });
+
+  it('ronda 1: el 409 traducido llega a resolverFallo, que sigue releyendo la clave de entrada (si halla la recepción de este traslado → 200)', async () => {
+    /* La traducción va DENTRO de la transacción: el error de la transacción es el traducido y la relectura por clave no cambia. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const f = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    const creado = await enTransito({ id_lote: f.id_lote });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 1 });
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2028-03-01', cantidad: 1 });
+    const ganadora = { id_movimiento: 999, tipo: 'TRASLADO_ENTRADA', id_traslado: creado.id_traslado };
+    const espia = jest.spyOn(movimientoRepository, 'findByClave').mockResolvedValueOnce(undefined).mockResolvedValueOnce(ganadora);
+    const res = await recibir(creado.id_traslado, {}, { clave: 'k-carrera' });
+    expect(espia.mock.calls.map(([, clave]) => clave)).toEqual(['7:tras:k-carrera#entrada', '7:tras:k-carrera#entrada']);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...creado, movimiento: ganadora });
   });
 
   it('el ADMINISTRADOR recibe en cualquier bodega; el umbral NO se evalúa tras la recepción (D13)', async () => {
@@ -1026,5 +1073,75 @@ describe('GET /traslados: listado', () => {
     expect((await listar('?estado=EN_TRANSITO')).body.datos.find((f) => f.id_traslado === creado.id_traslado)).toEqual(creado);
     await recibir(creado.id_traslado);
     expect(ids(await listar('?estado=RECIBIDO'))[0]).toBe(creado.id_traslado);
+  });
+});
+
+describe('ronda 1: la traducción del conflicto de lote es ESTRECHA (los demás errores de la recepción no cambian)', () => {
+  // Un traslado CON lote en tránsito de b1 a b2 (la traducción solo puede actuar cuando hay lote).
+  async function conLote() {
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 3 });
+    const f = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2027-01-31', cantidad: 3 });
+    return enTransito({ id_lote: f.id_lote });
+  }
+  const cuerpo = (codigo, mensaje, detalles = []) => ({ error: { codigo, mensaje, detalles } });
+
+  it('BODEGA_INACTIVA del motor: mismo código, texto y detalles que antes', async () => {
+    /* D31(f). */
+    const creado = await conLote();
+    await db('bodegas').where({ id_bodega: b2 }).update({ activa: false });
+    const res = await recibir(creado.id_traslado);
+    expect([res.status, res.body]).toEqual([409, cuerpo('BODEGA_INACTIVA', 'La bodega está inactiva: no admite movimientos')]);
+  });
+
+  it('TRASLADO_YA_RECIBIDO: mismo código, texto y detalles que antes', async () => {
+    /* Control: la primera recepción da 200. */
+    const creado = await conLote();
+    expect((await recibir(creado.id_traslado)).status).toBe(200);
+    const res = await recibir(creado.id_traslado);
+    expect([res.status, res.body]).toEqual([409, cuerpo('TRASLADO_YA_RECIBIDO', 'El traslado ya fue recibido')]);
+  });
+
+  it('el 422 de desborde del INTEGER en el destino: mismo cuerpo que antes y el traslado sigue EN_TRANSITO', async () => {
+    /* Limitación aceptada (duda 2). */
+    const creado = await conLote();
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 2147483646 });
+    const res = await recibir(creado.id_traslado);
+    expect([res.status, res.body]).toEqual([422, cuerpo('DATOS_NO_VALIDOS', 'Los datos enviados no son válidos', [
+      { campo: 'cantidad', mensaje: 'el saldo resultante superaría el máximo permitido (2147483647)' },
+    ])]);
+    expect((await traslados())[0].estado).toBe('EN_TRANSITO');
+  });
+
+  it('el CONFLICTO de clave de D31(b): mismo texto y sin detalles, como antes', async () => {
+    /* Ocurre antes de la transacción, fuera de la captura. */
+    const uno = await conLote();
+    const dos = await enTransito();
+    expect((await recibir(uno.id_traslado, {}, { clave: 'k-b' })).status).toBe(200);
+    const res = await recibir(dos.id_traslado, {}, { clave: 'k-b' });
+    expect([res.status, res.body]).toEqual([409, cuerpo('CONFLICTO', 'La Idempotency-Key ya se usó en otra operación: la recepción de otro traslado')]);
+  });
+
+  it('se reconoce por el CAMPO del detalle y no por el texto: otro CONFLICTO del motor pasa intacto; uno con el campo y otro texto se traduce', async () => {
+    /* Captura estrecha frente a mutaciones: «todos los CONFLICTO» y «por texto». */
+    const { AppError } = require('../src/errors');
+    const creado = await conLote();
+    await crearLote(db, { idBodega: b2, idProducto: 5, codigoLote: 'F', fechaVencimiento: '2028-03-01', cantidad: 0 });
+    const ajeno = new AppError(409, 'CONFLICTO', 'El lote ya existe con otra fecha de vencimiento', [{ campo: 'otro', mensaje: 'x' }]);
+    jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValueOnce(ajeno);
+    const intacto = await recibir(creado.id_traslado);
+    expect([intacto.status, intacto.body]).toEqual([409, cuerpo('CONFLICTO', 'El lote ya existe con otra fecha de vencimiento', [{ campo: 'otro', mensaje: 'x' }])]);
+    const delMotor = new AppError(409, 'CONFLICTO', 'otro texto cualquiera', [{ campo: 'lote.fecha_vencimiento', mensaje: 'y' }]);
+    jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValueOnce(delMotor);
+    conflictoDeLote(await recibir(creado.id_traslado), 'F', '2028-03-01', '2027-01-31', TEXTO_RECIBIR);
+  });
+
+  it('sin lote en el traslado no se traduce nada (aunque el error tenga ese campo)', async () => {
+    /* La traducción necesita el lote del traslado. */
+    const { AppError } = require('../src/errors');
+    const creado = await enTransito();
+    const delMotor = new AppError(409, 'CONFLICTO', 'del motor', [{ campo: 'lote.fecha_vencimiento', mensaje: 'y' }]);
+    jest.spyOn(stockService, 'aplicarMovimiento').mockRejectedValueOnce(delMotor);
+    const res = await recibir(creado.id_traslado);
+    expect([res.status, res.body]).toEqual([409, cuerpo('CONFLICTO', 'del motor', [{ campo: 'lote.fecha_vencimiento', mensaje: 'y' }])]);
   });
 });

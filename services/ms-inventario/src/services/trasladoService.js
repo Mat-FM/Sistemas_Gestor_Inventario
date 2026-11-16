@@ -1,4 +1,4 @@
-const { e } = require('../errors');
+const { AppError, e } = require('../errors');
 const { headersDe } = require('../clients/propagacion');
 const { cuerpoObjeto, entero, idRuta, recoger, texto } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
@@ -56,6 +56,37 @@ function leerCuerpoCreacion(cuerpo) {
 
 const loteNoExiste = () => e.noExiste('El lote no existe en esa bodega para ese producto');
 
+const describirFecha = (fecha) => fecha ?? 'sin fecha de vencimiento';
+
+/**
+ * El 409 CONFLICTO de un lote que ya existe en la bodega de destino con OTRA fecha de vencimiento (D28(a)): ÚNICO formato para
+ * la creación (precomprobarCreacion) y la recepción (el conflicto que detecta el motor y comprobarLoteDeDestino). Siempre sobre
+ * `id_lote`, el campo que el cliente envió al CREAR (en la recepción no envía ninguno de lote). El mensaje nombra el lote y las
+ * dos fechas (`null` es «sin fecha de vencimiento») y dice qué pasa con el traslado: al crear, no se crea; al recibir
+ * (`enTransito`), sigue EN_TRANSITO hasta regularizar el lote del destino y volver a recibirlo.
+ * @param {string} codigoLote
+ * @param {string|null} fechaDestino la del lote que ya está en el destino
+ * @param {string|null} fechaOrigen la del lote de origen del traslado
+ * @param {{enTransito?: boolean}} [opciones]
+ * @returns {AppError} 409 CONFLICTO (no lo lanza)
+ */
+function conflictoDeFecha(codigoLote, fechaDestino, fechaOrigen, { enTransito = false } = {}) {
+  const diferencia = `El lote ${codigoLote} de la bodega de destino (${describirFecha(fechaDestino)}) tiene otra fecha de vencimiento que el de la bodega de origen (${describirFecha(fechaOrigen)}).`;
+  const consecuencia = enTransito
+    ? 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.'
+    : 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.';
+  const mensaje = `${diferencia} ${consecuencia}`;
+  return e.conflicto('CONFLICTO', mensaje, [{ campo: 'id_lote', mensaje }]);
+}
+
+/**
+ * ¿Es el 409 CONFLICTO del motor por un lote que ya existe con otra fecha (stockService.entrarPorCodigo)? Se reconoce por el
+ * código y el CAMPO de su detalle, nunca por el texto. Ningún otro error lo es: ni BODEGA_INACTIVA, ni STOCK_INSUFICIENTE, ni
+ * el 422 de desborde, ni el CONFLICTO de clave de D31(b).
+ */
+const esConflictoDeFechaDelMotor = (error) => error instanceof AppError && error.codigo === 'CONFLICTO'
+  && error.detalles?.[0]?.campo === 'lote.fecha_vencimiento';
+
 /**
  * Comprobaciones previas de la creación, SIN bloquear nada y antes de abrir la transacción (no cambian nada):
  * - las dos bodegas existen (404): la clave foránea del INSERT del traslado lo exige (un 23503 sería un 500). Las bodegas no se
@@ -79,10 +110,7 @@ async function precomprobarCreacion(db, { idProducto, idBodegaOrigen, idBodegaDe
   if (!lote || lote.id_bodega !== idBodegaOrigen || lote.id_producto !== idProducto) throw loteNoExiste();
   const enDestino = await loteRepository.buscarPorCodigo(db, { idBodega: idBodegaDestino, idProducto, codigoLote: lote.codigo_lote });
   if (enDestino && enDestino.fecha_vencimiento !== lote.fecha_vencimiento) {
-    throw e.conflicto('CONFLICTO', 'La bodega de destino ya tiene ese lote con otra fecha de vencimiento', [{
-      campo: 'id_lote',
-      mensaje: `En la bodega de destino el lote ${lote.codigo_lote} vence ${enDestino.fecha_vencimiento ?? 'sin fecha'}; en el origen, ${lote.fecha_vencimiento ?? 'sin fecha'}`,
-    }]);
+    throw conflictoDeFecha(lote.codigo_lote, enDestino.fecha_vencimiento, lote.fecha_vencimiento);
   }
 }
 
@@ -110,6 +138,9 @@ async function trasladoDe(db, movimiento) {
  *    salida FEFO del mismo par que ya tuviera el saldo y pidiera ese lote FOR UPDATE esperaría al traslado, y el traslado al
  *    saldo (interbloqueo, 40P01). Con el saldo primero se respeta el candado maestro de D27(c). Luego el motor aplica
  *    TRASLADO_SALIDA (vuelve a pedir el mismo saldo, que ya es suyo). Ninguna creación toma otro saldo: no hay ciclos.
+ *    Por eso el saldo de origen se bloquea (y, si no existía, se crea en 0) ANTES de que el motor compruebe que la bodega de
+ *    origen está activa: es inocuo, porque con el origen inactivo el motor lanza 409 BODEGA_INACTIVA y la transacción se deshace
+ *    entera (el saldo creado, el traslado y el bloqueo incluidos).
  *    Los errores no se guardan (un 409 o 422 no deja clave). Si la transacción falla, resolverFallo relee la clave de salida:
  *    si otra petición idéntica la confirmó entre medias, 200 con su traslado; si no, el error ORIGINAL.
  * @param {{db: object, clients: {catalogo: object}, logger: object}} deps
@@ -194,11 +225,20 @@ async function loteDeEntrada(trx, idLote) {
 async function comprobarLoteDeDestino(trx, idLoteDestino, lote) {
   const destino = await loteRepository.findById(trx, idLoteDestino);
   if (destino?.fecha_vencimiento !== lote.fechaVencimiento) {
-    throw e.conflicto('CONFLICTO', 'La bodega de destino ya tiene ese lote con otra fecha de vencimiento', [{
-      campo: 'id_lote',
-      mensaje: `En la bodega de destino el lote ${lote.codigoLote} vence ${destino?.fecha_vencimiento ?? 'sin fecha'}; en el origen, ${lote.fechaVencimiento ?? 'sin fecha'}`,
-    }]);
+    throw conflictoDeFecha(lote.codigoLote, destino?.fecha_vencimiento ?? null, lote.fechaVencimiento, { enTransito: true });
   }
+}
+
+/**
+ * El 409 CONFLICTO del motor por un lote del destino con otra fecha NO NULA habla de `lote.fecha_vencimiento`, un campo que el
+ * cliente de la recepción nunca envió, y no dice que el traslado sigue en tránsito: se traduce a conflictoDeFecha con la fecha
+ * guardada en el destino (la transacción sigue sana: el motor no ejecutó ninguna sentencia fallida, solo lanzó un AppError).
+ * Cualquier otro error se relanza TAL CUAL (captura estrecha).
+ */
+async function traducirConflictoDeLote(trx, error, { idProducto, idBodega, lote }) {
+  if (lote === null || !esConflictoDeFechaDelMotor(error)) throw error;
+  const destino = await loteRepository.buscarPorCodigo(trx, { idBodega, idProducto, codigoLote: lote.codigoLote });
+  throw conflictoDeFecha(lote.codigoLote, destino?.fecha_vencimiento ?? null, lote.fechaVencimiento, { enTransito: true });
 }
 
 /**
@@ -215,7 +255,8 @@ async function comprobarLoteDeDestino(trx, idLoteDestino, lote) {
  *    TRASLADO_YA_RECIBIDO (con la MISMA clave, resolverFallo encuentra el movimiento de la primera y responde 200). Con lote, el
  *    destino recrea el código y la fecha del de origen (D28(a)); `traslados.id_lote` conserva el de origen y el movimiento lleva
  *    el del destino. El motor aplica TRASLADO_ENTRADA (409 BODEGA_INACTIVA con el destino inactivo, D31(f)) y el traslado pasa a
- *    RECIBIDO. Si algo falla, se deshace todo y el traslado sigue EN_TRANSITO. No llama al catálogo (el producto se confirmó al
+ *    RECIBIDO. Un lote del destino con otra fecha es 409 CONFLICTO con el formato de conflictoDeFecha (el del motor se traduce
+ *    con traducirConflictoDeLote, solo ese). Si algo falla, se deshace todo y el traslado sigue EN_TRANSITO. No llama al catálogo (el producto se confirmó al
  *    crear) ni evalúa el umbral (D13).
  * @param {{db: object}} deps
  * @param {{idTraslado: string|number, body: unknown, claveIdempotencia: string|undefined, identity: object}} peticion
@@ -240,10 +281,11 @@ async function recibir({ db }, { idTraslado, body, claveIdempotencia, identity }
       const traslado = await trasladoRepository.bloquearPorId(trx, id); // PRIMER bloqueo; el estado se mira después
       if (traslado.estado !== 'EN_TRANSITO') throw e.conflicto('TRASLADO_YA_RECIBIDO', 'El traslado ya fue recibido');
       const lote = traslado.id_lote === null ? null : await loteDeEntrada(trx, traslado.id_lote);
+      const destino = { idProducto: traslado.id_producto, idBodega: traslado.id_bodega_destino, lote };
       const movimiento = await stockService.aplicarMovimiento(trx, {
-        tipo: 'TRASLADO_ENTRADA', idProducto: traslado.id_producto, idBodega: traslado.id_bodega_destino, cantidad: traslado.cantidad,
-        lote, idTraslado: id, claveIdempotencia: claveEntrada, observacion, idUsuario: identity.idUsuario,
-      });
+        tipo: 'TRASLADO_ENTRADA', ...destino, cantidad: traslado.cantidad, idTraslado: id, claveIdempotencia: claveEntrada, observacion,
+        idUsuario: identity.idUsuario,
+      }).catch((error) => traducirConflictoDeLote(trx, error, destino));
       if (lote !== null) await comprobarLoteDeDestino(trx, movimiento.id_lote, lote);
       const recibido = await trasladoRepository.marcarRecibido(trx, id, { idUsuarioRecibe: identity.idUsuario });
       if (!recibido) throw new Error(`El traslado ${id} bloqueado y EN_TRANSITO no se pudo marcar como recibido`);
@@ -280,4 +322,4 @@ function crearTrasladoService(deps = {}) {
   };
 }
 
-module.exports = { crear, recibir, listar, crearTrasladoService };
+module.exports = { crear, recibir, listar, conflictoDeFecha, crearTrasladoService };
