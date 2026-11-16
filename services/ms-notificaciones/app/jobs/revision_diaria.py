@@ -62,7 +62,9 @@ def ejecutar(hoy=None):
     resumen = {"vencimiento": 0, "stock_bajo": 0, "errores": []}
 
     try:
-        for lote in inventario.lotes_por_vencer(limite.isoformat(), request_id):
+        # En ms-inventario vence_antes_de es estricto (un lote que vence ese día no entra): se pide el día
+        # siguiente al límite para incluir los que vencen justo el último día de anticipación.
+        for lote in inventario.lotes_por_vencer((limite + timedelta(days=1)).isoformat(), request_id):
             mensaje = _mensaje_vencimiento(lote, limite)
             if _crear("VENCIMIENTO", mensaje, lote.get("id_producto"), lote.get("id_bodega"), request_id):
                 resumen["vencimiento"] += 1
