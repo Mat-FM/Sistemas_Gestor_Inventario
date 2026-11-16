@@ -121,15 +121,11 @@ tags:
     description: 'Estado del servicio.'
 
 paths:
-  # Cada ruta declara a nivel de ruta sus parámetros de ruta y las cabeceras de identidad (opcionales: las lecturas internas no las
-  # envían). Las operaciones de escritura las vuelven a declarar como OBLIGATORIAS (un parámetro de operación reemplaza al de ruta
-  # con el mismo nombre y lugar). Los anclajes (&) de la primera ruta se reutilizan con alias (*) en las demás.
+  # A nivel de RUTA solo van los parámetros de ruta ({id}). Las cabeceras de identidad las declara CADA operación una sola vez
+  # (opcionales en las lecturas, que las llamadas internas no envían; obligatorias en las escrituras): Swagger UI no aplica el
+  # reemplazo «el parámetro de la operación sustituye al de la ruta» cuando vienen por referencias distintas y mostraría las
+  # cabeceras dos veces. Los anclajes (&) de la primera lectura se reutilizan con alias (*) en las demás operaciones.
   /health:
-    parameters:
-      - &usuarioId { $ref: '#/components/parameters/UsuarioId' }
-      - &usuarioRol { $ref: '#/components/parameters/UsuarioRol' }
-      - &usuarioBodega { $ref: '#/components/parameters/UsuarioBodega' }
-      - &idPeticion { $ref: '#/components/parameters/IdPeticion' }
     get:
       tags: [Servicio]
       operationId: comprobarSalud
@@ -141,6 +137,11 @@ paths:
 
         Si algo falla responde 503 `SERVICIO_NO_DISPONIBLE` sin revelar qué (el registro del servidor nombra las variables
         que faltan o son inválidas, nunca sus valores). No pasa por el Gateway y no se escribe en el registro de peticiones.
+      parameters:
+        - &usuarioId { $ref: '#/components/parameters/UsuarioId' }
+        - &usuarioRol { $ref: '#/components/parameters/UsuarioRol' }
+        - &usuarioBodega { $ref: '#/components/parameters/UsuarioBodega' }
+        - &idPeticion { $ref: '#/components/parameters/IdPeticion' }
       responses:
         '200':
           description: 'El servicio está activo y bien configurado.'
@@ -152,11 +153,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /bodegas:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Bodegas]
       operationId: listarBodegas
@@ -173,6 +169,10 @@ paths:
           schema: { type: boolean }
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de bodegas.'
@@ -195,6 +195,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -222,16 +224,17 @@ paths:
   /bodegas/{id}:
     parameters:
       - $ref: '#/components/parameters/IdBodegaRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Bodegas]
       operationId: obtenerBodega
       summary: Obtener una bodega
       description: |
         **Roles:** todos. Un `{id}` que no sea un entero positivo es 404, igual que una bodega que no existe.
+      parameters:
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'La bodega.'
@@ -251,6 +254,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -273,10 +278,6 @@ paths:
   /bodegas/{id}/inactivar:
     parameters:
       - $ref: '#/components/parameters/IdBodegaRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Bodegas]
       operationId: inactivarBodega
@@ -290,6 +291,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'La bodega, ya inactiva.'
@@ -303,10 +306,6 @@ paths:
   /bodegas/{id}/activar:
     parameters:
       - $ref: '#/components/parameters/IdBodegaRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Bodegas]
       operationId: activarBodega
@@ -317,6 +316,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'La bodega, ya activa.'
@@ -328,11 +329,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /saldos:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Saldos]
       operationId: listarSaldos
@@ -351,6 +347,10 @@ paths:
         - $ref: '#/components/parameters/FiltroIdBodega'
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de saldos.'
@@ -363,11 +363,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /saldos/bajo-umbral:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Saldos]
       operationId: listarSaldosBajoUmbral
@@ -379,6 +374,11 @@ paths:
         igual al mínimo no hay alerta). Un producto con umbral y sin ningún saldo cuenta como total 0, y un umbral de 0 nunca
         alerta. Es un arreglo plano, **sin paginar**, ordenado por `id_producto`. No aplica el alcance por bodega: son totales
         globales.
+      parameters:
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Los productos bajo su umbral (puede ser una lista vacía).'
@@ -391,11 +391,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /umbrales:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Umbrales]
       operationId: listarUmbrales
@@ -407,6 +402,10 @@ paths:
         - $ref: '#/components/parameters/FiltroIdProducto'
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de umbrales.'
@@ -420,10 +419,6 @@ paths:
   /umbrales/{id_producto}:
     parameters:
       - $ref: '#/components/parameters/IdProductoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     put:
       tags: [Umbrales]
       operationId: guardarUmbral
@@ -439,6 +434,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -468,11 +465,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /movimientos:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Movimientos]
       operationId: registrarMovimiento
@@ -515,6 +507,8 @@ paths:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
         - $ref: '#/components/parameters/ClaveIdempotencia'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -637,6 +631,10 @@ paths:
           schema: { type: string, format: date }
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página del kardex.'
@@ -651,10 +649,6 @@ paths:
   /movimientos/{id}:
     parameters:
       - $ref: '#/components/parameters/IdMovimientoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Movimientos]
       operationId: obtenerMovimiento
@@ -663,6 +657,11 @@ paths:
         **Roles:** ADMINISTRADOR, CONTADOR y OPERADOR_BODEGA. Un operador de bodega solo ve los de su bodega: uno de otra bodega
         es **403** y no 404 (el operador consulta «el kardex de su bodega»), y un operador sin bodega asignada recibe 403 aunque el
         movimiento no exista. Un `{id}` que no sea un entero positivo es 404.
+      parameters:
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'El movimiento.'
@@ -675,11 +674,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /lotes:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Lotes]
       operationId: listarLotes
@@ -705,6 +699,10 @@ paths:
           schema: { type: boolean }
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de lotes.'
@@ -717,11 +715,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /lotes/sugerencia-salida:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Lotes]
       operationId: sugerirSalidaDeLotes
@@ -750,6 +743,10 @@ paths:
           required: true
           description: 'Unidades que se quieren sacar (entero, 1 o más).'
           schema: { type: integer, format: int32, minimum: 1 }
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Los lotes y la cantidad a tomar de cada uno.'
@@ -769,11 +766,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /traslados:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Traslados]
       operationId: crearTraslado
@@ -803,6 +795,8 @@ paths:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
         - $ref: '#/components/parameters/ClaveIdempotencia'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -866,6 +860,10 @@ paths:
           schema: { type: integer, format: int32, minimum: 1 }
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de traslados.'
@@ -880,10 +878,6 @@ paths:
   /traslados/{id}/recepcion:
     parameters:
       - $ref: '#/components/parameters/IdTrasladoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Traslados]
       operationId: recibirTraslado
@@ -913,6 +907,8 @@ paths:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
         - $ref: '#/components/parameters/ClaveIdempotencia'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: false
         content:
@@ -950,11 +946,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /conteos:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Conteos]
       operationId: programarConteo
@@ -976,6 +967,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -1025,6 +1018,10 @@ paths:
           schema: { $ref: '#/components/schemas/EstadoConteo' }
         - $ref: '#/components/parameters/Pagina'
         - $ref: '#/components/parameters/PorPagina'
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'Página de conteos, sin líneas.'
@@ -1039,10 +1036,6 @@ paths:
   /conteos/{id}:
     parameters:
       - $ref: '#/components/parameters/IdConteoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     get:
       tags: [Conteos]
       operationId: obtenerConteo
@@ -1051,6 +1044,11 @@ paths:
         **Roles:** ADMINISTRADOR y OPERADOR_BODEGA. Las líneas van ordenadas por `id_producto`. Un operador de bodega solo ve los de su
         bodega: uno de otra bodega es **403** y no 404, y un operador sin bodega asignada recibe 403 aunque el conteo no exista. Un
         `{id}` que no sea un entero positivo es 404.
+      parameters:
+        - *usuarioId
+        - *usuarioRol
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'El conteo con sus líneas.'
@@ -1065,10 +1063,6 @@ paths:
   /conteos/{id}/detalles:
     parameters:
       - $ref: '#/components/parameters/IdConteoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     put:
       tags: [Conteos]
       operationId: registrarDetallesConteo
@@ -1089,6 +1083,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - *usuarioBodega
+        - *idPeticion
       requestBody:
         required: true
         content:
@@ -1127,10 +1123,6 @@ paths:
   /conteos/{id}/aprobacion:
     parameters:
       - $ref: '#/components/parameters/IdConteoRuta'
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Conteos]
       operationId: aprobarConteo
@@ -1156,6 +1148,8 @@ paths:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
         - $ref: '#/components/parameters/ClaveIdempotencia'
+        - *usuarioBodega
+        - *idPeticion
       responses:
         '200':
           description: 'El conteo `APROBADO` y un movimiento `AJUSTE` por cada línea ajustada, por `id_producto` (también en la repetición de la misma aprobación).'
@@ -1180,11 +1174,6 @@ paths:
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /internas/saldos/carga-inicial:
-    parameters:
-      - *usuarioId
-      - *usuarioRol
-      - *usuarioBodega
-      - *idPeticion
     post:
       tags: [Internas]
       operationId: cargarSaldosIniciales
@@ -1224,6 +1213,8 @@ paths:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
         - $ref: '#/components/parameters/ClaveIdempotencia'
+        - *usuarioBodega
+        - *idPeticion
       # Hasta 1 MiB = 1 048 576 bytes, frente a los 102 400 del resto de las rutas. Una prueba lo compara con el servicio.
       requestBody:
         required: true

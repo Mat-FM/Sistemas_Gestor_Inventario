@@ -19,8 +19,8 @@ const resolver = (documento, nodo) => (nodo && typeof nodo === 'object' && '$ref
 
 /**
  * Los parámetros EFECTIVOS de una operación: los de la ruta más los de la operación, ya resueltos, y con el de la operación
- * reemplazando al de la ruta que tenga el mismo nombre y lugar (así lo define OpenAPI). Así una escritura vuelve obligatorias las
- * cabeceras de identidad que la ruta declara como opcionales.
+ * reemplazando al de la ruta que tenga el mismo nombre y lugar (así lo define OpenAPI). El documento NO se apoya en ese reemplazo:
+ * Swagger UI no lo aplica y mostraría el parámetro dos veces, así que docs.test.js exige que ninguna ruta y operación coincidan.
  */
 function parametrosEfectivos(documento, itemDeRuta, operacion) {
   const efectivos = new Map();

@@ -421,6 +421,31 @@ describe('openapi.yaml: estructura del documento', () => {
     }
   });
 
+  it('ningún parámetro de ruta comparte (nombre, in) con uno de la operación y ninguna operación repite uno: Swagger UI no aplica el reemplazo de la especificación', () => {
+    // La especificación dice que el parámetro de la operación sustituye al de la ruta con el mismo (nombre, in), y las pruebas de
+    // «parámetros efectivos» de arriba lo respetan; pero Swagger UI no lo aplica cuando vienen por referencias distintas y mostró las
+    // cabeceras de identidad dos veces en las escrituras. Aquí se mira el documento YA RESUELTO, sin aplicar el reemplazo.
+    const clave = (parametro) => `${parametro.in}:${parametro.name}`;
+    const resueltos = (lista = []) => lista.map((parametro) => resolver(documento, parametro));
+    const repetidos = (claves) => claves.filter((c, i) => claves.indexOf(c) !== i);
+    const IDENTIDAD = ['X-User-Id', 'X-User-Rol', 'X-User-Bodega', 'X-Request-Id'];
+    for (const [ruta, item] of Object.entries(documento.paths)) {
+      const deRuta = resueltos(item.parameters);
+      expect({ ruta, repetidosEnLaRuta: repetidos(deRuta.map(clave)) }).toEqual({ ruta, repetidosEnLaRuta: [] });
+      expect({ ruta, aNivelDeRutaQueNoSonDeRuta: deRuta.filter((p) => p.in !== 'path').map(clave) }).toEqual({ ruta, aNivelDeRutaQueNoSonDeRuta: [] });
+    }
+    for (const { clave: operacionClave, ruta, operacion } of operaciones(documento)) {
+      const deRuta = resueltos(documento.paths[ruta].parameters).map(clave);
+      const deOperacion = resueltos(operacion.parameters).map(clave);
+      expect({ operacionClave, repetidosEnLaOperacion: repetidos(deOperacion) }).toEqual({ operacionClave, repetidosEnLaOperacion: [] });
+      expect({ operacionClave, tambienEnLaRuta: deOperacion.filter((c) => deRuta.includes(c)) }).toEqual({ operacionClave, tambienEnLaRuta: [] });
+      // Cada operación declara sus cabeceras de identidad y el identificador de la petición UNA sola vez, ella misma.
+      for (const cabecera of IDENTIDAD) {
+        expect({ operacionClave, cabecera, veces: deOperacion.filter((c) => c === `header:${cabecera}`).length }).toEqual({ operacionClave, cabecera, veces: 1 });
+      }
+    }
+  });
+
   it('todo esquema, parámetro y respuesta de components se usa desde alguna operación (directa o indirectamente)', () => {
     const alcanzadas = new Set();
     const pendientes = referenciasEn(documento.paths).map(({ ref }) => ref);
