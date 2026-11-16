@@ -1,4 +1,4 @@
-const { describirError, e } = require('../errors');
+const { e } = require('../errors');
 const { cuerpoObjeto, entero, fecha, idRuta, recoger, validarCampos } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
 const bodegaRepository = require('../repositories/bodegaRepository');
@@ -6,6 +6,7 @@ const conteoRepository = require('../repositories/conteoRepository');
 const movimientoRepository = require('../repositories/movimientoRepository');
 const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia } = require('./idempotencia');
 const movimientoService = require('./movimientoService');
+const { registrarFallo } = require('./registroFallos');
 const stockService = require('./stockService');
 
 // Lógica de negocio de los conteos físicos (RF18; RNF13). Un conteo pasa por tres estados (D32(c)):
@@ -286,15 +287,6 @@ async function resolverFalloDeAprobacion(db, base, idConteo, error) {
   return repeticionDeAprobacion(db, hallado, idConteo, base);
 }
 
-// Un logger roto no puede cambiar la respuesta de una aprobación ya confirmada.
-function registrarFallo(logger, registro) {
-  try {
-    logger?.error(registro);
-  } catch {
-    // se ignora: registrar es secundario
-  }
-}
-
 /**
  * Aprueba un conteo (POST /conteos/{id}/aprobacion). Orden (cada paso decide antes que el siguiente):
  * 1. requireUser: sin X-User-Id → 401. 2. Idempotency-Key: falta, vacía, más de 200 caracteres o con «#» → 400.
@@ -353,7 +345,8 @@ async function aprobar(deps, { idConteo, claveIdempotencia, identity }) {
     try {
       await movimientoService.evaluarUmbral(deps, { tipo: 'AJUSTE', idProducto: movimiento.id_producto, idBodega: movimiento.id_bodega, identity });
     } catch (error) {
-      registrarFallo(logger, { mensaje: 'No se pudo evaluar el umbral tras aprobar el conteo', id_conteo: id, id_producto: movimiento.id_producto, error: describirError(error) });
+      // Un logger roto no puede cambiar la respuesta de una aprobación ya confirmada.
+      registrarFallo(logger, { mensaje: 'No se pudo evaluar el umbral tras aprobar el conteo', id_conteo: id, id_producto: movimiento.id_producto }, error);
     }
   }
   return { ...resultado, replayed: false };

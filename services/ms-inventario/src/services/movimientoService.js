@@ -1,5 +1,5 @@
 const { TIPOS, TIPOS_PERMITIDOS_POR_API, delta, evaluaUmbral } = require('../domain/tipos');
-const { describirError, e } = require('../errors');
+const { e } = require('../errors');
 const { headersDe } = require('../clients/propagacion');
 const { ENTERO_MAXIMO, cuerpoObjeto, entero, enumerado, fecha, recoger, texto, validarCampos } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
@@ -7,6 +7,7 @@ const movimientoRepository = require('../repositories/movimientoRepository');
 const saldoRepository = require('../repositories/saldoRepository');
 const umbralRepository = require('../repositories/umbralRepository');
 const { OPERACIONES, claveAlmacenada, leerClaveIdempotencia, resolverFallo } = require('./idempotencia');
+const { registrarFallo } = require('./registroFallos');
 const stockService = require('./stockService');
 
 // Lógica de negocio de los movimientos (RF04, RF10, RF15, RNF17; RNF13): el registro (POST /movimientos: idempotencia por usuario
@@ -98,15 +99,6 @@ function leerCuerpo(cuerpo) {
   });
 }
 
-// Un logger roto no puede hacer que el aviso de stock bajo lance: nunca debe cambiar la respuesta del movimiento.
-function registrarFallo(logger, registro) {
-  try {
-    logger.error(registro);
-  } catch {
-    // se ignora: registrar es secundario
-  }
-}
-
 /**
  * Aviso de stock bajo (D13; llamada 3 de la Tabla 2, «aviso»). Se llama DESPUÉS del commit, con la conexión normal (nunca con
  * la transacción): lee el umbral del producto y el total de TODAS las bodegas y, si el total es ESTRICTAMENTE menor que la
@@ -122,7 +114,8 @@ function registrarFallo(logger, registro) {
  * @returns {Promise<void>} se resuelve tras las lecturas, sin esperar el aviso
  */
 async function evaluarUmbral({ db, clients, logger }, { tipo, idProducto, idBodega, identity }) {
-  const fallo = (mensaje) => (error) => registrarFallo(logger, { mensaje, id_producto: idProducto, id_bodega: idBodega, error: describirError(error) });
+  // Un logger roto no puede hacer que el aviso de stock bajo lance: nunca debe cambiar la respuesta del movimiento.
+  const fallo = (mensaje) => (error) => registrarFallo(logger, { mensaje, id_producto: idProducto, id_bodega: idBodega }, error);
   try {
     if (!evaluaUmbral(tipo)) return;
     const umbral = await umbralRepository.findByProducto(db, idProducto);
