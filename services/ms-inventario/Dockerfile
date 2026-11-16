@@ -26,9 +26,10 @@ COPY migrations ./migrations
 COPY knexfile.js openapi.yaml ./
 
 # Se ejecuta con un usuario sin privilegios, no como root. La imagen ya trae el usuario `node` (UID 1000); aquí se crea uno
-# propio con un UID alto y fijo, para que el securityContext de Kubernetes (runAsUser) pueda nombrarlo.
+# propio con un UID alto y fijo, y USER lo nombra por su número: con `runAsNonRoot: true` en el securityContext de Kubernetes,
+# el kubelet rechaza una imagen cuyo USER es un nombre, porque no puede comprobar que no sea root.
 RUN useradd --create-home --uid 10001 servicio
-USER servicio
+USER 10001
 
 EXPOSE 3000
 

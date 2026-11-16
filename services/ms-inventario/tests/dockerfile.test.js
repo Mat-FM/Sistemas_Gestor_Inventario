@@ -177,12 +177,14 @@ describe('el Dockerfile', () => {
     const usuario = orden[orden.length - 1]; // useradd [opciones] LOGIN
     const usuarios = todas.filter((i) => i.nombre === 'USER');
     expect(usuarios.length).toBeGreaterThan(0);
-    expect(usuarios[usuarios.length - 1].argumentos).toBe(usuario);
+    // Por NÚMERO, no por nombre: con `runAsNonRoot: true` el kubelet rechaza una imagen cuyo USER no es numérico.
+    expect(usuarios[usuarios.length - 1].argumentos).toBe('10001');
     // el USER va antes del CMD y del HEALTHCHECK (ambos corren con él) y no se vuelve a root después
     const indiceUsuario = todas.map((i) => i.nombre).lastIndexOf('USER');
     expect(indiceUsuario).toBeLessThan(todas.findIndex((i) => i.nombre === 'CMD'));
     expect(indiceUsuario).toBeLessThan(todas.findIndex((i) => i.nombre === 'HEALTHCHECK'));
     expect(usuario).not.toMatch(/^(root|0)$/);
+    expect(usuarios.map((i) => i.argumentos)).not.toContain('root');
   });
 
   it('fija NODE_ENV=production y expone el mismo puerto que usa el servicio por defecto (PORT)', () => {
