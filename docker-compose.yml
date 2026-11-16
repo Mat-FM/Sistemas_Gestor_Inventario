@@ -65,6 +65,11 @@ services:
       - "127.0.0.1:${INVENTARIO_DB_PORT:-5433}:5432"
     volumes:
       - db-ms-inventario:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${INVENTARIO_DB_USER:-inventario} -d ${INVENTARIO_DB_NAME:-inventario_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-compras:
     <<: *postgres
@@ -110,6 +115,37 @@ services:
       - db-ms-reportes:/var/lib/postgresql/data
 
   # ---------- Microservicios ----------
+  # ms-inventario no migra al arrancar: este contenedor aplica las migraciones una sola vez y termina,
+  # y ms-inventario espera a que acabe bien (con varias copias, una sola migración para todas).
+  ms-inventario-migraciones:
+    build: ./services/ms-inventario
+    command: ["node_modules/.bin/knex", "migrate:latest"]
+    restart: "no"
+    environment: &inventario-db
+      DB_HOST: db-ms-inventario
+      DB_PORT: "5432"
+      DB_NAME: ${INVENTARIO_DB_NAME:-inventario_db}
+      DB_USER: ${INVENTARIO_DB_USER:-inventario}
+      DB_PASSWORD: ${INVENTARIO_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-inventario:
+        condition: service_healthy
+
+  ms-inventario:
+    build: ./services/ms-inventario
+    restart: unless-stopped
+    environment:
+      <<: *inventario-db
+      # Direcciones reales de los otros servicios en la red de Compose (las mismas del clúster, RNF14).
+      # Mientras ms-catalogo no esté levantado, los movimientos, umbrales y traslados nuevos responden 503.
+      MS_CATALOGO_URL: ${INVENTARIO_CATALOGO_URL:-http://ms-catalogo:8000}
+      MS_NOTIFICACIONES_URL: ${INVENTARIO_NOTIFICACIONES_URL:-http://ms-notificaciones:5000}
+    ports:
+      - "127.0.0.1:${INVENTARIO_PORT:-3001}:3000"
+    depends_on:
+      ms-inventario-migraciones:
+        condition: service_completed_successfully
+
   ms-compras:
     build: ./services/ms-compras
     restart: unless-stopped
