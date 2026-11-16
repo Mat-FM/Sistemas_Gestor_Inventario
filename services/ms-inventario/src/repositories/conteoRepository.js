@@ -101,4 +101,56 @@ async function listar(dbOrTrx, { estado, idBodega, limit, offset }) {
   return { filas, total: Number(resumen.total) };
 }
 
-module.exports = { insertarConteo, insertarDetalles, listarDetalles, findById, listar };
+/**
+ * Toma la cabecera de un conteo con `SELECT … FOR UPDATE` (bloqueada hasta el fin de la transacción). Debe llamarse con una
+ * transacción. Es el PRIMER bloqueo del registro de lo contado y de la aprobación (D32(d)(e)): dos operaciones sobre el mismo
+ * conteo se ponen en fila aquí y la segunda, al obtener el bloqueo, lee el estado que dejó la primera (READ COMMITTED relee la
+ * versión confirmada de la fila).
+ * @returns {Promise<object|undefined>} la cabecera (sin detalles)
+ */
+async function bloquearPorId(trx, id) {
+  return trx(TABLA).select(COLUMNAS).where({ id_conteo: id }).forUpdate().first();
+}
+
+/**
+ * Registra lo contado en las líneas enviadas (D11, D32(a)), en UNA sentencia: fija `cantidad_contada`, refresca
+ * `cantidad_sistema` con el saldo de ESE instante en la bodega del conteo (0 si no hay saldo) y guarda
+ * `diferencia = cantidad_contada − cantidad_sistema` (con signo; cabe en INTEGER: ambos están entre 0 y el máximo). Lectura de
+ * saldos SIN bloqueo: es la foto del momento del conteo. Las líneas no enviadas no cambian; un producto que no está en el conteo
+ * no cambia nada (el servicio lo rechaza antes con 422). Quien llama debe tener bloqueada la cabecera (bloquearPorId).
+ * @param {{idConteo: number, idBodega: number, lineas: Array<{idProducto: number, cantidadContada: number}>}} datos ya validados
+ * @returns {Promise<number>} cuántas líneas cambió
+ */
+async function registrarContados(dbOrTrx, { idConteo, idBodega, lineas }) {
+  const resultado = await dbOrTrx.raw(`
+    UPDATE detalles_conteo AS d
+    SET cantidad_contada = v.contada,
+        cantidad_sistema = x.sistema,
+        diferencia = v.contada - x.sistema
+    FROM unnest(?::int[], ?::int[]) AS v(id_producto, contada)
+    CROSS JOIN LATERAL (
+      SELECT COALESCE((SELECT s.cantidad_disponible FROM saldos s WHERE s.id_bodega = ? AND s.id_producto = v.id_producto), 0) AS sistema
+    ) AS x
+    WHERE d.id_conteo = ? AND d.id_producto = v.id_producto`, [
+    arregloEnteros(lineas.map((linea) => linea.idProducto)), arregloEnteros(lineas.map((linea) => linea.cantidadContada)), idBodega, idConteo,
+  ]);
+  return resultado.rowCount;
+}
+
+/**
+ * Pasa un conteo a EN_REVISION (desde PROGRAMADO, o lo deja en EN_REVISION). Nunca cambia uno APROBADO: la condición va en el
+ * WHERE y entonces devuelve undefined. Quien llama debe tener la fila bloqueada y haber comprobado el estado.
+ * @returns {Promise<object|undefined>} la cabecera actualizada
+ */
+async function marcarEnRevision(trx, id) {
+  const [conteo] = await trx(TABLA)
+    .where({ id_conteo: id })
+    .whereNot({ estado: 'APROBADO' })
+    .update({ estado: 'EN_REVISION' })
+    .returning(COLUMNAS);
+  return conteo;
+}
+
+module.exports = {
+  insertarConteo, insertarDetalles, listarDetalles, findById, listar, bloquearPorId, registrarContados, marcarEnRevision,
+};

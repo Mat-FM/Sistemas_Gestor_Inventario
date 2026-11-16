@@ -42,6 +42,11 @@ function crearConteoController({ conteoService }) {
     async programar(req, res) {
       res.status(201).json(await conteoService.programar({ body: req.body, identity: req.identity }));
     },
+
+    // PUT /conteos/{id}/detalles → 200 conteo EN_REVISION con cantidad_sistema y diferencia en cada línea
+    async registrarDetalles(req, res) {
+      res.json(await conteoService.registrarDetalles({ idConteo: req.params.id, body: req.body, identity: req.identity }));
+    },
   };
 }
 

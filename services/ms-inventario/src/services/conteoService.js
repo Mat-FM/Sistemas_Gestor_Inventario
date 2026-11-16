@@ -131,13 +131,87 @@ async function listar({ db }, { estado, idBodega, limit, offset, identity }) {
   return conteoRepository.listar(db, { estado, idBodega: bodegaEfectiva, limit, offset });
 }
 
+const estadoInvalido = (mensaje) => e.conflicto('CONTEO_ESTADO_INVALIDO', mensaje);
+
+/**
+ * Cuerpo de PUT /conteos/{id}/detalles: {detalles: [{id_producto, cantidad_contada}]} (Tabla 9, D32(b)). `detalles` es un
+ * arreglo NO vacío; cada elemento, un objeto con `id_producto` (entero positivo) y `cantidad_contada` (entero ≥ 0, techo
+ * INTEGER). Un id_producto repetido es 422 sobre la posición repetida. Informa todos los problemas a la vez
+ * (`detalles[i].campo`); los demás campos de cada elemento se descartan.
+ * @returns {Array<{idProducto: number, cantidadContada: number}>}
+ */
+function leerCuerpoDetalles(cuerpo) {
+  const { detalles } = cuerpoObjeto(cuerpo);
+  if (!Array.isArray(detalles) || detalles.length === 0) {
+    throw e.datosNoValidos([{ campo: 'detalles', mensaje: 'debe ser una lista no vacía de { id_producto, cantidad_contada }' }]);
+  }
+  const errores = [];
+  const vistos = new Set();
+  const lineas = detalles.map((linea, posicion) => {
+    const prefijo = `detalles[${posicion}]`;
+    if (typeof linea !== 'object' || linea === null || Array.isArray(linea)) {
+      errores.push({ campo: prefijo, mensaje: 'debe ser un objeto { id_producto, cantidad_contada }' });
+      return undefined;
+    }
+    const idProducto = recoger(errores, () => entero(linea.id_producto, `${prefijo}.id_producto`));
+    if (idProducto !== undefined && vistos.has(idProducto)) {
+      errores.push({ campo: `${prefijo}.id_producto`, mensaje: `el producto ${idProducto} está repetido` });
+    }
+    vistos.add(idProducto);
+    const cantidadContada = recoger(errores, () => entero(linea.cantidad_contada, `${prefijo}.cantidad_contada`, { min: 0 }));
+    return { idProducto, cantidadContada };
+  });
+  if (errores.length > 0) throw e.datosNoValidos(errores);
+  return lineas;
+}
+
+/**
+ * Registra lo contado (PUT /conteos/{id}/detalles). Orden (cada paso decide antes que el siguiente):
+ * 1. requireUser: sin X-User-Id → 401 (D8, D22). 2. {id} de la ruta inválido → 404.
+ * 3. Un operador sin bodega asignada → 403 antes de tocar la base. 4. Conteo inexistente → 404.
+ * 5. Un operador de otra bodega → 403 (scopeBodega sobre la bodega DEL CONTEO, D32(h)). 6. Cuerpo → 422.
+ * 7. Transacción: bloquea la fila del conteo (FOR UPDATE) ANTES de mirar el estado (una aprobación simultánea se pone en fila y
+ *    este PUT ve APROBADO → 409 CONTEO_ESTADO_INVALIDO); un producto que no está en el conteo → 422 sobre su posición (nada
+ *    cambia: ninguna línea del cuerpo se guarda); registra lo contado (registrarContados: cantidad_sistema = saldo de ESE
+ *    instante, diferencia = contada − sistema, D11, D32(a)) y deja el conteo EN_REVISION. Repetible mientras no esté APROBADO.
+ *    No toca saldos ni kardex, no llama a otros servicios y no necesita Idempotency-Key: repetirlo con el mismo cuerpo deja el
+ *    mismo resultado (salvo que el saldo haya cambiado, y entonces lo correcto es la foto nueva).
+ * @param {{db: object}} deps
+ * @param {{idConteo: string|number, body: unknown, identity: object}} peticion
+ * @returns {Promise<Conteo>} el conteo EN_REVISION con sus líneas
+ */
+async function registrarDetalles({ db }, { idConteo, body, identity }) {
+  requireUser(identity);
+  const id = leerIdConteo(idConteo);
+  scopeBodega(identity);
+  const actual = await conteoRepository.findById(db, id);
+  if (!actual) throw conteoNoExiste();
+  scopeBodega(identity, actual.id_bodega);
+  const lineas = leerCuerpoDetalles(body);
+
+  return db.transaction(async (trx) => {
+    const conteo = await conteoRepository.bloquearPorId(trx, id); // PRIMER bloqueo; el estado se mira después
+    if (conteo.estado === 'APROBADO') throw estadoInvalido('El conteo ya fue aprobado: no admite más cantidades contadas');
+    const enConteo = new Set(actual.detalles.map((linea) => linea.id_producto)); // las líneas no cambian tras programar
+    const fuera = lineas
+      .map((linea, posicion) => ({ linea, posicion }))
+      .filter(({ linea }) => !enConteo.has(linea.idProducto))
+      .map(({ linea, posicion }) => ({ campo: `detalles[${posicion}].id_producto`, mensaje: `el producto ${linea.idProducto} no está en el conteo` }));
+    if (fuera.length > 0) throw e.datosNoValidos(fuera);
+    await conteoRepository.registrarContados(trx, { idConteo: id, idBodega: conteo.id_bodega, lineas });
+    if (!(await conteoRepository.marcarEnRevision(trx, id))) throw new Error(`El conteo ${id} bloqueado y sin aprobar no pasó a EN_REVISION`);
+    return conteoRepository.findById(trx, id);
+  });
+}
+
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
 function crearConteoService(deps = {}) {
   return {
     programar: (peticion) => programar(deps, peticion),
+    registrarDetalles: (peticion) => registrarDetalles(deps, peticion),
     obtener: (peticion) => obtener(deps, peticion),
     listar: (consulta) => listar(deps, consulta),
   };
 }
 
-module.exports = { programar, obtener, listar, crearConteoService };
+module.exports = { programar, registrarDetalles, obtener, listar, crearConteoService };

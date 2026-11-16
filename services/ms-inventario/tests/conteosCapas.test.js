@@ -136,7 +136,90 @@ promesasReales(conteoRepository, {
   listarDetalles: [1],
   findById: [1],
   listar: [{ limit: 10, offset: 0 }],
+  bloquearPorId: [1],
+  registrarContados: [{ idConteo: 1, idBodega: 1, lineas: [{ idProducto: 5, cantidadContada: 3 }] }],
+  marcarEnRevision: [1],
 }, { titulo: 'conteoRepository', db: () => db });
+
+describe('conteoRepository: registro de lo contado', () => {
+  // ¿Está bloqueada la fila del conteo? Otra transacción intenta tomarla con un lock_timeout corto: 55P03 si alguien la tiene.
+  async function estaBloqueado(id) {
+    try {
+      await db.transaction(async (trx) => {
+        await trx.raw("SET LOCAL lock_timeout = '150ms'");
+        await trx('conteos').where({ id_conteo: id }).forUpdate().first();
+      });
+      return false;
+    } catch (error) {
+      if (error.code === '55P03') return true;
+      throw error;
+    }
+  }
+  let conteo;
+  beforeEach(async () => {
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 70 });
+    conteo = await nuevoConteo();
+    await conteoRepository.insertarDetalles(db, { idConteo: conteo.id_conteo, idBodega: b1, idsProducto: [5, 6, 7] });
+  });
+
+  it('bloquearPorId devuelve la cabecera (o undefined) y bloquea SU fila (FOR UPDATE) hasta el fin de la transacción, y solo esa', async () => {
+    /* D32(d): el primer bloqueo del registro y de la aprobación. Control: sin transacción abierta la fila está libre. */
+    const otro = await nuevoConteo({ fechaProgramada: '2026-11-21' });
+    expect(await estaBloqueado(conteo.id_conteo)).toBe(false);
+    const trx = await db.transaction();
+    try {
+      expect(await conteoRepository.bloquearPorId(trx, conteo.id_conteo)).toEqual(conteo);
+      expect(await conteoRepository.bloquearPorId(trx, 9999)).toBeUndefined();
+      expect(await estaBloqueado(conteo.id_conteo)).toBe(true);
+      expect(await estaBloqueado(otro.id_conteo)).toBe(false);
+    } finally {
+      await trx.rollback();
+    }
+    expect(await estaBloqueado(conteo.id_conteo)).toBe(false);
+  });
+
+  it('registrarContados fija contada, refresca cantidad_sistema con el saldo de ESA bodega (0 sin saldo) y diferencia con signo; solo las líneas enviadas', async () => {
+    /* D11, D32(a): el saldo de p5 en la otra bodega (70) no cuenta. */
+    await db('saldos').where({ id_producto: 5, id_bodega: b1 }).update({ cantidad_disponible: 12 });
+    const cambiadas = await conteoRepository.registrarContados(db, {
+      idConteo: conteo.id_conteo, idBodega: b1, lineas: [{ idProducto: 7, cantidadContada: 4 }, { idProducto: 5, cantidadContada: 9 }],
+    });
+    expect(cambiadas).toBe(2);
+    expect((await conteoRepository.listarDetalles(db, conteo.id_conteo)).map((l) => [l.id_producto, l.cantidad_sistema, l.cantidad_contada, l.diferencia]))
+      .toEqual([[5, 12, 9, -3], [6, 0, null, null], [7, 0, 4, 4]]);
+  });
+
+  it('registrarContados no toca líneas de OTRO conteo ni productos que no están en el conteo (devuelve solo las que cambió)', async () => {
+    /* El servicio rechaza antes los productos fuera del conteo; el SQL tampoco los inventa. */
+    const otro = await nuevoConteo({ fechaProgramada: '2026-11-21' });
+    await conteoRepository.insertarDetalles(db, { idConteo: otro.id_conteo, idBodega: b1, idsProducto: [5] });
+    expect(await conteoRepository.registrarContados(db, { idConteo: conteo.id_conteo, idBodega: b1, lineas: [{ idProducto: 5, cantidadContada: 1 }, { idProducto: 99, cantidadContada: 1 }] })).toBe(1);
+    expect((await conteoRepository.listarDetalles(db, otro.id_conteo))[0]).toMatchObject({ cantidad_contada: null, diferencia: null });
+  });
+
+  it('marcarEnRevision pasa a EN_REVISION un PROGRAMADO o un EN_REVISION y nunca un APROBADO (la condición va en el WHERE)', async () => {
+    /* D32(c). */
+    expect(await conteoRepository.marcarEnRevision(db, conteo.id_conteo)).toEqual({ ...conteo, estado: 'EN_REVISION' });
+    expect(await conteoRepository.marcarEnRevision(db, conteo.id_conteo)).toEqual({ ...conteo, estado: 'EN_REVISION' });
+    await db('conteos').where({ id_conteo: conteo.id_conteo }).update({ estado: 'APROBADO' });
+    expect(await conteoRepository.marcarEnRevision(db, conteo.id_conteo)).toBeUndefined();
+    expect(await conteoRepository.marcarEnRevision(db, 9999)).toBeUndefined();
+    expect((await db('conteos').where({ id_conteo: conteo.id_conteo }).first()).estado).toBe('APROBADO');
+  });
+
+  it('los valores viajan como parámetros enlazados y nunca usa SELECT *', async () => {
+    /* Nada del cliente se pega al SQL. */
+    const sql = await conSql(db, async () => {
+      await db.transaction(async (trx) => {
+        await conteoRepository.bloquearPorId(trx, 54321);
+        await conteoRepository.registrarContados(trx, { idConteo: 54321, idBodega: 4242, lineas: [{ idProducto: 98765, cantidadContada: 13579 }] });
+        await conteoRepository.marcarEnRevision(trx, 54321);
+      });
+    });
+    for (const texto of sql) expect(texto).not.toMatch(/54321|4242|98765|13579|select \*/i);
+  });
+});
 
 describe('conteoService: programar, obtener y listar', () => {
   const ADMIN = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
@@ -197,6 +280,22 @@ describe('conteoService: programar, obtener y listar', () => {
     await conteoService.listar({ db }, { ...FILTROS, idBodega: 4, identity: INTERNA });
     expect(espia).toHaveBeenLastCalledWith(db, { ...FILTROS, idBodega: 4 });
     expect(espia).toHaveBeenCalledTimes(2);
+  });
+
+  it('registrarDetalles: orden 401 (sin X-User-Id) → 404 (id) → 403 (operador sin bodega, antes de tocar la base) → 404 (conteo) → 403 (otra bodega) → 422 (cuerpo)', async () => {
+    /* Como la recepción de un traslado: el cuerpo se valida después del alcance. */
+    const creado = await conteoService.programar({ db }, { body: cuerpo({ fecha_programada: '9999-12-31' }), identity: ADMIN });
+    const peticion = (extra) => ({ idConteo: creado.id_conteo, body: [], identity: ADMIN, ...extra });
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion({ identity: INTERNA, idConteo: 'x' })))).toMatchObject({ status: 401 });
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion({ idConteo: 'x', identity: { ...OPERADOR, idBodega: null } })))).toMatchObject({ status: 404 });
+    const espia = jest.spyOn(conteoRepository, 'findById');
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion({ identity: { ...OPERADOR, idBodega: null } })))).toMatchObject({ status: 403 });
+    expect(espia).not.toHaveBeenCalled();
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion({ idConteo: 9999 })))).toMatchObject({ status: 404 });
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion({ identity: OPERADOR })))).toMatchObject({ status: 403 });
+    expect(await atrapar(conteoService.registrarDetalles({ db }, peticion()))).toMatchObject({ status: 422 });
+    const hecho = await conteoService.registrarDetalles({ db }, peticion({ body: { detalles: [{ id_producto: 5, cantidad_contada: 2 }] } }));
+    expect(hecho).toMatchObject({ estado: 'EN_REVISION', detalles: [{ id_producto: 5, cantidad_sistema: 0, cantidad_contada: 2, diferencia: 2 }] });
   });
 
   it('crearConteoService se construye sin dependencias y las lee en cada llamada', async () => {

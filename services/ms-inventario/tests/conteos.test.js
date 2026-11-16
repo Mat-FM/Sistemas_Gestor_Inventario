@@ -1,10 +1,13 @@
+const conteoRepository = require('../src/repositories/conteoRepository');
 const { buildTestApp } = require('./helpers/app');
+const { esperarBloqueo } = require('./helpers/bloqueos');
 const { truncateAll } = require('./helpers/db');
 const { crearBodega, crearSaldo, headers } = require('./helpers/fixtures');
 const { esError, datosNoValidos, recursoNoExiste } = require('./helpers/respuestas');
 
 // Conteos físicos (RF18) de punta a punta, contra PostgreSQL real y con clientes falsos: POST /conteos (programar), GET /conteos
-// (listado) y GET /conteos/{id}. Las capas por separado están en conteosCapas.test.js.
+// (listado), GET /conteos/{id} y PUT /conteos/{id}/detalles (registrar lo contado). Las capas por separado están en
+// conteosCapas.test.js.
 //
 // El reloj del servicio está FIJADO (`now` inyectado, D32(g)): ninguna prueba depende del día en que corre ni falla a medianoche.
 //
@@ -402,5 +405,151 @@ describe('GET /conteos: listado', () => {
     expect(detalles).toHaveLength(1);
     const res = await listar(`?id_bodega=${b1}&estado=PROGRAMADO`);
     expect(res.body.datos[0]).toEqual(resumen);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// PUT /conteos/{id}/detalles
+// ---------------------------------------------------------------------------------------------------------------------------
+
+// PUT /conteos/{id}/detalles con las cabeceras dadas.
+const registrar = (id, detalles, cabeceras = ADM) => request.put(`/conteos/${id}/detalles`).set(cabeceras).send(detalles === undefined ? {} : { detalles });
+const lineas = (conteo) => conteo.detalles.map(({ id_producto: p, cantidad_sistema: s, cantidad_contada: c, diferencia: d }) => [p, s, c, d]);
+// Marca un conteo como APROBADO directamente en la base, con lo que exige el invariante (sin líneas contadas: ningún ajuste).
+const aprobarEnBase = (id) => db('conteos').where({ id_conteo: id }).update({
+  estado: 'APROBADO', fecha_aprobacion: db.fn.now(), id_usuario_aprueba: 7, clave_aprobacion: `7:con:base-${id}`,
+});
+
+describe('PUT /conteos/{id}/detalles: registro de lo contado (200)', () => {
+  let conteo;
+  beforeEach(async () => {
+    await crearSaldo(db, { idProducto: 3, idBodega: b1, cantidad: 4 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const res = await programar(cuerpoConteo({ ids_producto: [3, 5, 7] }));
+    expect(lineas(res.body)).toEqual([[3, 4, null, null], [5, 10, null, null], [7, 0, null, null]]);
+    conteo = res.body;
+  });
+
+  it('200 EN_REVISION: las líneas enviadas refrescan cantidad_sistema con el saldo de ESE instante (D11) y diferencia = contada − sistema, con signo; las no enviadas no cambian; ni saldos ni kardex cambian', async () => {
+    /* D32(a)(b): el saldo de p5 cambió entre la programación y el conteo. */
+    await db('saldos').where({ id_producto: 5, id_bodega: b1 }).update({ cantidad_disponible: 12 });
+    const antes = await foto();
+    const res = await registrar(conteo.id_conteo, [{ id_producto: 7, cantidad_contada: 2 }, { id_producto: 5, cantidad_contada: 9 }]);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual([...CLAVES_CONTEO].sort());
+    expect(res.body).toMatchObject({ id_conteo: conteo.id_conteo, estado: 'EN_REVISION', fecha_aprobacion: null, id_usuario_aprueba: null });
+    expect(lineas(res.body)).toEqual([[3, 4, null, null], [5, 12, 9, -3], [7, 0, 2, 2]]);
+    expect(res.body.detalles.map((l) => l.id_detalle_conteo)).toEqual(conteo.detalles.map((l) => l.id_detalle_conteo));
+    expect((await obtener(conteo.id_conteo)).body).toEqual(res.body);
+    const despues = await foto();
+    expect(despues.saldos).toEqual(antes.saldos);
+    expect(despues.movimientos).toEqual([]);
+    expect(clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
+  });
+
+  it('repetible mientras no esté APROBADO: la segunda vez vuelve a refrescar cantidad_sistema de las enviadas y recalcula la diferencia; cantidad_contada 0 vale', async () => {
+    /* D32(b). */
+    expect(lineas((await registrar(conteo.id_conteo, [{ id_producto: 5, cantidad_contada: 8 }])).body)[1]).toEqual([5, 10, 8, -2]);
+    await db('saldos').where({ id_producto: 5, id_bodega: b1 }).update({ cantidad_disponible: 6 });
+    const segunda = await registrar(conteo.id_conteo, [{ id_producto: 5, cantidad_contada: 8 }, { id_producto: 3, cantidad_contada: 0 }]);
+    expect(segunda.status).toBe(200);
+    expect(segunda.body.estado).toBe('EN_REVISION');
+    expect(lineas(segunda.body)).toEqual([[3, 4, 0, -4], [5, 6, 8, 2], [7, 0, null, null]]);
+  });
+
+  it('el techo de cantidad_contada es el INTEGER: 2147483647 vale (diferencia exacta); 2147483648 → 422', async () => {
+    /* Nunca un 22003 (500). */
+    const res = await registrar(conteo.id_conteo, [{ id_producto: 7, cantidad_contada: 2147483647 }]);
+    expect(lineas(res.body)[2]).toEqual([7, 0, 2147483647, 2147483647]);
+    datosNoValidos(await registrar(conteo.id_conteo, [{ id_producto: 7, cantidad_contada: 2147483648 }]), ['detalles[0].cantidad_contada']);
+  });
+
+  it('el OPERADOR de la bodega del conteo registra; el de otra bodega o sin X-User-Bodega → 403 sin cambios; el ADMINISTRADOR siempre', async () => {
+    /* D32(h): alcance sobre la bodega DEL CONTEO. */
+    const cuerpo = [{ id_producto: 5, cantidad_contada: 1 }];
+    const antes = await foto();
+    esError(await registrar(conteo.id_conteo, cuerpo, OPE(b2)), 403, 'SIN_PERMISO');
+    esError(await registrar(conteo.id_conteo, cuerpo, headers('OPERADOR_BODEGA')), 403, 'SIN_PERMISO');
+    expect(await foto()).toEqual(antes);
+    expect((await registrar(conteo.id_conteo, cuerpo, OPE(b1))).status).toBe(200);
+    expect((await registrar(conteo.id_conteo, cuerpo, headers('ADMINISTRADOR', { idBodega: b2 }))).status).toBe(200);
+  });
+});
+
+describe('PUT /conteos/{id}/detalles: rechazos (nada cambia)', () => {
+  let conteo;
+  beforeEach(async () => {
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    conteo = (await programar(cuerpoConteo({ ids_producto: [5, 6] }))).body;
+  });
+  const valido = [{ id_producto: 5, cantidad_contada: 3 }];
+  // Control positivo: el mismo PUT válido da 200; después se devuelve el conteo a PROGRAMADO para que la foto del rechazo parta igual.
+  async function controlPut() {
+    expect((await registrar(conteo.id_conteo, valido)).status).toBe(200);
+    await db('detalles_conteo').where({ id_conteo: conteo.id_conteo }).update({ cantidad_contada: null, diferencia: null });
+    await db('conteos').where({ id_conteo: conteo.id_conteo }).update({ estado: 'PROGRAMADO' });
+  }
+
+  it('un producto fuera del conteo → 422 sobre esa posición y NINGUNA línea cambia (tampoco las válidas del mismo cuerpo)', async () => {
+    /* Contrato: «422 producto fuera del conteo». */
+    await controlPut();
+    const antes = await foto();
+    datosNoValidos(await registrar(conteo.id_conteo, [...valido, { id_producto: 9, cantidad_contada: 1 }]), ['detalles[1].id_producto']);
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('sobre un conteo APROBADO → 409 CONTEO_ESTADO_INVALIDO y nada cambia', async () => {
+    /* D32(c): lo contado de un conteo aprobado es definitivo. */
+    await controlPut();
+    await aprobarEnBase(conteo.id_conteo);
+    const antes = await foto();
+    esError(await registrar(conteo.id_conteo, valido), 409, 'CONTEO_ESTADO_INVALIDO');
+    expect(await foto()).toEqual(antes);
+  });
+
+  it.each([['inexistente', '9999'], ['0', '0'], ['-1', '-1'], ['abc', 'abc'], ['fuera del INTEGER', '2147483648']])('id %s → 404 NO_EXISTE', async (_caso, id) => {
+    /* idRuta. */
+    recursoNoExiste(await registrar(id, valido));
+  });
+
+  it('cuerpo inválido → 422 y nada cambia: detalles ausente o vacío, un elemento que no es un objeto, id_producto repetido, cantidad_contada negativa o de texto', async () => {
+    /* D32(b): un caso por regla (la matriz de los validadores está en validate.test.js); nunca un 5xx. */
+    await controlPut();
+    const antes = await foto();
+    datosNoValidos(await registrar(conteo.id_conteo, undefined), ['detalles']);
+    datosNoValidos(await registrar(conteo.id_conteo, []), ['detalles']);
+    datosNoValidos(await registrar(conteo.id_conteo, [5]), ['detalles[0]']);
+    datosNoValidos(await registrar(conteo.id_conteo, [...valido, { id_producto: 5, cantidad_contada: 4 }]), ['detalles[1].id_producto']);
+    datosNoValidos(await registrar(conteo.id_conteo, [{ id_producto: 5, cantidad_contada: -1 }]), ['detalles[0].cantidad_contada']);
+    datosNoValidos(await registrar(conteo.id_conteo, [{ id_producto: '5', cantidad_contada: '3' }]), ['detalles[0].id_producto', 'detalles[0].cantidad_contada']);
+    datosNoValidos(await request.put(`/conteos/${conteo.id_conteo}/detalles`).set(ADM).send([valido]), ['cuerpo']);
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('sin X-User-Id → 401 NO_AUTENTICADO y nada cambia', async () => {
+    /* D8, D22. */
+    const antes = await foto();
+    esError(await request.put(`/conteos/${conteo.id_conteo}/detalles`).send({ detalles: valido }), 401, 'NO_AUTENTICADO');
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('bloquea la fila del conteo ANTES de mirar el estado: si otra transacción la tiene y lo APRUEBA, el PUT espera y responde 409', async () => {
+    /* D32(c)(d): determinista con esperarBloqueo, sin tiempos fijos. */
+    const otra = await db.transaction();
+    let pendiente;
+    try {
+      await otra('conteos').where({ id_conteo: conteo.id_conteo }).forUpdate().first();
+      pendiente = registrar(conteo.id_conteo, valido).then((res) => res);
+      await esperarBloqueo(db);
+      await otra('conteos').where({ id_conteo: conteo.id_conteo }).update({
+        estado: 'APROBADO', fecha_aprobacion: db.fn.now(), id_usuario_aprueba: 7, clave_aprobacion: '7:con:otra',
+      });
+      await otra.commit();
+    } catch (error) {
+      await otra.rollback().catch(() => {});
+      throw error;
+    }
+    esError(await pendiente, 409, 'CONTEO_ESTADO_INVALIDO');
+    expect(lineas(await conteoRepository.findById(db, conteo.id_conteo))).toEqual([[5, 10, null, null], [6, 0, null, null]]);
   });
 });
