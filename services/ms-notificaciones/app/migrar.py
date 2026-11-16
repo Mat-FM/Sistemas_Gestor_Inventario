@@ -1,7 +1,7 @@
 """Aplica en orden los archivos .sql de migrations/ que aún no se han aplicado.
 
 Cada archivo corre en su propia transacción y queda anotado en la tabla migracion.
-Uso: `flask --app wsgi migrar` (también se aplican solas al arrancar).
+Uso: `flask --app app:crear_app migrar` (también se aplican solas al arrancar).
 """
 from pathlib import Path
 
