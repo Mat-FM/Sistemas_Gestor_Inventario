@@ -33,8 +33,35 @@ const pasos = (workflow) => trabajo(workflow).steps;
 const pasoDe = (workflow, ejecuta) => pasos(workflow).find((paso) => paso.run === ejecuta);
 const pasoDePruebas = (workflow) => pasoDe(workflow, 'npm run test:cov');
 const servicioPostgres = (workflow) => trabajo(workflow).services.postgres;
-/** El entorno que verá `npm run test:cov`: el `env:` del paso, con todo valor convertido a texto como hace el ejecutor. */
-const entornoDePruebas = (workflow) => Object.fromEntries(Object.entries(pasoDePruebas(workflow).env ?? {}).map(([k, v]) => [k, String(v)]));
+/** Todos los bloques `env:` del workflow: el raíz, el del job y el de cada paso (nombre → variables). */
+const bloquesDeEnv = (workflow) => [
+  ['workflow', workflow.env ?? {}],
+  ['job', trabajo(workflow).env ?? {}],
+  ...pasos(workflow).map((paso, i) => [`paso ${i + 1} (${paso.name ?? paso.uses ?? paso.run})`, paso.env ?? {}]),
+];
+/**
+ * El entorno que verá `npm run test:cov`: el `env:` del workflow, el del job y el del paso (el del paso gana), con todo valor
+ * convertido a texto como hace el ejecutor.
+ */
+const entornoDePruebas = (workflow) => Object.fromEntries(
+  [workflow.env, trabajo(workflow).env, pasoDePruebas(workflow).env].flatMap((env) => Object.entries(env ?? {})).map(([k, v]) => [k, String(v)]),
+);
+
+/**
+ * ¿La `node-version` que pide setup-node cumple `engines.node` de package.json (solo la forma «>=X.Y», la que usa el servicio)?
+ * Una versión con solo la mayor (`22`, `22.x`) pide el último lanzamiento de esa mayor, que cumple el mínimo de su misma mayor; con
+ * menor (`22.9`, `22.0`) se compara también la menor. Cualquier otra forma (`lts/*`, `>=22`) no se da por buena.
+ */
+function cumpleEngines(versionPedida, rango) {
+  const minimo = /^>=\s*(\d+)(?:\.(\d+))?/.exec(rango);
+  if (!minimo) throw new Error(`engines.node («${rango}») no tiene la forma >=X.Y: hay que ampliar esta comprobación`);
+  const [minMayor, minMenor] = [Number(minimo[1]), Number(minimo[2] ?? 0)];
+  const pedida = /^(\d+)(?:\.(\d+|x))?(?:\.(\d+|x))?$/.exec(String(versionPedida).trim());
+  if (!pedida) return false;
+  const mayor = Number(pedida[1]);
+  if (mayor !== minMayor) return mayor > minMayor;
+  return pedida[2] === undefined || pedida[2] === 'x' || Number(pedida[2]) >= minMenor;
+}
 const puertoPublicado = (workflow) => {
   const [publicado] = String(servicioPostgres(workflow).ports[0]).split(':');
   return publicado;
@@ -63,7 +90,9 @@ describe('forma del workflow', () => {
   it('una ejecución nueva sobre la misma rama cancela la anterior', () => {
     const { concurrency } = leerWorkflow();
     expect(concurrency['cancel-in-progress']).toBe(true);
+    // El grupo es por workflow Y por rama (head_ref en un pull request): sin la rama, un PR cancelaría las ejecuciones de otro.
     expect(concurrency.group).toContain('github.workflow');
+    expect(concurrency.group).toContain('github.head_ref');
   });
 
   it('el job tiene un plazo razonable (entre 5 y 30 minutos) y corre dentro de services/ms-inventario, que existe', () => {
@@ -75,7 +104,7 @@ describe('forma del workflow', () => {
     expect(fs.statSync(path.join(RAIZ_REPOSITORIO, DIRECTORIO_SERVICIO)).isDirectory()).toBe(true);
   });
 
-  it('toda acción lleva una versión fija (@vN) y la imagen de la base lleva etiqueta', () => {
+  it('toda acción lleva una versión mayor fija (@vN) y la imagen de la base lleva etiqueta', () => {
     const workflow = leerWorkflow();
     const acciones = pasos(workflow).filter((paso) => paso.uses).map((paso) => paso.uses);
     expect(acciones.length).toBeGreaterThanOrEqual(2);
@@ -98,6 +127,9 @@ describe('la base de datos de la CI', () => {
   it('espera a que PostgreSQL acepte conexiones: pg_isready con intervalo, plazo y reintentos', () => {
     const { options } = servicioPostgres(leerWorkflow());
     expect(options).toMatch(/--health-cmd\s+"pg_isready[^"]*"/);
+    // El -h 127.0.0.1 obliga a comprobar por TCP: sin él pg_isready usa el socket Unix y el servidor temporal con que la imagen
+    // arranca por primera vez (solo escucha ahí) daría la base por lista antes de aceptar las conexiones del puerto publicado.
+    expect(options).toMatch(/--health-cmd\s+"pg_isready\s[^"]*-h\s+127\.0\.0\.1(\s|")/);
     for (const opcion of ['--health-interval', '--health-timeout', '--health-retries']) {
       expect(options).toMatch(new RegExp(`${opcion}\\s+\\d+`));
     }
@@ -129,14 +161,21 @@ describe('Node.js y los pasos', () => {
   it('prepara Node 22 (la versión mínima de package.json) con la caché de npm del package-lock del servicio', () => {
     const workflow = leerWorkflow();
     const paso = pasos(workflow).find((p) => p.uses && p.uses.startsWith('actions/setup-node@'));
-    expect(String(paso.with['node-version'])).toMatch(/^22(\.x|\.\d+(\.\d+)?)?$/);
+    const version = String(paso.with['node-version']);
+    expect(version).toMatch(/^22(\.x|\.\d+(\.\d+)?)?$/);
+    // La versión que pide el workflow debe cumplir engines.node de package.json (si no, `npm test` muere con «bad option: --env-file-if-exists»).
+    expect(cumpleEngines(version, leerPaquete().engines.node)).toBe(true);
     expect(paso.with.cache).toBe('npm');
     const dependencias = paso.with['cache-dependency-path'];
     expect(dependencias).toBe(`${DIRECTORIO_SERVICIO}/package-lock.json`);
     expect(fs.existsSync(path.join(RAIZ_REPOSITORIO, dependencias))).toBe(true);
-    // engines.node es «>=22.9»: la versión que pide el workflow debe cumplirla (mayor igual o superior).
-    const minimo = /(\d+)\.(\d+)/.exec(leerPaquete().engines.node);
-    expect(Number(minimo[1])).toBeLessThanOrEqual(22);
+  });
+
+  it.each([
+    ['22', true], ['22.x', true], ['22.9', true], ['22.9.0', true], ['22.23.2', true], ['24', true],
+    ['22.0', false], ['22.8', false], ['22.8.9', false], ['20', false], ['lts/*', false],
+  ])('cumpleEngines: node-version %p frente a engines.node de package.json -> %p', (version, esperado) => {
+    expect(cumpleEngines(version, '>=22.9')).toBe(esperado);
   });
 
   it('descarga el código, prepara Node, instala con `npm ci` y solo después corre `npm run test:cov`', () => {
@@ -185,10 +224,12 @@ describe('el entorno del paso de pruebas', () => {
     expect(cargarConfig(entorno).callTimeoutMs).toBe(Number(entorno.CALL_TIMEOUT_MS));
   });
 
-  it('no fija TZ: la suite debe pasar en cualquier huso horario, también en el UTC del ejecutor de GitHub', () => {
+  it('no fija TZ en ningún `env:` (workflow, job ni pasos): la suite debe pasar en cualquier huso, también en el UTC del ejecutor', () => {
     // Una prueba (conteos: el día UTC) suponía el huso de Colombia y falló en la simulación en limpio con TZ=UTC; se hizo hermética
     // (proceso hijo con su propio TZ). Fijar TZ aquí volvería a esconder cualquier prueba que dependa del huso de la máquina.
-    expect(Object.keys(entornoDePruebas(leerWorkflow()))).not.toContain('TZ');
+    const bloques = bloquesDeEnv(leerWorkflow());
+    expect(bloques.length).toBeGreaterThanOrEqual(5); // control: se revisan el raíz, el del job y los de los pasos
+    for (const [donde, env] of bloques) expect({ donde, TZ: Object.keys(env).includes('TZ') }).toEqual({ donde, TZ: false });
   });
 
   it('ningún paso copia un .env: el entorno de las pruebas lo da solo el workflow', () => {
