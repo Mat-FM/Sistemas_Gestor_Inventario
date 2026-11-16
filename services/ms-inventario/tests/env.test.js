@@ -1,4 +1,4 @@
-const { ErrorDeConfiguracion, PLAZO_MAX_MS, PLAZO_MIN_MS, cargarConfig, mensajePlazoInvalido, plazoValido } = require('../src/config/env');
+const { ErrorDeConfiguracion, PLAZO_MAX_MS, PLAZO_MIN_MS, PUERTO_MAX, PUERTO_MIN, cargarConfig, mensajePlazoInvalido, plazoValido } = require('../src/config/env');
 
 describe('cargarConfig con NODE_ENV=test', () => {
   const base = { DB_HOST: '127.0.0.1', DB_PORT: '5439', DB_NAME: 'inventario_db', DB_USER: 'inventario' };
@@ -89,5 +89,70 @@ describe('cargarConfig: CALL_TIMEOUT_MS (plazo de las llamadas a otros servicios
   it('un plazo inválido no cambia el comportamiento de las demás variables (las obligatorias ausentes no lanzan: /health las avisa, D17)', () => {
     expect(() => cargarConfig({})).not.toThrow();
     expect(cargarConfig({ PORT: '4000' })).toMatchObject({ puerto: 4000, callTimeoutMs: 3000 });
+  });
+});
+
+describe('cargarConfig: PORT (puerto HTTP del servicio)', () => {
+  const base = { DB_HOST: '127.0.0.1', DB_PORT: '5439', DB_NAME: 'inventario_db', DB_USER: 'inventario' };
+  const puerto = (valor) => cargarConfig({ ...base, PORT: valor }).puerto;
+
+  it('ausente (o undefined): usa 3000', () => {
+    expect(cargarConfig(base).puerto).toBe(3000);
+    expect(cargarConfig({ ...base, PORT: undefined }).puerto).toBe(3000);
+  });
+
+  it.each([
+    ['el mínimo', '1', 1],
+    ['un valor normal', '3055', 3055],
+    ['el máximo', '65535', 65535],
+    ['con espacios alrededor', ' 8080 ', 8080],
+    ['con ceros a la izquierda', '0080', 80],
+  ])('acepta un entero entre 1 y 65535: %s', (_caso, texto, esperado) => {
+    expect(puerto(texto)).toBe(esperado);
+  });
+
+  it.each([
+    ['texto (si llegara a listen como texto, Node abriría un socket Unix con ese nombre)', 'abc'],
+    ['cero (puerto efímero: nadie sabría dónde escucha)', '0'],
+    ['negativo', '-1'],
+    ['por encima del máximo', '65536'],
+    ['70000', '70000'],
+    ['decimal', '3000.5'],
+    ['decimal con parte cero', '3000.0'],
+    ['notación científica (Number la aceptaba y escuchaba en el 1000)', '1e3'],
+    ['hexadecimal (Number la aceptaba y escuchaba en el 8080)', '0x1F90'],
+    ['texto con número', '3000abc'],
+    ['con signo más', '+3000'],
+    ['vacío (definida pero sin valor)', ''],
+    ['solo espacios', '   '],
+    ['Infinity', 'Infinity'],
+    ['NaN', 'NaN'],
+    ['cifras de ancho completo', '３０００'],
+  ])('rechaza %s con un error de configuración que nombra la variable y el valor', (_caso, texto) => {
+    let error;
+    try {
+      puerto(texto);
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+    expect(error.name).toBe('ErrorDeConfiguracion');
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect(error.message).toBe(`PORT debe ser un número entero entre 1 y 65535 (recibido: ${JSON.stringify(texto)})`);
+  });
+
+  it('el rango vive en un único sitio y lo que sale de cargarConfig es siempre un número entero válido para listen', () => {
+    expect([PUERTO_MIN, PUERTO_MAX]).toEqual([1, 65535]);
+    for (const texto of ['1', '80', '3000', '65535', ' 7 ']) {
+      const resultado = puerto(texto);
+      expect(typeof resultado).toBe('number'); // jamás el texto: un listen('abc') abriría un socket Unix
+      expect(Number.isInteger(resultado) && resultado >= PUERTO_MIN && resultado <= PUERTO_MAX).toBe(true);
+    }
+  });
+
+  it('un PORT inválido lo rechaza cargarConfig y, con ella, también knexfile.js (que la llama); DB_PORT sigue con su propia lectura', () => {
+    expect(() => cargarConfig({ PORT: 'abc' })).toThrow(ErrorDeConfiguracion);
+    expect(cargarConfig({ DB_PORT: '' }).db.port).toBeUndefined(); // DB_PORT sigue su propia lectura: vacío = ausente
+    expect(cargarConfig({ DB_PORT: '5439' }).db.port).toBe(5439);
   });
 });

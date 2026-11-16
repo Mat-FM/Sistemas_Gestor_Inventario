@@ -18,6 +18,12 @@ const PLAZO_MAX_MS = 60000;
 
 const plazoValido = (valor) => Number.isInteger(valor) && valor >= PLAZO_MIN_MS && valor <= PLAZO_MAX_MS;
 
+// Puerto HTTP (PORT). Cero no vale: pediría un puerto efímero y nadie sabría dónde escucha el servicio (ni su sonda, ni el Service
+// de Kubernetes). Se exige un puerto concreto, entre 1 y 65535.
+const PUERTO_MIN = 1;
+const PUERTO_MAX = 65535;
+const PUERTO_POR_DEFECTO = 3000;
+
 function describirValor(valor) {
   try {
     return typeof valor === 'string' ? JSON.stringify(valor.slice(0, 50)) : String(valor);
@@ -25,6 +31,13 @@ function describirValor(valor) {
     return '[valor no representable]';
   }
 }
+
+// Un entero escrito en decimal (solo cifras, sin signo, punto, exponente ni prefijo 0x) o NaN. Number() acepta también «1e3» y «0x10»
+// y los toma por 1000 y 16, y una variable de entorno nunca debería leerse así.
+const enteroDecimal = (valor) => {
+  const texto = String(valor).trim();
+  return /^[0-9]+$/.test(texto) ? Number(texto) : NaN;
+};
 
 /** Mensaje de un plazo inválido; nombra la variable (no solo el parámetro) y el valor recibido, que no es secreto. */
 function mensajePlazoInvalido(valor, nombre = 'CALL_TIMEOUT_MS') {
@@ -64,10 +77,22 @@ function validarEntorno(env = process.env) {
 // con decimales, en notación científica o fuera de rango es un error (Number('abc') daría NaN y setTimeout lo tomaría como 1 ms).
 function leerPlazo(valor, porDefecto) {
   if (valor === undefined) return porDefecto;
-  const texto = String(valor).trim();
-  const plazo = /^[0-9]+$/.test(texto) ? Number(texto) : NaN;
+  const plazo = enteroDecimal(valor);
   if (!plazoValido(plazo)) throw new ErrorDeConfiguracion(mensajePlazoInvalido(valor));
   return plazo;
+}
+
+// PORT: ausente → 3000. Definida, tiene que ser un entero decimal entre PUERTO_MIN y PUERTO_MAX: una variable vacía, con decimales, en
+// notación científica o hexadecimal, o fuera de rango es un error de configuración (el servicio no arranca), no un valor que se
+// corrige en silencio. Devuelve siempre un número: a `listen` nunca le llega el texto, porque un texto no numérico lo tomaría por la
+// ruta de un socket Unix y crearía un archivo con ese nombre en el directorio de trabajo.
+function leerPuerto(valor, porDefecto) {
+  if (valor === undefined) return porDefecto;
+  const puerto = enteroDecimal(valor);
+  if (!Number.isInteger(puerto) || puerto < PUERTO_MIN || puerto > PUERTO_MAX) {
+    throw new ErrorDeConfiguracion(`PORT debe ser un número entero entre ${PUERTO_MIN} y ${PUERTO_MAX} (recibido: ${describirValor(valor)})`);
+  }
+  return puerto;
 }
 
 // Se lee al arrancar (no al importar el módulo), para que las pruebas puedan pasar su propio entorno.
@@ -79,7 +104,7 @@ function cargarConfig(env = process.env) {
   const numero = (valor, porDefecto) => (estaDefinida(valor) ? Number(valor) : porDefecto);
   return {
     servicio: SERVICIO,
-    puerto: numero(env.PORT, 3000),
+    puerto: leerPuerto(env.PORT, PUERTO_POR_DEFECTO),
     db: {
       host: env.DB_HOST,
       port: numero(env.DB_PORT, undefined),
@@ -100,6 +125,8 @@ module.exports = {
   VARIABLES_OBLIGATORIAS,
   PLAZO_MIN_MS,
   PLAZO_MAX_MS,
+  PUERTO_MIN,
+  PUERTO_MAX,
   ErrorDeConfiguracion,
   plazoValido,
   mensajePlazoInvalido,
