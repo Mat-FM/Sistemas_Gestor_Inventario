@@ -92,7 +92,8 @@ La Entrega 2 no define estos detalles; se acordaron al implementar el servicio.
 | Hace (espera) | ms-catalogo, ms-proveedores, ms-inventario | `POST /internas/productos/lote`, `/internas/proveedores/lote`, `/internas/saldos/carga-inicial` (carga masiva) |
 
 Los listados paginados (`/productos`, `/saldos`, `/movimientos`, `/lotes`) se piden completos, de 100 en 100. Todas
-las llamadas reenvían el `X-Request-Id` de la petición.
+las llamadas reenvían el `X-Request-Id` de la petición y, si vienen, `X-User-Id` y `X-User-Rol`: `ms-inventario` los exige
+en la carga inicial de saldos.
 
 ### Resiliencia (RNF18)
 
