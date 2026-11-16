@@ -44,6 +44,17 @@ function crearSimulador() {
         if (!['ENTRADA_COMPRA', 'DEVOLUCION_PROVEEDOR'].includes(tipo) || !Number.isInteger(cantidad) || cantidad <= 0) {
           return responder(res, 422, { error: { codigo: 'DATOS_INVALIDOS', mensaje: 'Movimiento no válido', detalles: [] } });
         }
+        // Igual que ms-inventario: un lote siempre trae su fecha de vencimiento.
+        const { lote } = cuerpo;
+        if (lote !== undefined && lote !== null && (!lote.codigo_lote || !lote.fecha_vencimiento)) {
+          return responder(res, 422, {
+            error: {
+              codigo: 'DATOS_NO_VALIDOS',
+              mensaje: 'Datos no válidos',
+              detalles: [{ campo: 'lote.fecha_vencimiento', mensaje: 'es obligatoria cuando se envía un lote' }],
+            },
+          });
+        }
         const llave = `${idProducto}:${idBodega}`;
         const saldo = saldos.get(llave) || 0;
         if (tipo === 'DEVOLUCION_PROVEEDOR' && saldo < cantidad) {
@@ -61,6 +72,7 @@ function crearSimulador() {
           cantidad,
           saldo_resultante: nuevoSaldo,
           id_usuario: Number(req.headers['x-user-id']) || null,
+          lote: lote ?? null,
           documento_referencia: cuerpo.documento_referencia ?? null,
           fecha: new Date().toISOString(),
         };
