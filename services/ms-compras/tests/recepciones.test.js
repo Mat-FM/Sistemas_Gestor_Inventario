@@ -77,6 +77,23 @@ describe('Recepción de mercancía (RF06)', () => {
     expect((await recibir(orden.id_orden, [], 'v-5')).status).toBe(422);
   });
 
+  test('un lote siempre viaja con su fecha de vencimiento a ms-inventario', async () => {
+    const orden = await crearOrdenEnviada();
+    const id = orden.detalles[0].id_detalle;
+    // Un texto vacío o null cuenta como fecha ausente: se rechaza antes de llamar a inventario.
+    for (const [i, fecha] of ['', '   ', null].entries()) {
+      const res = await recibir(orden.id_orden, [{ id_detalle: id, cantidad: 1, codigo_lote: 'L-7', fecha_vencimiento: fecha }], `f-${i}`);
+      expect(res.status).toBe(422);
+    }
+    // Y una fecha sin lote tampoco tiene sentido.
+    expect((await recibir(orden.id_orden, [{ id_detalle: id, cantidad: 1, codigo_lote: '', fecha_vencimiento: '2027-01-31' }], 'f-4')).status).toBe(422);
+
+    const ok = await recibir(orden.id_orden, [{ id_detalle: id, cantidad: 1, codigo_lote: 'L-7', fecha_vencimiento: '2027-03-15' }], 'f-5');
+    expect(ok.status).toBe(201);
+    const movimiento = [...simulador().porClave.values()].find((m) => m.lote?.codigo_lote === 'L-7');
+    expect(movimiento.lote).toEqual({ codigo_lote: 'L-7', fecha_vencimiento: '2027-03-15' });
+  });
+
   test('exige Idempotency-Key (400) y responde 404 si la orden no existe', async () => {
     const sinClave = await request(app).post('/ordenes-compra/1/recepciones').set(ADMIN).send({ lineas: [{ id_detalle: 1, cantidad: 1 }] });
     expect(sinClave.status).toBe(400);
