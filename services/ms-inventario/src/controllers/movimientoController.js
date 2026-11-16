@@ -1,10 +1,7 @@
 const { TIPOS } = require('../domain/tipos');
 const { e } = require('../errors');
 const { envelope, parsePagination } = require('../http/pagination');
-const { enteroQuery, enumerado, fecha, idRuta, validarCampos } = require('../http/validate');
-
-// Un parámetro opcional de la consulta: ausente → undefined; presente (también vacío o repetido), pasa por su validador.
-const opcional = (valor, validar) => (valor === undefined ? undefined : validar(valor));
+const { enteroQuery, enumerado, fechaQuery, idRuta, validarCampos } = require('../http/validate');
 
 /**
  * Filtros de GET /movimientos: ?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&pagina&por_pagina. Se informan
@@ -17,9 +14,10 @@ function leerFiltros(query) {
     idProducto: () => enteroQuery(query.id_producto, 'id_producto'),
     idBodega: () => enteroQuery(query.id_bodega, 'id_bodega'),
     idUsuario: () => enteroQuery(query.id_usuario, 'id_usuario'),
-    tipo: () => opcional(query.tipo, (valor) => enumerado(valor, 'tipo', TIPOS)),
-    fechaDesde: () => opcional(query.fecha_desde, (valor) => fecha(valor, 'fecha_desde')),
-    fechaHasta: () => opcional(query.fecha_hasta, (valor) => fecha(valor, 'fecha_hasta')),
+    // Ausente → undefined; presente (también vacío o repetido), pasa por su validador.
+    tipo: () => (query.tipo === undefined ? undefined : enumerado(query.tipo, 'tipo', TIPOS)),
+    fechaDesde: () => fechaQuery(query.fecha_desde, 'fecha_desde'),
+    fechaHasta: () => fechaQuery(query.fecha_hasta, 'fecha_hasta'),
     paginacion: () => parsePagination(query),
   });
   if (filtros.fechaDesde !== undefined && filtros.fechaHasta !== undefined && filtros.fechaDesde > filtros.fechaHasta) {

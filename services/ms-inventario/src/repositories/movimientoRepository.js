@@ -13,10 +13,6 @@ const COLUMNAS = [
   'fecha', 'id_usuario', 'documento_referencia', 'observacion',
 ];
 
-// Nombre de la unicidad de la clave en la migración. Una repetición de la clave no se decide por el error: tras cualquier
-// fallo se relee por la clave (idempotencia.resolverFallo).
-const RESTRICCION_CLAVE = 'movimientos_clave_idempotencia_key';
-
 // Una consulta sobre `movimientos` restringida por los filtros presentes; un filtro undefined no restringe. El COUNT y la página
 // del kardex la comparten (mismo WHERE), así que `total` es siempre el del filtro.
 //
@@ -124,4 +120,4 @@ async function findById(dbOrTrx, id) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ id_movimiento: id }).first();
 }
 
-module.exports = { RESTRICCION_CLAVE, insert, findByClave, clavesExistentes, listar, findById };
+module.exports = { insert, findByClave, clavesExistentes, listar, findById };

@@ -19,9 +19,9 @@ const stockService = require('./stockService');
 // Las dependencias llegan en `deps` = { db, clients, logger } y se leen en cada llamada (no al construir), como en el resto de
 // servicios: rutasDeclaradas() se puede llamar sin dependencias.
 
-// Largos exactos de las columnas de `movimientos` (migración 20261103000100): un texto más largo sería un 22001 (un 500).
-// lotes.codigo_lote es varchar(50).
-const LARGOS = { documento_referencia: 100, observacion: 500, codigo_lote: 50 };
+// Largos exactos de las columnas (migración 20261103000100): un texto más largo sería un 22001 (un 500). El del código de lote
+// (lotes.codigo_lote) lo fija el motor de stock, que también lo exige: un único valor para los dos.
+const LARGOS = { documento_referencia: 100, observacion: 500, codigo_lote: stockService.LARGO_CODIGO_LOTE };
 
 // Texto opcional de una columna nullable: ausente o null → null; cualquier otro valor pasa por `texto` (422 si no cabe).
 const textoOpcional = (valor, campo) => (valor === undefined || valor === null ? null : texto(valor, campo, { max: LARGOS[campo] }));
