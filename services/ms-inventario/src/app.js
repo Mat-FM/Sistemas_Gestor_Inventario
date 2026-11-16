@@ -12,8 +12,10 @@ const { registrarRutas } = require('./routes');
  * - db: instancia de Knex; clients: clientes de ms-catalogo y ms-notificaciones; los usan las rutas del servicio.
  * - logger: { info(obj), error(obj) }.
  * - env: entorno que valida /health (por defecto process.env); las pruebas pasan uno explícito.
+ * - now: reloj `() => Date` de las reglas que dependen del día (la fecha de un conteo no puede ser pasada, D32(g)); si falta,
+ *   cada servicio usa la hora real. Las pruebas lo fijan para no depender del día en que corren.
  */
-function createApp({ db, clients, logger = loggerPorDefecto, env = process.env } = {}) {
+function createApp({ db, clients, logger = loggerPorDefecto, env = process.env, now } = {}) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -37,7 +39,7 @@ function createApp({ db, clients, logger = loggerPorDefecto, env = process.env }
   });
 
   // Rutas de negocio (routes/index.js): las lecturas aceptan llamadas internas sin X-User-Id y las escrituras lo exigen.
-  registrarRutas(app, { db, clients, logger });
+  registrarRutas(app, { db, clients, logger, now });
 
   // ---- Fin de las rutas: no añadir rutas debajo de esta línea (nunca se alcanzarían). ----
 

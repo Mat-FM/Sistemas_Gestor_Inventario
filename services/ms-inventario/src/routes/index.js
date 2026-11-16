@@ -1,5 +1,6 @@
 const { requireUser } = require('../middleware/identity');
 const { rutasBodegas } = require('./bodegas');
+const { rutasConteos } = require('./conteos');
 const { rutasLotes } = require('./lotes');
 const { rutasMovimientos } = require('./movimientos');
 const { rutasSaldos } = require('./saldos');
@@ -15,7 +16,7 @@ const { rutasUmbrales } = require('./umbrales');
  * - metodo: en minúsculas ('get', 'post', 'put'…), tal como lo nombra Express y las claves del OpenAPI.
  * - ruta: en sintaxis de Express ('/bodegas/:id'); para el OpenAPI hay que convertir ':id' en '{id}'.
  * - handler: el controlador, sin envolver (la identidad la añade registrarRutas).
- * `deps` = { db, clients, logger }. No abre conexiones, así que se puede llamar sin dependencias (`rutasDeclaradas()`).
+ * `deps` = { db, clients, logger, now }. No abre conexiones, así que se puede llamar sin dependencias (`rutasDeclaradas()`).
  *
  * ORDEN: Express prueba las rutas en el orden en que se montan y `idRuta` lanza 404 en vez de pasar a la siguiente ruta.
  * Por eso una ruta ESTÁTICA (`/saldos/bajo-umbral`, `/lotes/sugerencia-salida`) debe declararse ANTES de su `/:id` hermana:
@@ -30,6 +31,7 @@ function rutasDeclaradas(deps = {}) {
     ...rutasMovimientos(deps),
     ...rutasLotes(deps),
     ...rutasTraslados(deps),
+    ...rutasConteos(deps),
   ];
 }
 

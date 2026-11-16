@@ -22,12 +22,13 @@ const loggerSilencioso = () => ({ info() {}, error() {} });
  * Aplicación Express sobre la base de pruebas real (PostgreSQL) y con clientes inyectables.
  * Por defecto los clientes son los dobles de fixtures.js (catálogo que conoce todos los productos menos el 999 y
  * notificaciones que no hace nada); un cliente pasado en `clients` reemplaza solo a su par.
+ * `now` (opcional) fija el reloj de las reglas que dependen del día (createApp).
  * Quien la use debe cerrar el pool al terminar: `afterAll(() => db.destroy())`.
  */
-function buildTestApp({ clients = {}, logger = loggerSilencioso(), env = entornoValido() } = {}) {
+function buildTestApp({ clients = {}, logger = loggerSilencioso(), env = entornoValido(), now } = {}) {
   const db = createTestDb();
   const clientes = { catalogo: fakeCatalogo(), notificaciones: fakeNotificaciones(), ...clients };
-  const app = createApp({ db, clients: clientes, logger, env });
+  const app = createApp({ db, clients: clientes, logger, env, now });
   return { app, db, clients: clientes, request: supertest(app) };
 }
 

@@ -59,6 +59,11 @@ const TRASLADOS = [
   ['get', '/traslados'],
   ['post', '/traslados/:id/recepcion'],
 ];
+const CONTEOS = [
+  ['post', '/conteos'],
+  ['get', '/conteos'],
+  ['get', '/conteos/:id'],
+];
 
 let request;
 let db;
@@ -119,6 +124,12 @@ describe('rutasDeclaradas', () => {
   it('incluye las operaciones de traslados de la Tabla 9 y ninguna repetida', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of TRASLADOS) expect(rutas).toContain(`${metodo} ${ruta}`);
+    expect(new Set(rutas).size).toBe(rutas.length);
+  });
+
+  it('incluye las operaciones de conteos de la Tabla 9 y ninguna repetida', () => {
+    const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
+    for (const [metodo, ruta] of CONTEOS) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
