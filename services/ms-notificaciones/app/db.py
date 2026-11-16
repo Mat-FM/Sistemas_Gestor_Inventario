@@ -12,10 +12,10 @@ def iniciar(config):
             kwargs={**config.db, "row_factory": dict_row, "connect_timeout": 5},
             min_size=1,
             max_size=config.db_pool_max,
-            open=True,
-            # No falla al arrancar si la base aún no responde: /health lo mostrará.
-            wait=False,
+            open=False,
         )
+        # No falla al arrancar si la base aún no responde: /health lo mostrará.
+        _pool.open(wait=False)
     return _pool
 
 
