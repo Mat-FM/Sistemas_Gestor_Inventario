@@ -16,6 +16,8 @@ const { verificarBodega } = require('../middleware/contexto');
 const OPERACION = 'recepcion';
 const ESTADOS_RECIBIBLES = ['ENVIADA', 'RECIBIDA_PARCIAL'];
 
+const presente = (valor) => valor !== undefined && valor !== null && !(typeof valor === 'string' && valor.trim() === '');
+
 function validarLineas(cuerpo) {
   const v = new Validador();
   const lista = v.lista(cuerpo?.lineas, 'lineas');
@@ -30,8 +32,10 @@ function validarLineas(cuerpo) {
     }
     const codigoLote = v.texto(l.codigo_lote, campo('codigo_lote'), { opcional: true, max: 50 });
     const fechaVencimiento = v.fecha(l.fecha_vencimiento, campo('fecha_vencimiento'), { opcional: true });
-    const traeLote = l.codigo_lote !== undefined && l.codigo_lote !== null;
-    const traeFecha = l.fecha_vencimiento !== undefined && l.fecha_vencimiento !== null;
+    // ms-inventario exige la fecha de vencimiento siempre que llega un lote: un texto vacío cuenta como ausente,
+    // para que un lote nunca viaje sin su fecha.
+    const traeLote = presente(l.codigo_lote);
+    const traeFecha = presente(l.fecha_vencimiento);
     if (traeLote !== traeFecha) {
       v.error(campo('codigo_lote'), 'El código de lote y la fecha de vencimiento van juntos.');
     }
