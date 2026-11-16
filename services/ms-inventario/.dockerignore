@@ -1,0 +1,12 @@
+# Lo que no debe entrar a la imagen: dependencias instaladas en el equipo, secretos locales, pruebas y archivos generados.
+# Las dependencias se instalan dentro de la imagen con `npm ci --omit=dev`, y el Dockerfile copia cada ruta por su nombre.
+# Los patrones se anclan a la raíz de este directorio: `tests` es la carpeta de pruebas, no cualquier carpeta con ese nombre.
+node_modules
+.env
+.env.*
+tests
+coverage
+jest.config.js
+README.md
+Dockerfile
+.dockerignore
