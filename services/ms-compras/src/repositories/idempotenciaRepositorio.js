@@ -9,8 +9,8 @@ async function buscar(clave, operacion) {
   return rows[0] || null;
 }
 
-async function guardar(clave, operacion, codigoHttp, respuesta) {
-  await pool.query(
+async function guardar(clave, operacion, codigoHttp, respuesta, db = pool) {
+  await db.query(
     `INSERT INTO clave_idempotencia (clave, operacion, codigo_http, respuesta)
      VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
     [clave, operacion, codigoHttp, JSON.stringify(respuesta)],

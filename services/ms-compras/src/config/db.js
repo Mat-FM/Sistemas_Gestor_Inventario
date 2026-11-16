@@ -9,9 +9,10 @@ types.setTypeParser(1082, (valor) => valor);
 
 const pool = new Pool(config.db);
 
-// Ejecuta una función dentro de una transacción y devuelve su resultado.
-async function enTransaccion(fn) {
-  const cliente = await pool.connect();
+// Ejecuta una función dentro de una transacción y devuelve su resultado. Con `conexion`, usa esa conexión
+// (por ejemplo, la que sostiene el candado de una orden) en lugar de pedir otra al pool.
+async function enTransaccion(fn, conexion = null) {
+  const cliente = conexion ?? (await pool.connect());
   try {
     await cliente.query('BEGIN');
     const resultado = await fn(cliente);
@@ -21,7 +22,7 @@ async function enTransaccion(fn) {
     await cliente.query('ROLLBACK');
     throw error;
   } finally {
-    cliente.release();
+    if (!conexion) cliente.release();
   }
 }
 

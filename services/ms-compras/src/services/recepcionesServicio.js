@@ -53,13 +53,17 @@ function estadoSegunDetalles(detalles) {
 
 // Bloqueo por orden durante toda la recepción, para que dos recepciones simultáneas de la misma
 // orden no superen la cantidad pendiente. Se usa un candado de PostgreSQL ligado a la conexión.
+// TODAS las consultas de la recepción usan esa misma conexión: si pidieran otra al pool mientras otras
+// recepciones esperan el candado ocupando conexiones, el pool se agotaría y nadie podría avanzar.
 async function conBloqueoDeOrden(idOrden, fn) {
   const conexion = await pool.connect();
+  let bloqueada = false;
   try {
-    await conexion.query('SELECT pg_advisory_lock(1, $1)', [idOrden]);
-    return await fn();
+    await repo.tomarCandadoOrden(conexion, idOrden);
+    bloqueada = true;
+    return await fn(conexion);
   } finally {
-    await conexion.query('SELECT pg_advisory_unlock(1, $1)', [idOrden]).catch(() => {});
+    if (bloqueada) await repo.liberarCandadoOrden(conexion, idOrden).catch(() => {});
     conexion.release();
   }
 }
@@ -70,19 +74,19 @@ async function recibir(idOrden, cuerpo, { usuario, clave, requestId }) {
 
   const lineas = validarLineas(cuerpo);
 
-  return conBloqueoDeOrden(idOrden, async () => {
-    const orden = await repo.obtener(idOrden);
+  return conBloqueoDeOrden(idOrden, async (con) => {
+    const orden = await repo.obtener(idOrden, con);
     if (!orden) throw ApiError.noEncontrado(`No existe la orden de compra ${idOrden}.`, 'ORDEN_NO_ENCONTRADA');
     verificarBodega(usuario, orden.id_bodega_destino);
 
-    const detalles = await repo.detalles(idOrden);
+    const detalles = await repo.detalles(idOrden, con);
     const porId = new Map(detalles.map((d) => [d.id_detalle, d]));
 
     // Líneas que ya quedaron registradas con esta misma clave en un intento anterior.
     const yaRegistradas = new Map();
     for (const linea of lineas) {
       if (porId.has(linea.idDetalle)) {
-        const previa = await repo.recepcionPorClave(pool, clave, linea.idDetalle);
+        const previa = await repo.recepcionPorClave(con, clave, linea.idDetalle);
         if (previa) yaRegistradas.set(linea.idDetalle, previa);
       }
     }
@@ -122,8 +126,9 @@ async function recibir(idOrden, cuerpo, { usuario, clave, requestId }) {
           },
           { claveIdempotencia: `ms-compras:recepcion:${clave}:${linea.idDetalle}`, usuario, requestId },
         );
-        await enTransaccion((db) =>
-          repo.registrarRecepcion(db, { ...linea, idUsuario: usuario.id, idMovimiento: movimiento.id_movimiento, clave }),
+        await enTransaccion(
+          (db) => repo.registrarRecepcion(db, { ...linea, idUsuario: usuario.id, idMovimiento: movimiento.id_movimiento, clave }),
+          con,
         );
         registradas.push(linea.idDetalle);
       } catch (error) {
@@ -133,9 +138,9 @@ async function recibir(idOrden, cuerpo, { usuario, clave, requestId }) {
     }
 
     // El estado de la orden se calcula con lo que realmente quedó recibido.
-    const estado = estadoSegunDetalles(await repo.detalles(idOrden));
+    const estado = estadoSegunDetalles(await repo.detalles(idOrden, con));
     if (estado !== orden.estado) {
-      await enTransaccion((db) => repo.cambiarEstado(db, idOrden, estado));
+      await enTransaccion((db) => repo.cambiarEstado(db, idOrden, estado), con);
     }
 
     if (registradas.length > 0) {
@@ -165,14 +170,14 @@ async function recibir(idOrden, cuerpo, { usuario, clave, requestId }) {
       );
     }
 
-    const respuesta = await repo.obtener(idOrden);
+    const respuesta = await repo.obtener(idOrden, con);
     const resultado = {
       id_orden: respuesta.id_orden,
       numero: respuesta.numero,
       estado: respuesta.estado,
-      recepciones: await repo.recepcionesPorClave(idOrden, clave),
+      recepciones: await repo.recepcionesPorClave(idOrden, clave, con),
     };
-    await idempotencia.guardar(clave, `${OPERACION}:${idOrden}`, 201, resultado);
+    await idempotencia.guardar(clave, `${OPERACION}:${idOrden}`, 201, resultado, con);
     return { status: 201, cuerpo: resultado };
   });
 }

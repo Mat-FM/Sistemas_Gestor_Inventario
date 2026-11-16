@@ -103,6 +103,33 @@ async function reemplazar(db, idOrden, { idProveedor, idBodegaDestino, fechaEspe
   );
 }
 
+// Candado de PostgreSQL por orden (clave (1, id_orden)). Lo toman la recepción y los cambios de estado,
+// para que una anulación nunca se cruce con una recepción en curso.
+const CANDADO_ORDEN = 1;
+// Si otra recepción tiene la orden más de este tiempo, se responde 409 en vez de seguir esperando.
+const ESPERA_CANDADO = '10s';
+
+// Candado de sesión: dura hasta liberarCandadoOrden. Se usa en la recepción, que llama a ms-inventario
+// mientras lo sostiene y por eso no puede ser una sola transacción.
+async function tomarCandadoOrden(db, idOrden) {
+  await db.query(`SET lock_timeout = '${ESPERA_CANDADO}'`);
+  try {
+    await db.query('SELECT pg_advisory_lock($1, $2)', [CANDADO_ORDEN, idOrden]);
+  } finally {
+    await db.query('RESET lock_timeout');
+  }
+}
+
+async function liberarCandadoOrden(db, idOrden) {
+  await db.query('SELECT pg_advisory_unlock($1, $2)', [CANDADO_ORDEN, idOrden]);
+}
+
+// El mismo candado, pero se libera solo al terminar la transacción. Se usa en los cambios de estado.
+async function tomarCandadoOrdenEnTransaccion(db, idOrden) {
+  await db.query(`SET LOCAL lock_timeout = '${ESPERA_CANDADO}'`);
+  await db.query('SELECT pg_advisory_xact_lock($1, $2)', [CANDADO_ORDEN, idOrden]);
+}
+
 async function cambiarEstado(db, idOrden, estado) {
   await db.query('UPDATE orden_compra SET estado = $2 WHERE id_orden = $1', [idOrden, estado]);
 }
@@ -137,6 +164,9 @@ async function registrarRecepcion(db, recepcion) {
 }
 
 module.exports = {
+  tomarCandadoOrden,
+  liberarCandadoOrden,
+  tomarCandadoOrdenEnTransaccion,
   listar,
   obtener,
   detalles,
