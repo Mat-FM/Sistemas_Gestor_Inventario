@@ -9,8 +9,10 @@ const {
   detenerSimulador,
   cerrarCortacircuito,
   crearOrdenEnviada,
+  ordenBase,
   simulador,
 } = require('./apoyo');
+const inventario = require('../src/clients/inventarioCliente');
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -171,6 +173,42 @@ describe('Recepción de mercancía (RF06)', () => {
     expect([a.status, b.status].sort()).toEqual([201, 422]);
     const final = await request(app).get(`/ordenes-compra/${orden.id_orden}`);
     expect(final.body.detalles[0].cantidad_recibida).toBe(6);
+  });
+
+  test('muchas recepciones simultáneas de la misma orden terminan todas sin agotar el pool', async () => {
+    // Más peticiones que conexiones del pool (10): antes cada recepción pedía una segunda conexión mientras
+    // otras esperaban el candado, y el servicio quedaba colgado para siempre.
+    const orden = await crearOrdenEnviada({ ...ordenBase, detalles: [{ id_producto: 25, cantidad_pedida: 1000, precio_unitario: 10 }] });
+    const linea = [{ id_detalle: orden.detalles[0].id_detalle, cantidad: 1 }];
+    const respuestas = await Promise.all(
+      Array.from({ length: 25 }, (_, i) => recibir(orden.id_orden, linea, `muchas-${orden.id_orden}-${i}`)),
+    );
+    expect(respuestas.map((r) => r.status)).toEqual(Array(25).fill(201));
+    const final = await request(app).get(`/ordenes-compra/${orden.id_orden}`);
+    expect(final.body.detalles[0].cantidad_recibida).toBe(25);
+    expect((await request(app).get('/health')).status).toBe(200);
+  }, 20000);
+
+  test('anular mientras una recepción está en curso espera a que termine y se rechaza', async () => {
+    const orden = await crearOrdenEnviada();
+    // ms-inventario tarda: la anulación llega mientras la recepción espera su respuesta.
+    const original = inventario.registrarMovimiento;
+    const espia = jest.spyOn(inventario, 'registrarMovimiento').mockImplementation(async (...args) => {
+      await esperar(300);
+      return original(...args);
+    });
+    try {
+      // .then() envía la petición ya: supertest no la manda hasta que alguien la espera.
+      const recepcion = recibir(orden.id_orden, [{ id_detalle: orden.detalles[0].id_detalle, cantidad: 2 }], `carrera-${orden.id_orden}`).then((r) => r);
+      await esperar(100);
+      const anulacion = await request(app).patch(`/ordenes-compra/${orden.id_orden}/estado`).set(ADMIN).send({ estado: 'ANULADA' });
+      expect((await recepcion).status).toBe(201);
+      expect(anulacion.status).toBe(409);
+    } finally {
+      espia.mockRestore();
+    }
+    const final = await request(app).get(`/ordenes-compra/${orden.id_orden}`);
+    expect(final.body.estado).toBe('RECIBIDA_PARCIAL');
   });
 
   test('una orden ENVIADA con recepciones ya no se puede anular', async () => {
