@@ -34,7 +34,8 @@ def _datos(status, cuerpo, ruta):
 
 
 def lotes_por_vencer(vence_antes_de, request_id):
-    """Lotes con existencia que vencen antes de la fecha (AAAA-MM-DD), recorriendo todas las páginas."""
+    """Lotes con existencia que vencen antes de la fecha (AAAA-MM-DD, sin incluirla), recorriendo todas
+    las páginas de {datos, meta} (máximo 100 lotes por página en ms-inventario)."""
     lotes = []
     for pagina in range(1, _MAX_PAGINAS + 1):
         status, cuerpo = cliente.get(
@@ -51,7 +52,8 @@ def lotes_por_vencer(vence_antes_de, request_id):
 
 
 def saldos_bajo_umbral(request_id):
-    """[{id_producto, cantidad_total, cantidad_minima}] de los productos por debajo de su umbral."""
+    """[{id_producto, cantidad_total, cantidad_minima}] de los productos por debajo de su umbral.
+    ms-inventario responde un arreglo plano, sin paginar y sin id_bodega (es el total de las dos bodegas)."""
     status, cuerpo = cliente.get("/saldos/bajo-umbral", cabeceras={"X-Request-Id": request_id})
     datos, _meta = _datos(status, cuerpo, "/saldos/bajo-umbral")
     return datos
