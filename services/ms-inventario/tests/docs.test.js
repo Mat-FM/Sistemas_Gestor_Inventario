@@ -86,6 +86,17 @@ describe('GET /docs (la página de Swagger UI)', () => {
     expect((await request.get('/docs').set(headers('ADMINISTRADOR'))).status).toBe(200);
   });
 
+  it('no exige identidad, pero una cabecera X-User-* inválida es 401 como en toda ruta (identity corre antes)', async () => {
+    const request = appSinBase();
+    for (const ruta of ['/docs', '/docs/openapi.yaml']) {
+      for (const cabeceras of [{ 'X-User-Id': '7' }, { 'X-User-Id': 'abc', 'X-User-Rol': 'ADMINISTRADOR' }, { 'X-User-Rol': 'SUPERUSUARIO' }]) {
+        const res = await request.get(ruta).set(cabeceras);
+        expect({ ruta, cabeceras, estado: res.status, codigo: res.body.error?.codigo }).toEqual({ ruta, cabeceras, estado: 401, codigo: 'NO_AUTENTICADO' });
+      }
+      expect((await request.get(ruta)).status).toBe(200); // control: sin cabeceras funciona
+    }
+  });
+
   it('lleva el X-Request-Id de toda respuesta del servicio', async () => {
     const res = await appSinBase().get('/docs').set('X-Request-Id', 'prueba-docs-1');
     expect(res.headers['x-request-id']).toBe('prueba-docs-1');

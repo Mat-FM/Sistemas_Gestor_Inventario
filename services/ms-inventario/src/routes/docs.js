@@ -6,7 +6,8 @@ const path = require('node:path');
 //
 // NO forman parte de rutasDeclaradas (routes/index.js): esa lista son las operaciones de negocio, que registrarRutas protege
 // exigiendo X-User-Id en las escrituras, y que openapi.yaml debe describir una por una. /docs, como /health, es una ruta del
-// propio servicio: no pasa por el Gateway, no usa la base de datos y no pide autenticación. Se monta desde app.js.
+// propio servicio: no pasa por el Gateway, no usa la base de datos y no exige identidad (un navegador no envía X-User-*), aunque,
+// como toda ruta del servicio, una cabecera X-User-* inválida (p. ej. X-User-Id sin X-User-Rol) es 401. Se monta desde app.js.
 
 // Las rutas se resuelven desde este archivo y no desde el directorio de trabajo: el servicio arranca igual desde el contenedor
 // (el Dockerfile copia `openapi.yaml` y `src/`) que con `npm start` desde otra carpeta.

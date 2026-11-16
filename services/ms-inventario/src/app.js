@@ -45,7 +45,8 @@ function createApp({ db, clients, logger = loggerPorDefecto, env = process.env, 
   });
 
   // Documentación OpenAPI (RNF08): GET /docs y GET /docs/openapi.yaml. Ruta del servicio, como /health: sin Gateway, sin base de
-  // datos y sin identidad; lee sus dos archivos al construir (si faltan, la aplicación no se construye).
+  // datos y sin exigir identidad (una cabecera X-User-* inválida es 401, como en toda ruta, porque `identity` corre antes); lee sus
+  // dos archivos al construir (si faltan, la aplicación no se construye).
   montarDocs(app);
 
   // Rutas de negocio (routes/index.js): las lecturas aceptan llamadas internas sin X-User-Id y las escrituras lo exigen.
