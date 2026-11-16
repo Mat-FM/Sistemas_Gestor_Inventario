@@ -1,0 +1,10 @@
+openapi: 3.0.3
+
+info:
+  title: ms-inventario
+  version: 1.0.0
+  description: |
+    Bodegas, saldos, movimientos (kardex), lotes, traslados, conteos físicos y carga inicial de saldos del Gestor de
+    Inventario de Distribuidora El Montañero S.A.S.
+
+paths: {}

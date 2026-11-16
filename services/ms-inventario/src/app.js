@@ -5,6 +5,7 @@ const { logger: loggerPorDefecto } = require('./logger');
 const { crearErrorHandler, rutaNoEncontrada } = require('./middleware/errorHandler');
 const { identity } = require('./middleware/identity');
 const { crearRequestLog } = require('./middleware/requestLog');
+const { montarDocs } = require('./routes/docs');
 const { registrarRutas } = require('./routes');
 const { LIMITE_CUERPO_CARGA_INICIAL, RUTA_CARGA_INICIAL } = require('./routes/internas');
 
@@ -42,6 +43,10 @@ function createApp({ db, clients, logger = loggerPorDefecto, env = process.env, 
     }
     return res.json({ estado: 'ok', servicio: SERVICIO });
   });
+
+  // Documentación OpenAPI (RNF08): GET /docs y GET /docs/openapi.yaml. Ruta del servicio, como /health: sin Gateway, sin base de
+  // datos y sin identidad; lee sus dos archivos al construir (si faltan, la aplicación no se construye).
+  montarDocs(app);
 
   // Rutas de negocio (routes/index.js): las lecturas aceptan llamadas internas sin X-User-Id y las escrituras lo exigen.
   registrarRutas(app, { db, clients, logger, now });
