@@ -9,7 +9,7 @@ const stockService = require('./stockService');
 // ms-reportes al importar el inventario de arranque desde un archivo. Cada fila válida crea un movimiento CARGA_INICIAL con el
 // motor de movimientos (stockService.aplicarMovimiento); las filas inválidas se devuelven en `rechazados` y no abortan la carga.
 // No sabe nada de HTTP: recibe las filas, el valor de la cabecera Idempotency-Key y la identidad como datos. El SQL vive en el
-// repositorio. Las dependencias llegan en `deps` = { db } (el logger y los clientes no se usan) y se leen en cada llamada.
+// repositorio. Las dependencias llegan en `deps` = { db } y se leen en cada llamada.
 //
 // Diseño (D34):
 // - UNA TRANSACCIÓN POR FILA, en el orden de la lista (éxito parcial): el resultado de una fila no depende de las demás y una
