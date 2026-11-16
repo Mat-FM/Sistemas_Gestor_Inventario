@@ -30,7 +30,9 @@ const stockService = require('./stockService');
 //
 // Limitaciones documentadas (D31(f), D28(a)): con la bodega de destino inactiva, o si el destino creó después de la creación el
 // mismo lote con otra fecha de vencimiento, la recepción responde 409 y el traslado sigue EN_TRANSITO: la mercancía queda en
-// tránsito (contada en el invariante) hasta reactivar la bodega o corregir el lote.
+// tránsito (contada en el invariante). La bodega inactiva se resuelve reactivándola y repitiendo la recepción; el conflicto de
+// lote no tiene salida por la API (el código y la fecha de un lote son inmutables y los lotes no se borran) y exige intervenir en
+// la base de datos.
 
 // Largo exacto de movimientos.observacion (migración 20261103000100): un texto más largo sería un 22001 (un 500).
 const LARGO_OBSERVACION = 500;
@@ -63,7 +65,7 @@ const describirFecha = (fecha) => fecha ?? 'sin fecha de vencimiento';
  * la creación (precomprobarCreacion) y la recepción (el conflicto que detecta el motor y comprobarLoteDeDestino). Siempre sobre
  * `id_lote`, el campo que el cliente envió al CREAR (en la recepción no envía ninguno de lote). El mensaje nombra el lote y las
  * dos fechas (`null` es «sin fecha de vencimiento») y dice qué pasa con el traslado: al crear, no se crea; al recibir
- * (`enTransito`), sigue EN_TRANSITO hasta regularizar el lote del destino y volver a recibirlo.
+ * (`enTransito`), sigue EN_TRANSITO y el conflicto no se puede resolver con la API (el mensaje no ofrece una salida que no existe).
  * @param {string} codigoLote
  * @param {string|null} fechaDestino la del lote que ya está en el destino
  * @param {string|null} fechaOrigen la del lote de origen del traslado
@@ -73,7 +75,7 @@ const describirFecha = (fecha) => fecha ?? 'sin fecha de vencimiento';
 function conflictoDeFecha(codigoLote, fechaDestino, fechaOrigen, { enTransito = false } = {}) {
   const diferencia = `El lote ${codigoLote} de la bodega de destino (${describirFecha(fechaDestino)}) tiene otra fecha de vencimiento que el de la bodega de origen (${describirFecha(fechaOrigen)}).`;
   const consecuencia = enTransito
-    ? 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.'
+    ? 'El traslado sigue EN_TRANSITO: este conflicto no se puede resolver con la API (el lote del destino no se puede corregir) y requiere la intervención del equipo técnico.'
     : 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.';
   const mensaje = `${diferencia} ${consecuencia}`;
   return e.conflicto('CONFLICTO', mensaje, [{ campo: 'id_lote', mensaje }]);

@@ -1,3 +1,5 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const trasladoRepository = require('../src/repositories/trasladoRepository');
 const trasladoService = require('../src/services/trasladoService');
 const { promesasReales } = require('./helpers/capas');
@@ -313,11 +315,23 @@ describe('trasladoService.conflictoDeFecha (ronda 1)', () => {
     for (const [opciones, consecuencia] of [
       [undefined, 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.'],
       [{ enTransito: false }, 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.'],
-      [{ enTransito: true }, 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.'],
+      [{ enTransito: true }, 'El traslado sigue EN_TRANSITO: este conflicto no se puede resolver con la API (el lote del destino no se puede corregir) y requiere la intervención del equipo técnico.'],
     ]) {
       const error = trasladoService.conflictoDeFecha('L-9', destino, origen, opciones);
       const mensaje = `${diferencia} ${consecuencia}`;
       expect(error).toMatchObject({ status: 409, codigo: 'CONFLICTO', message: mensaje, detalles: [{ campo: 'id_lote', mensaje }] });
     }
+  });
+
+  // La API no tiene ninguna operación que cambie o borre un lote (código y fecha son inmutables): el mensaje de la recepción no
+  // puede ofrecer una salida que no existe, ni en la respuesta ni en los comentarios que la explican.
+  it('con enTransito dice que la API no lo resuelve y no promete regularizar ni volver a enviar la recepción', () => {
+    const { message } = trasladoService.conflictoDeFecha('L-9', '2028-03-01', '2027-01-31', { enTransito: true });
+    expect(message).toContain('El traslado sigue EN_TRANSITO');
+    expect(message).toContain('no se puede resolver con la API');
+    expect(message).toContain('requiere la intervención del equipo técnico');
+    expect(message).not.toMatch(/regulari[cz]|vuelva a|reintent/i);
+    const fuente = fs.readFileSync(path.join(__dirname, '../src/services/trasladoService.js'), 'utf8');
+    expect(fuente).not.toMatch(/regulari[cz]|vuelva a enviar/i);
   });
 });

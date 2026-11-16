@@ -82,7 +82,7 @@ const foto = async () => ({ saldos: await db('saldos').select('*').orderBy('id_s
 const catalogoSinLlamadas = () => expect(clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
 // 409 CONFLICTO de un lote del destino con otra fecha (conflictoDeFecha): un único formato, sobre `id_lote`, con el texto exacto.
 const TEXTO_CREAR = 'El traslado no se creó: su recepción fallaría con la mercancía en tránsito.';
-const TEXTO_RECIBIR = 'El traslado sigue EN_TRANSITO: regularice el lote en la bodega de destino y vuelva a enviar la recepción.';
+const TEXTO_RECIBIR = 'El traslado sigue EN_TRANSITO: este conflicto no se puede resolver con la API (el lote del destino no se puede corregir) y requiere la intervención del equipo técnico.';
 function conflictoDeLote(res, codigo, fechaDestino, fechaOrigen, consecuencia) {
   const mensaje = `El lote ${codigo} de la bodega de destino (${fechaDestino}) tiene otra fecha de vencimiento que el de la bodega de origen (${fechaOrigen}). ${consecuencia}`;
   expect(res.status).toBe(409);
