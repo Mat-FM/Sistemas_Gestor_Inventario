@@ -1,0 +1,4 @@
+# Dependencias solo para las pruebas (no van en la imagen).
+-r requirements.txt
+pytest==8.3.4
+pytest-cov==6.0.0
