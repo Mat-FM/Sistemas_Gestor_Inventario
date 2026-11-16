@@ -6,6 +6,7 @@ const { crearErrorHandler, rutaNoEncontrada } = require('./middleware/errorHandl
 const { identity } = require('./middleware/identity');
 const { crearRequestLog } = require('./middleware/requestLog');
 const { registrarRutas } = require('./routes');
+const { LIMITE_CUERPO_CARGA_INICIAL, RUTA_CARGA_INICIAL } = require('./routes/internas');
 
 /**
  * Arma la aplicación Express.
@@ -23,6 +24,10 @@ function createApp({ db, clients, logger = loggerPorDefecto, env = process.env, 
   // identity va antes que el analizador de JSON: una identidad inválida se rechaza sin leer el cuerpo.
   app.use(crearRequestLog({ logger }));
   app.use(identity);
+  // La carga inicial admite hasta 1 MB (D34(c)): su analizador se monta con método y ruta, ANTES del global, y es el único que se
+  // salta los 100 kB. El global no vuelve a leer un cuerpo que ya se leyó (body-parser lo detecta con `isFinished`), y un
+  // error del propio analizador (JSON mal formado 400, más de 1 MB 413, charset 415) sigue el mismo manejo de D18.
+  app.post(RUTA_CARGA_INICIAL, express.json({ limit: LIMITE_CUERPO_CARGA_INICIAL }));
   app.use(express.json({ limit: '100kb' })); // un cuerpo mayor es 413 PETICION_MAL_FORMADA (D18)
 
   // ---- Rutas del servicio: se montan aquí, antes del 404. ----
