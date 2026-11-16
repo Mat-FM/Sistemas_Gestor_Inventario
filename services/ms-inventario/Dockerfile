@@ -13,9 +13,10 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 # Primero solo las dependencias de producción: si el código cambia pero package-lock.json no, Docker reutiliza esta capa.
-# knex y pg son dependencias de producción: `node_modules/.bin/knex migrate:latest` funciona dentro de la imagen.
+# knex y pg son dependencias de producción: `node_modules/.bin/knex migrate:latest` funciona dentro de la imagen. La caché de npm
+# se borra en la misma RUN: en otra, ya habría quedado grabada en la capa de la instalación (unos 5 MB que la imagen no necesita).
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 
 # El código y lo que lee en ejecución: las migraciones, knexfile.js (lo usa la CLI de Knex) y openapi.yaml, que con
 # src/docs/swagger-ui.html sirve /docs. Si falta cualquiera de los dos archivos de /docs, el servicio no arranca (createApp

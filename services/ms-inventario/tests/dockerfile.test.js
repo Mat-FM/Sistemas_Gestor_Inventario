@@ -161,6 +161,8 @@ describe('el Dockerfile', () => {
       if (/\bnpm ci\b/.test(i.argumentos)) expect(i.argumentos).toMatch(/\bnpm ci\b.*--omit=dev/);
       expect(i.argumentos).not.toMatch(/\bnpm (install|i)\b/); // npm install ignora el package-lock.json
     }
+    // La caché de npm (~6 MB) se borra en la MISMA capa: en otra RUN ya habría quedado grabada en la capa de la instalación.
+    expect(todas[indiceInstalacion].argumentos).toMatch(/\bnpm ci\b.*--omit=dev.*&&\s*npm cache clean --force\b/);
     // Capa de dependencias: antes del npm ci, SOLO package.json y package-lock.json; el código llega después.
     const antes = todas.slice(0, indiceInstalacion).filter((i) => i.nombre === 'COPY');
     expect(antes.map((i) => i.argumentos.split(/\s+/).slice(0, -1)).flat().sort()).toEqual(['package-lock.json', 'package.json']);
@@ -220,6 +222,17 @@ describe('el Dockerfile', () => {
     expect(argumentos).not.toMatch(/\b(curl|wget)\b/);
   });
 
+  it('el --timeout del HEALTHCHECK es MAYOR que el plazo propio de la sonda: la sonda termina (con su salida 1) antes de que Docker la corte', () => {
+    const { argumentos } = deTipo('HEALTHCHECK')[0];
+    const [, cantidad, unidad] = /--timeout=(\d+(?:\.\d+)?)(ms|s|m)\b/.exec(argumentos);
+    const timeoutMs = Number(cantidad) * { ms: 1, s: 1000, m: 60000 }[unidad];
+    const [, plazoPropio] = /AbortSignal\.timeout\((\d+)\)/.exec(argumentos); // lo escrito en el Dockerfile, no un número a mano
+    expect(timeoutMs).toBeGreaterThan(Number(plazoPropio));
+    // y el intervalo entre sondas no es más corto que el plazo de una sonda (no se pisarían)
+    const [, intervalo, unidadIntervalo] = /--interval=(\d+(?:\.\d+)?)(ms|s|m)\b/.exec(argumentos);
+    expect(Number(intervalo) * { ms: 1, s: 1000, m: 60000 }[unidadIntervalo]).toBeGreaterThan(timeoutMs);
+  });
+
   it('copia solo lo necesario: cada origen existe y están el código, las migraciones, knexfile.js, openapi.yaml y package*.json', () => {
     const origenes = origenesDeCopy();
     for (const origen of origenes) expect(fs.existsSync(path.join(RAIZ, origen))).toBe(true);
@@ -257,6 +270,24 @@ describe('.dockerignore', () => {
     for (const ruta of ['.env', '.env.local', '.env.production', 'node_modules', 'node_modules/express/package.json', 'tests', 'tests/dockerfile.test.js', 'coverage', 'coverage/lcov.info']) {
       expect({ ruta, ignorada: estaIgnorada(ruta, patrones) }).toEqual({ ruta, ignorada: true });
     }
+  });
+
+  it('secretos y basura se excluyen en CUALQUIER carpeta, no solo en la raíz: COPY src copia el directorio entero (src/.env, src/.DS_Store, src/node_modules…)', () => {
+    const patrones = patronesDeIgnore();
+    const rutas = [
+      'src/.env', 'src/.env.local', 'src/config/.env.production', 'migrations/.env',
+      'src/.DS_Store', 'migrations/.DS_Store', '.DS_Store',
+      'src/node_modules', 'src/node_modules/x/index.js', 'migrations/node_modules/y.js',
+      'src/server.log', 'migrations/error.log', 'npm-debug.log', 'src/.git/config', '.git/HEAD',
+    ];
+    for (const ruta of rutas) expect({ ruta, ignorada: estaIgnorada(ruta, patrones) }).toEqual({ ruta, ignorada: true });
+  });
+
+  it('el anclaje a la raíz se conserva donde corresponde: tests y coverage son carpetas de la raíz, no cualquier carpeta con ese nombre', () => {
+    const patrones = patronesDeIgnore();
+    expect(estaIgnorada('src/tests/fixture.js', patrones)).toBe(false);
+    expect(estaIgnorada('src/coverage/datos.js', patrones)).toBe(false);
+    expect(estaIgnorada('src/README.md', patrones)).toBe(false);
   });
 
   it('no deja fuera nada de lo que el Dockerfile copia (src entero, migraciones, knexfile.js, openapi.yaml, package*.json)', () => {
