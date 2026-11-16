@@ -1,11 +1,10 @@
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { iniciar } = require('../src/server');
 const { entornoValido } = require('./helpers/app');
-const { PLAZO_HIJO_MS, ejecutarHijo } = require('./helpers/hijos');
+const { ejecutarHijo, lanzarHijo } = require('./helpers/hijos');
 const { ocuparPuerto, puertoLibre } = require('./helpers/puertos');
 
 // Arranque del servicio: la función iniciar (con `salir` inyectado) y el proceso real (node src/server.js).
@@ -242,35 +241,49 @@ describe('proceso real: node src/server.js', () => {
     ...extra,
   });
 
-  // Lanza `node src/server.js` con un plazo propio de `plazoMs` desde que nace (menos que el de las pruebas de Jest, 30 s): si
-  // el hijo no ha cerrado para entonces se le manda SIGKILL y `cierre` RECHAZA con un mensaje claro, en vez de dejar al proceso
-  // vivo y a la prueba esperando. El temporizador se cancela cuando el hijo cierra.
-  function lanzar(env, { plazoMs = PLAZO_HIJO_MS, cwd = RAIZ } = {}) {
-    // La ruta del script es absoluta para poder lanzarlo desde otra carpeta (la de un archivo que no debe aparecer, ver PORT=abc).
-    const hijo = spawn(process.execPath, [path.join(RAIZ, 'src', 'server.js')], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    const resultado = { stdout: '', stderr: '', codigo: undefined, senal: undefined };
-    let agotado = false;
-    const temporizador = setTimeout(() => {
-      agotado = true;
-      hijo.kill('SIGKILL');
-    }, plazoMs);
-    hijo.stdout.on('data', (trozo) => { resultado.stdout += trozo; });
-    hijo.stderr.on('data', (trozo) => { resultado.stderr += trozo; });
-    resultado.cierre = new Promise((resolver, rechazar) => {
-      hijo.on('close', (codigo, senal) => {
-        clearTimeout(temporizador);
-        resultado.codigo = codigo;
-        resultado.senal = senal;
-        if (agotado) rechazar(new Error(`El proceso hijo no terminó en ${plazoMs} ms y se mató con SIGKILL. stdout: ${resultado.stdout} stderr: ${resultado.stderr}`));
-        else resolver(resultado);
-      });
-    });
-    resultado.cierre.catch(() => {}); // si nadie la espera cuando vence el plazo, no es un rechazo sin manejar
-    resultado.hijo = hijo;
-    return resultado;
+  // Lanza `node src/server.js` con el plazo de lanzarHijo (helpers/hijos.js: SIEMPRE lleva uno; si el hijo no cierra, SIGKILL y
+  // `cierre` rechaza). La ruta del script es absoluta para poder lanzarlo desde otra carpeta (la de un archivo que no debe aparecer,
+  // ver PORT=abc).
+  const SERVIDOR = path.join(RAIZ, 'src', 'server.js');
+  const lanzar = (env, { plazoMs, cwd = RAIZ } = {}) => lanzarHijo([SERVIDOR], { env, cwd, plazoMs });
+
+  // Espera, con sondeo, a que `condicion()` sea cierta; si no lo es en `plazoMs` falla con `descripcion` (nunca espera sin plazo).
+  async function esperarHasta(condicion, descripcion, plazoMs = 15000) {
+    const limite = Date.now() + plazoMs;
+    while (!condicion()) {
+      if (Date.now() > limite) throw new Error(`No ocurrió en ${plazoMs} ms: ${descripcion}`);
+      await new Promise((resolver) => { setTimeout(resolver, 20); });
+    }
   }
+  const esperarArranque = (proceso) => esperarHasta(
+    () => {
+      if (proceso.codigo !== undefined) throw new Error(`El proceso salió antes de arrancar: ${proceso.stdout} ${proceso.stderr}`);
+      return proceso.stdout.includes('Servidor iniciado');
+    },
+    'el proceso escribe «Servidor iniciado»',
+  );
 
   const lineasDe = (texto) => texto.split('\n').filter((linea) => linea.trim() !== '');
+
+  it('control del señuelo: con una configuración válida, arrancar no abre conexiones (el pool es perezoso) y una petición que toca la base SÍ abre una con el señuelo', async () => {
+    // Sin esta prueba, `conexiones === 0` en las demás no diría nada: valdría igual con un señuelo roto o con un DB_PORT que no llega al hijo.
+    const proceso = lanzar(entornoDelHijo());
+    try {
+      await esperarArranque(proceso);
+      expect(conexiones).toBe(0);
+
+      const respuesta = await fetch(`http://127.0.0.1:${PUERTO}/bodegas`, { headers: { 'X-User-Id': '1', 'X-User-Rol': 'ADMINISTRADOR' } });
+      expect(respuesta.status).toBe(500); // el señuelo cuelga la conexión: no es una base de datos
+      await esperarHasta(() => conexiones >= 1, 'el señuelo cuenta la conexión que abrió el hijo');
+      expect(conexiones).toBeGreaterThanOrEqual(1);
+
+      proceso.hijo.kill('SIGTERM');
+      await proceso.cierre;
+      expect(proceso.codigo).toBe(0);
+    } finally {
+      proceso.hijo.kill('SIGKILL');
+    }
+  });
 
   it('CALL_TIMEOUT_MS=abc: sale con código 1 y escribe UNA línea JSON con el mensaje, sin TypeError ni pila, sin tocar la base', async () => {
     const proceso = lanzar(entornoDelHijo({ CALL_TIMEOUT_MS: 'abc' }));
@@ -293,7 +306,7 @@ describe('proceso real: node src/server.js', () => {
     });
     expect(Object.keys(registro.error)).toEqual(['nombre', 'mensaje']); // sin pila
     expect(salida).not.toMatch(/TypeError|Node\.js v|node:internal|\n\s+at /);
-    expect(conexiones).toBe(0);
+    expect(conexiones).toBe(0); // no es una afirmación vacía: el control de arriba prueba que el señuelo SÍ cuenta lo que el hijo abre
   });
 
   // Una carpeta de trabajo vacía y desechable, fuera del repositorio.
@@ -330,7 +343,7 @@ describe('proceso real: node src/server.js', () => {
         nivel: 'error',
       });
       expect(salida).not.toMatch(/RangeError|TypeError|ERR_SOCKET_BAD_PORT|Node\.js v|node:internal|\n\s+at /);
-      expect(conexiones).toBe(0);
+      expect(conexiones).toBe(0); // ver el control del señuelo
       expect(fs.readdirSync(carpeta)).toEqual([]); // ni un socket «abc» ni nada
     } finally {
       fs.rmSync(carpeta, { recursive: true, force: true });
@@ -369,11 +382,7 @@ describe('proceso real: node src/server.js', () => {
   it('control: con CALL_TIMEOUT_MS válido el mismo proceso arranca y, al recibir SIGTERM, sale con 0', async () => {
     const proceso = lanzar(entornoDelHijo({ CALL_TIMEOUT_MS: '3000' }));
     try {
-      const limite = Date.now() + 15000;
-      while (!proceso.stdout.includes('Servidor iniciado')) {
-        if (proceso.codigo !== undefined || Date.now() > limite) throw new Error(`El proceso no arrancó: ${proceso.stdout} ${proceso.stderr}`);
-        await new Promise((resolver) => setTimeout(resolver, 20));
-      }
+      await esperarArranque(proceso);
       proceso.hijo.kill('SIGTERM');
       await proceso.cierre;
     } finally {
@@ -383,17 +392,5 @@ describe('proceso real: node src/server.js', () => {
     expect(proceso.stderr).toBe('');
     const lineas = lineasDe(proceso.stdout).map((linea) => JSON.parse(linea));
     expect(lineas).toEqual([expect.objectContaining({ mensaje: 'Servidor iniciado', nivel: 'info', servicio: 'ms-inventario' })]);
-  });
-
-  it('higiene: un servidor que no cierra en su plazo se MATA y `cierre` rechaza con un mensaje claro (no queda vivo ni la prueba esperando)', async () => {
-    // El servidor de control arranca y se queda escuchando: con un plazo de 1,5 s no llega a cerrar solo.
-    const proceso = lanzar(entornoDelHijo({ CALL_TIMEOUT_MS: '3000' }), { plazoMs: 1500 });
-    try {
-      await expect(proceso.cierre).rejects.toThrow(/El proceso hijo no terminó en 1500 ms y se mató con SIGKILL/);
-      expect(proceso.senal).toBe('SIGKILL');
-      expect(() => process.kill(proceso.hijo.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' })); // ya no existe
-    } finally {
-      proceso.hijo.kill('SIGKILL');
-    }
   });
 });

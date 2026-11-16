@@ -1,4 +1,4 @@
-const { AGOTADO, PLAZO_HIJO_MS, ejecutarHijo, esperarConPlazo } = require('./helpers/hijos');
+const { AGOTADO, PLAZO_HIJO_MS, ejecutarHijo, esperarConPlazo, lanzarHijo } = require('./helpers/hijos');
 
 // Higiene de las pruebas que lanzan procesos hijos o esperan con un plazo: ninguna debe dejar un proceso vivo ni un temporizador
 // pendiente, ni siquiera cuando algo falla (la base no responde, un cierre que no llega). Es el ÚNICO sitio donde se prueba el
@@ -94,5 +94,78 @@ describe('esperarConPlazo (Promise.race con un temporizador que no queda vivo)',
     const inicio = Date.now();
     expect(await esperarConPlazo(Promise.resolve(7), 5000)).toBe(7);
     expect(Date.now() - inicio).toBeLessThan(1000);
+  });
+});
+
+describe('lanzarHijo (proceso hijo que sigue vivo mientras la prueba le habla, con plazo SIEMPRE)', () => {
+  // Un hijo que avisa cuando ya atiende SIGTERM y, al recibirlo, sale con 0 (como el servicio).
+  const OBEDIENTE = "process.on('SIGTERM', () => process.exit(0)); process.stdout.write('listo'); setInterval(() => {}, 1000);";
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('sin indicar plazo usa el de 20 s, y el temporizador se cancela cuando el hijo cierra (no queda vivo tras la prueba)', async () => {
+    const poner = jest.spyOn(global, 'setTimeout');
+    const quitar = jest.spyOn(global, 'clearTimeout');
+    const proceso = lanzarHijo(['-e', '0']);
+    await proceso.cierre;
+    const llamada = poner.mock.calls.findIndex(([, ms]) => ms === PLAZO_HIJO_MS);
+    expect(llamada).toBeGreaterThan(-1); // el plazo por defecto se armó…
+    expect(quitar).toHaveBeenCalledWith(poner.mock.results[llamada].value); // …y se canceló al cerrar el hijo
+  });
+
+  it('un hijo que termina bien: `cierre` resuelve el mismo objeto con código 0, su stdout y su stderr', async () => {
+    const proceso = lanzarHijo(['-e', 'process.stdout.write("salida"); process.stderr.write("aviso")'], { env: { PATH: process.env.PATH } });
+    await expect(proceso.cierre).resolves.toBe(proceso);
+    expect({ codigo: proceso.codigo, senal: proceso.senal, stdout: proceso.stdout, stderr: proceso.stderr }).toEqual({ codigo: 0, senal: null, stdout: 'salida', stderr: 'aviso' });
+  });
+
+  it('un hijo que sale con error NO rechaza: `cierre` resuelve y deja el código para que la prueba lo compruebe', async () => {
+    const proceso = lanzarHijo(['-e', 'process.exit(3)']);
+    await expect(proceso.cierre).resolves.toBe(proceso);
+    expect(proceso.codigo).toBe(3);
+  });
+
+  it('respeta el directorio de trabajo y el entorno que se le piden', async () => {
+    const proceso = lanzarHijo(['-e', 'process.stdout.write(process.env.DATO + "|" + process.cwd())'], { env: { ...process.env, DATO: 'hola' }, cwd: __dirname });
+    await proceso.cierre;
+    expect(proceso.stdout).toBe(`hola|${__dirname}`);
+  });
+
+  it('se le puede mandar SIGTERM a mitad: sale con 0 antes de que venza el plazo, y su salida en curso ya era visible', async () => {
+    const proceso = lanzarHijo(['-e', OBEDIENTE], { plazoMs: 15000 });
+    try {
+      const limite = Date.now() + 10000;
+      while (!proceso.stdout.includes('listo')) {
+        if (proceso.codigo !== undefined || Date.now() > limite) throw new Error(`El hijo no arrancó: ${proceso.stderr}`);
+        await new Promise((resolver) => { setTimeout(resolver, 10); });
+      }
+      expect(proceso.codigo).toBeUndefined(); // sigue vivo: todavía no ha cerrado
+      proceso.hijo.kill('SIGTERM');
+      await expect(proceso.cierre).resolves.toBe(proceso);
+      expect(proceso.codigo).toBe(0);
+    } finally {
+      proceso.hijo.kill('SIGKILL');
+    }
+  });
+
+  it('un hijo colgado → `cierre` RECHAZA con un mensaje claro tras el plazo (con su salida) y el proceso MUERE (SIGKILL)', async () => {
+    const inicio = Date.now();
+    const proceso = lanzarHijo(['-e', COLGADO], { plazoMs: 400 });
+    const error = await proceso.cierre.catch((fallo) => fallo);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/El proceso hijo no terminó en 400 ms y se mató con SIGKILL/);
+    expect(Date.now() - inicio).toBeLessThan(5000); // no esperó los 20 s por defecto
+    expect(proceso.senal).toBe('SIGKILL');
+    const pid = Number(proceso.stdout);
+    expect(Number.isInteger(pid) && pid > 0).toBe(true); // control: el hijo sí llegó a arrancar y dijo su pid
+    expect(error.message).toContain(`stdout: ${pid}`);
+    expect(vive(pid)).toBe(false);
+  });
+
+  it('un rechazo por plazo que nadie esperaba no es un «unhandled rejection» que tumbe la prueba siguiente', async () => {
+    const proceso = lanzarHijo(['-e', COLGADO], { plazoMs: 200 });
+    await new Promise((resolver) => { proceso.hijo.once('close', resolver); }); // el hijo muere por el plazo; nadie leyó `cierre`
+    await new Promise((resolver) => { setImmediate(resolver); }); // un rechazo sin manejar se notificaría aquí
+    expect(proceso.senal).toBe('SIGKILL');
   });
 });
