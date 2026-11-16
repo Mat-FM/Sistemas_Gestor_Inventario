@@ -3,8 +3,2020 @@ openapi: 3.0.3
 info:
   title: ms-inventario
   version: 1.0.0
+  # Límite de cuerpo de TODAS las rutas salvo la carga inicial: 100 kB = 102 400 bytes. Una prueba lo compara con el servicio.
+  x-tamano-maximo-cuerpo-bytes: 102400
   description: |
-    Bodegas, saldos, movimientos (kardex), lotes, traslados, conteos físicos y carga inicial de saldos del Gestor de
-    Inventario de Distribuidora El Montañero S.A.S.
+    Bodegas, saldos, umbrales de stock mínimo, movimientos (kardex), lotes con salida FEFO, traslados entre bodegas,
+    conteos físicos y carga inicial de saldos del Gestor de Inventario de Distribuidora El Montañero S.A.S.
+    Documenta las 24 operaciones de negocio de la Tabla 9 de la Entrega 2 más `GET /health`.
 
-paths: {}
+    ## Acceso
+
+    Las rutas son **internas**: el API Gateway las publica con el prefijo `/api` (`GET /api/saldos` llega aquí como
+    `GET /saldos`) y aplica la matriz de permisos por rol. Este servicio **no repite esos permisos**: solo aplica el
+    alcance por bodega del operador de bodega. Las rutas `/internas/*` las llaman únicamente otros servicios y el
+    Gateway no las publica. `GET /health` y `GET /docs` son del propio servicio y no pasan por el Gateway.
+
+    ## Identidad
+
+    El servicio no tiene usuarios propios: confía en las cabeceras que el Gateway repone en cada petición.
+
+    - `X-User-Id`: entero positivo. `X-User-Rol`: `ADMINISTRADOR`, `OPERADOR_BODEGA`, `VENDEDOR` o `CONTADOR`.
+      `X-User-Bodega`: entero positivo, solo para el operador de bodega. `X-Request-Id`: identificador de la petición.
+    - Una cabecera presente pero inválida es **401** `NO_AUTENTICADO` (nunca se ignora en silencio), y `X-User-Id` sin
+      `X-User-Rol` también.
+    - Las **lecturas** (`GET`) sin `X-User-Id` son válidas: son las llamadas internas de ms-notificaciones y ms-reportes.
+    - Las **escrituras** (`POST`, `PUT`) exigen `X-User-Id` (401 si falta): cada movimiento guarda su autor (RF10).
+    - El servicio confía en estas cabeceras solo porque el Gateway es lo único alcanzable desde fuera; en Kubernetes
+      hay que restringir el acceso con una `NetworkPolicy`.
+
+    ## Alcance por bodega
+
+    El operador de bodega solo ve y opera su bodega (`X-User-Bodega`). Sin bodega asignada, o con una consulta o un
+    cuerpo que nombran otra bodega, la respuesta es **403** `SIN_PERMISO`. Si no pide ninguna bodega, la consulta se
+    limita a la suya y `meta.total` cuenta solo lo de su bodega. `GET /movimientos/{id}` y `GET /conteos/{id}` de otra
+    bodega son 403 y no 404. Los demás roles y las llamadas internas no tienen restricción.
+
+    Aplica a `GET /saldos`, al kardex, a los lotes, a los traslados y, de los conteos, a la lectura y al registro de lo
+    contado. **No** aplica a las bodegas, los umbrales, `GET /saldos/bajo-umbral` (totales de todas las bodegas),
+    programar y aprobar un conteo (solo ADMINISTRADOR, lo aplica el Gateway) ni la carga inicial.
+
+    ## Formato
+
+    - JSON en UTF-8. Los campos desconocidos de un cuerpo y los parámetros de consulta desconocidos **se ignoran**.
+    - Instantes en ISO 8601 UTC con milisegundos (`2026-11-10T14:32:05.000Z`). Las fechas de un día
+      (`fecha_vencimiento`, `fecha_programada`) son `AAAA-MM-DD`.
+    - Cantidades: enteros (productos empacados), con techo de 2 147 483 647. Un decimal o un texto es 422.
+    - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}` con `?pagina=1&por_pagina=20` (`por_pagina`
+      máximo 100). `meta.total` es el de **todas** las filas del filtro, no el de la página. Un parámetro inválido
+      (`pagina` menor que 1, `por_pagina` fuera de 1 a 100, un filtro con un valor que no corresponde), repetido o vacío
+      es **422**. La sintaxis `pagina[]=1` se lee como otro parámetro y se ignora.
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista de `{campo, mensaje}`
+      (vacía salvo en los 422 y en algunos 409; `STOCK_INSUFICIENTE` añade `disponible` y `solicitado`). Códigos:
+      `PETICION_MAL_FORMADA` 400, `NO_AUTENTICADO` 401, `SIN_PERMISO` 403, `NO_EXISTE` 404, `CONFLICTO` 409,
+      `DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 y `ERROR_INTERNO` 500 (sin traza ni mensaje); los propios de
+      este servicio son `CODIGO_DUPLICADO`, `STOCK_INSUFICIENTE`, `BODEGA_INACTIVA`, `TRASLADO_YA_RECIBIDO` y
+      `CONTEO_ESTADO_INVALIDO`, todos 409. Una ruta que no existe es 404 `NO_EXISTE`.
+    - Todas las respuestas llevan `X-Request-Id`: el recibido, si es válido, o uno nuevo.
+
+    ## Límites del cuerpo
+
+    Un cuerpo de más de **100 kB** es **413** `PETICION_MAL_FORMADA`; solo `POST /internas/saldos/carga-inicial` admite
+    hasta **1 MB**. Un JSON mal formado es 400 y una codificación de caracteres que no sea UTF-8, 415, los dos con el
+    mismo código. Estos tres errores pueden darse en cualquier `POST` o `PUT`, aunque la operación no use el cuerpo.
+
+    ## Fechas por día (UTC)
+
+    Los filtros `fecha_desde` y `fecha_hasta` del kardex son **días UTC**: `fecha_desde` incluye desde las 00:00:00.000
+    UTC de ese día y `fecha_hasta` incluye **todo** ese día UTC (hasta las 23:59:59.999). No dependen del huso de la base
+    de datos. Limitación conocida: un movimiento de las 22:00 en Colombia (UTC−5) ya es del día UTC siguiente.
+    `fecha_desde` posterior a `fecha_hasta` es 422.
+
+    ## Idempotencia (RNF17)
+
+    Registrar movimientos, crear y recibir traslados, aprobar un conteo y la carga inicial exigen la cabecera
+    `Idempotency-Key` (1 a 200 caracteres sin espacios en los extremos y sin `#`; si falta es 400). Si la misma clave
+    llega otra vez, el servicio devuelve la respuesta original (200) **sin repetir la operación**, aunque el cuerpo sea
+    otro. La clave se acota por **usuario y por operación**: otro usuario, o el mismo usuario en otra operación, no la
+    reconoce como repetición (la misma clave sirve para un movimiento y para un traslado sin chocar; crear y recibir un
+    traslado con la misma clave son dos operaciones distintas). Los errores no se guardan: tras un 409 o un 422 el
+    reintento con la misma clave se vuelve a ejecutar. Quien llama (p. ej. ms-compras) debe reenviar siempre el mismo
+    `X-User-Id` y derivar la clave de forma determinista de su operación.
+
+    ## Resiliencia (RNF18) y servicios de los que depende
+
+    - **ms-catalogo** (`GET /productos/{id}`, llamada con espera): la usan `PUT /umbrales/{id_producto}`,
+      `POST /movimientos` y `POST /traslados` para confirmar que el producto existe. Cada intento espera como máximo
+      `CALL_TIMEOUT_MS` (3 s por defecto). Como es una lectura, se reintenta hasta 3 veces con esperas de 0,2, 0,4 y 0,8 s
+      (peor caso: unos 13 s). Tras **5 llamadas fallidas seguidas** (una llamada falla cuando agota sus reintentos) se
+      deja de llamar durante **30 s**; el estado del cortacircuitos es **por proceso** (con varias copias, cada una lleva
+      el suyo). Si no responde, la operación se rechaza con **503** `SERVICIO_NO_DISPONIBLE` y no cambia nada. Un 404 del
+      catálogo es 404 aquí. Una repetición de una clave de idempotencia ya registrada no llama al catálogo.
+    - **ms-notificaciones** (aviso de stock bajo, sin espera): tras confirmar un movimiento, si el total de las bodegas
+      queda por debajo del umbral del producto se avisa sin esperar la respuesta y sin reintentos. Un fallo del aviso solo
+      se anota en el registro: nunca cambia la respuesta ni impide el movimiento.
+
+servers:
+  - url: /
+    description: 'Este mismo servicio (rutas internas, sin el prefijo /api del Gateway)'
+
+tags:
+  - name: Bodegas
+    description: 'Bodegas físicas. Se dan de baja (inactivar), no se borran.'
+  - name: Saldos
+    description: 'Existencias por producto y bodega.'
+  - name: Umbrales
+    description: 'Stock mínimo por producto.'
+  - name: Movimientos
+    description: 'Registro de movimientos y kardex.'
+  - name: Lotes
+    description: 'Lotes con fecha de vencimiento y sugerencia de salida FEFO.'
+  - name: Traslados
+    description: 'Traslados entre bodegas, en dos pasos (envío y recepción).'
+  - name: Conteos
+    description: 'Conteos físicos de inventario y su aprobación.'
+  - name: Internas
+    description: 'Rutas que solo llaman otros servicios; el Gateway no las publica.'
+  - name: Servicio
+    description: 'Estado del servicio.'
+
+paths:
+  # Cada ruta declara a nivel de ruta sus parámetros de ruta y las cabeceras de identidad (opcionales: las lecturas internas no las
+  # envían). Las operaciones de escritura las vuelven a declarar como OBLIGATORIAS (un parámetro de operación reemplaza al de ruta
+  # con el mismo nombre y lugar). Los anclajes (&) de la primera ruta se reutilizan con alias (*) en las demás.
+  /health:
+    parameters:
+      - &usuarioId { $ref: '#/components/parameters/UsuarioId' }
+      - &usuarioRol { $ref: '#/components/parameters/UsuarioRol' }
+      - &usuarioBodega { $ref: '#/components/parameters/UsuarioBodega' }
+      - &idPeticion { $ref: '#/components/parameters/IdPeticion' }
+    get:
+      tags: [Servicio]
+      operationId: comprobarSalud
+      summary: Comprobar que el servicio está activo
+      description: |
+        Sonda de vida (RNF10) que usa Kubernetes. Responde 200 si la **configuración** es válida: están definidas las variables
+        `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `MS_CATALOGO_URL` y `MS_NOTIFICACIONES_URL`, y las dos URL son http(s)
+        válidas. **No consulta la base de datos**: una caída de PostgreSQL no debe reiniciar el servicio.
+
+        Si algo falla responde 503 `SERVICIO_NO_DISPONIBLE` sin revelar qué (el registro del servidor nombra las variables
+        que faltan o son inválidas, nunca sus valores). No pasa por el Gateway y no se escribe en el registro de peticiones.
+      responses:
+        '200':
+          description: 'El servicio está activo y bien configurado.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Salud' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '503': { $ref: '#/components/responses/NoDisponible' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /bodegas:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Bodegas]
+      operationId: listarBodegas
+      summary: Listar bodegas
+      description: |
+        **Roles:** todos; ms-reportes (interno). Ordenadas por `id_bodega`.
+
+        `?activa=true` o `?activa=false` filtra por estado; sin él se devuelven todas, activas e inactivas. No aplica el
+        alcance por bodega: un operador de bodega ve todas.
+      parameters:
+        - name: activa
+          in: query
+          description: 'Solo las bodegas activas (`true`) o solo las inactivas (`false`). Cualquier otro valor es 422.'
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de bodegas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoBodegas' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+    post:
+      tags: [Bodegas]
+      operationId: crearBodega
+      summary: Crear una bodega
+      description: |
+        **Roles:** ADMINISTRADOR (RF05).
+
+        El `codigo` es único **sin distinguir mayúsculas de minúsculas** (`bod-1` y `BOD-1` chocan) y no se libera al
+        inactivar la bodega. Se guarda sin los espacios de los extremos. Los demás campos que se envíen (`id_bodega`,
+        `activa`…) se ignoran: la bodega nace activa.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevaBodega' }
+      responses:
+        '201':
+          description: 'Bodega creada, activa.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bodega' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '409':
+          description: 'Ya existe una bodega con ese código (sin distinguir mayúsculas), también si está inactiva.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+              example: { error: { codigo: CODIGO_DUPLICADO, mensaje: Ya existe una bodega con ese código (no se distingue entre mayúsculas y minúsculas), detalles: [] } }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /bodegas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdBodegaRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Bodegas]
+      operationId: obtenerBodega
+      summary: Obtener una bodega
+      description: |
+        **Roles:** todos. Un `{id}` que no sea un entero positivo es 404, igual que una bodega que no existe.
+      responses:
+        '200':
+          description: 'La bodega.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bodega' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+    put:
+      tags: [Bodegas]
+      operationId: actualizarBodega
+      summary: Actualizar una bodega
+      description: |
+        **Roles:** ADMINISTRADOR. Cambia `nombre`, `ciudad` y `direccion` (los tres son obligatorios). El código no es
+        editable: si viene, se ignora, igual que `activa` (el estado cambia con inactivar y activar).
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CambiosBodega' }
+      responses:
+        '200':
+          description: 'La bodega actualizada.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bodega' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /bodegas/{id}/inactivar:
+    parameters:
+      - $ref: '#/components/parameters/IdBodegaRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Bodegas]
+      operationId: inactivarBodega
+      summary: Inactivar una bodega
+      description: |
+        **Roles:** ADMINISTRADOR. La bodega deja de recibir movimientos, traslados (como origen o como destino) y conteos
+        nuevos: se rechazan con 409 `BODEGA_INACTIVA`. Sus saldos y su historia se conservan. Un traslado que ya iba hacia
+        ella no se puede recibir hasta reactivarla.
+
+        Es idempotente: inactivar una bodega que ya está inactiva responde 200 con la bodega. No lleva `Idempotency-Key`.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      responses:
+        '200':
+          description: 'La bodega, ya inactiva.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bodega' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /bodegas/{id}/activar:
+    parameters:
+      - $ref: '#/components/parameters/IdBodegaRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Bodegas]
+      operationId: activarBodega
+      summary: Reactivar una bodega
+      description: |
+        **Roles:** ADMINISTRADOR. Es idempotente: activar una bodega que ya está activa responde 200 con la bodega. No lleva
+        `Idempotency-Key`.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      responses:
+        '200':
+          description: 'La bodega, ya activa.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bodega' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /saldos:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Saldos]
+      operationId: listarSaldos
+      summary: Listar saldos por producto y bodega
+      description: |
+        **Roles:** todos; ms-reportes (interno). Ordenados por `id_producto` e `id_bodega`. El saldo de un producto en una bodega
+        es la suma de sus lotes más el stock sin lote.
+
+        Con `id_producto`, `meta.cantidad_total` suma la `cantidad_disponible` de **todas las filas del filtro efectivo**:
+        sin `id_bodega` (y sin ser operador) es el total de todas las bodegas; con `id_bodega`, o para un operador de bodega,
+        es el de esa bodega. Sin `id_producto` ese campo no se envía.
+
+        Un operador de bodega solo ve su bodega: sin bodega asignada, o con otra `id_bodega`, 403.
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdProducto'
+        - $ref: '#/components/parameters/FiltroIdBodega'
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de saldos.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoSaldos' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /saldos/bajo-umbral:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Saldos]
+      operationId: listarSaldosBajoUmbral
+      summary: Productos por debajo de su stock mínimo
+      description: |
+        **Roles:** solo ADMINISTRADOR y los servicios internos (ms-notificaciones y ms-reportes); lo aplica el Gateway (RF09).
+
+        Los productos cuyo total en **todas** las bodegas es **estrictamente menor** que su `cantidad_minima` (con el total
+        igual al mínimo no hay alerta). Un producto con umbral y sin ningún saldo cuenta como total 0, y un umbral de 0 nunca
+        alerta. Es un arreglo plano, **sin paginar**, ordenado por `id_producto`. No aplica el alcance por bodega: son totales
+        globales.
+      responses:
+        '200':
+          description: 'Los productos bajo su umbral (puede ser una lista vacía).'
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SaldoBajoUmbral' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /umbrales:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Umbrales]
+      operationId: listarUmbrales
+      summary: Listar umbrales de stock mínimo
+      description: |
+        **Roles:** ADMINISTRADOR. Ordenados por `id_producto`. Un umbral es del producto, no de una bodega: se compara con el
+        total de todas las bodegas, así que no aplica el alcance por bodega.
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdProducto'
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de umbrales.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoUmbrales' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /umbrales/{id_producto}:
+    parameters:
+      - $ref: '#/components/parameters/IdProductoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    put:
+      tags: [Umbrales]
+      operationId: guardarUmbral
+      summary: Crear o actualizar el umbral de un producto
+      description: |
+        **Roles:** ADMINISTRADOR (RF09). Crea el umbral del producto o actualiza el que tenía; en una sola sentencia, así que
+        dos peticiones simultáneas dejan una sola fila.
+
+        Antes de escribir confirma el producto con `GET /productos/{id}` de **ms-catalogo** (llamada con espera, ver
+        «Resiliencia»): si el catálogo no lo conoce es 404 y no se escribe nada; si no responde, 503 y tampoco. `cantidad_minima`
+        es un entero ≥ 0 y con 0 nunca hay alerta. El umbral se evalúa tras cada movimiento, salvo los traslados y la carga
+        inicial. El `id_producto` de la dirección fija el producto; uno en el cuerpo se ignora.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CambioUmbral' }
+      responses:
+        '200':
+          description: 'El umbral guardado, creado o actualizado.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Umbral' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404':
+          description: 'El producto no existe en ms-catalogo, o el `{id_producto}` no es un entero positivo.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503':
+          description: 'ms-catalogo no responde (red, plazo, error del servicio o cortacircuitos abierto). No se escribió nada.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /movimientos:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Movimientos]
+      operationId: registrarMovimiento
+      summary: Registrar un movimiento
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA; ms-compras (interno) para `ENTRADA_COMPRA` y `DEVOLUCION_PROVEEDOR` (RF04, RF10).
+
+        **Orden de las comprobaciones:** identidad (401) → `Idempotency-Key` (400) → repetición (200) → cuerpo (422; 403 para
+        los tipos reservados) → alcance por bodega (403) → producto en ms-catalogo (404, 503) → transacción (404, 409, 422).
+
+        **Tipos.** Por esta ruta se registran `ENTRADA`, `SALIDA`, `AJUSTE`, `DEVOLUCION_CLIENTE`, `ENTRADA_COMPRA` y
+        `DEVOLUCION_PROVEEDOR`. `TRASLADO_SALIDA`, `TRASLADO_ENTRADA` y `CARGA_INICIAL` son 403: los crean los traslados y la
+        carga inicial. `ENTRADA_COMPRA` y `DEVOLUCION_PROVEEDOR` se aceptan de cualquier llamador, porque ms-compras usa esta
+        ruta con las mismas cabeceras que un usuario. Una devolución de un cliente (RF13) es un movimiento más.
+
+        **Cantidad.** Un entero. En `AJUSTE` lleva signo y es distinta de 0 (positivo suma, negativo resta); en los demás tipos
+        es ≥ 1 y el signo lo pone el tipo: suman `ENTRADA`, `DEVOLUCION_CLIENTE` y `ENTRADA_COMPRA`; restan `SALIDA` y
+        `DEVOLUCION_PROVEEDOR`. La respuesta trae el `saldo_resultante`. Un saldo que quedaría negativo es 409
+        `STOCK_INSUFICIENTE` y uno que superaría 2 147 483 647 es 422. Mientras se registra, el saldo se bloquea: dos
+        movimientos simultáneos nunca lo dejan negativo.
+
+        **Lotes.** El signo del cambio decide qué pasa con el lote:
+        - Si **suma**: sin `id_lote` ni `lote` solo sube el saldo (stock «sin lote»). Con `id_lote` suma a ese lote (404 si no es
+          de esa bodega y producto). Con `lote` `{codigo_lote, fecha_vencimiento}` suma al lote de ese código o lo crea;
+          `fecha_vencimiento` es **obligatoria** al enviar `lote` (422 si falta). Si el lote ya existe con **otra** fecha de
+          vencimiento, 409 `CONFLICTO`. `codigo_lote` **distingue mayúsculas de minúsculas**: es un texto libre del proveedor.
+        - Si **resta**: con `id_lote` resta de ese lote (404 si no es de esa bodega y producto; 409 `STOCK_INSUFICIENTE`, con
+          `campo` `id_lote`, si el lote no alcanza aunque el saldo sí). Sin `id_lote` sale por **FEFO**: consume los lotes por
+          `fecha_vencimiento` ascendente (los lotes sin fecha, al final) y el resto sale del stock sin lote. `lote` en un
+          movimiento que resta es 422: al retirar no se crea un lote.
+        - `id_lote` y `lote` a la vez es 422. El movimiento guarda en `id_lote` el primer lote consumido, o `null`.
+
+        **Idempotencia (RNF17).** Con la misma clave del mismo usuario se devuelve el movimiento original con 200, aunque el
+        cuerpo sea otro, **sin validar el cuerpo, sin permisos y sin llamar al catálogo**: un reintento tras un éxito da 200
+        aunque ms-catalogo esté caído.
+
+        **Después de confirmar** se evalúa el umbral del producto (no tras traslados ni carga inicial): si el total de las
+        bodegas queda estrictamente por debajo, se avisa a ms-notificaciones sin esperarla. Eso nunca cambia el 201.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevoMovimiento' }
+            examples:
+              entradaConLote:
+                summary: Entrada de mercancía con lote
+                value:
+                  tipo: ENTRADA
+                  id_producto: 25
+                  id_bodega: 1
+                  cantidad: 40
+                  lote: { codigo_lote: L2026-114, fecha_vencimiento: '2027-03-01' }
+                  documento_referencia: FAC-4521
+                  observacion: Recepción de pedido
+              salidaPorFefo:
+                summary: Salida sin lote (sale por FEFO)
+                value:
+                  tipo: SALIDA
+                  id_producto: 25
+                  id_bodega: 1
+                  cantidad: 5
+              ajusteNegativo:
+                summary: Ajuste con signo negativo
+                value:
+                  tipo: AJUSTE
+                  id_producto: 25
+                  id_bodega: 1
+                  cantidad: -2
+                  observacion: Merma por rotura
+      responses:
+        '201':
+          description: 'Movimiento registrado, con el `saldo_resultante`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Movimiento' }
+        '200':
+          description: 'La clave de idempotencia ya se había usado con este usuario: el movimiento original, sin repetir la operación.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Movimiento' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403':
+          description: |
+            El `tipo` es uno de los reservados (`TRASLADO_SALIDA`, `TRASLADO_ENTRADA`, `CARGA_INICIAL`), o el operador de bodega
+            no tiene bodega asignada o `id_bodega` es de otra bodega.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorSinPermiso' }
+        '404':
+          description: |
+            El producto no existe en ms-catalogo, la bodega no existe, o `id_lote` no es un lote de esa bodega y producto.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+        '409':
+          description: |
+            `STOCK_INSUFICIENTE` (el saldo quedaría negativo: `detalles` trae `campo` `cantidad`, `disponible` y `solicitado`; o
+            el lote pedido no alcanza: `campo` `id_lote`), `BODEGA_INACTIVA`, o `CONFLICTO` (el lote ya existe con otra
+            `fecha_vencimiento`: `campo` `lote.fecha_vencimiento`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+              example:
+                error:
+                  codigo: STOCK_INSUFICIENTE
+                  mensaje: No hay stock suficiente en la bodega para este movimiento
+                  detalles:
+                    - { campo: cantidad, mensaje: 'Disponible: 3; solicitado: 5', disponible: 3, solicitado: 5 }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503':
+          description: 'ms-catalogo no responde. No se registró ningún movimiento ni cambió ningún saldo.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+    get:
+      tags: [Movimientos]
+      operationId: listarMovimientos
+      summary: Consultar el kardex
+      description: |
+        **Roles:** ADMINISTRADOR, CONTADOR y OPERADOR_BODEGA; ms-reportes (interno) (RF10, RF15).
+
+        Del más reciente al más antiguo: `fecha` descendente y, a igual fecha, `id_movimiento` descendente. Por producto y
+        bodega, ese orden coincide con el de los `saldo_resultante`. `tipo` admite los nueve tipos. `fecha_desde` y
+        `fecha_hasta` son **días UTC** (ver «Fechas por día»); `fecha_desde` posterior a `fecha_hasta` es 422. `meta.total` es
+        exacto: lo recorre ms-reportes página a página hasta alcanzarlo. Un operador de bodega solo ve su bodega y `meta.total`
+        cuenta solo la suya.
+
+        **Limitación de rendimiento conocida.** La paginación es por desplazamiento: cada petición cuenta las filas del filtro
+        (para `meta.total`) y salta las de las páginas anteriores, así que el costo de una página crece con su número y recorrer
+        el kardex completo sin filtros es lo más lento. En una medición local con 60 000 movimientos y `por_pagina=100`,
+        recorrerlos todos tardó unos 15 s (cada página pagaba unos 7 ms de conteo y unos 13 ms de salto a mitad de tabla): es
+        una medición, no un compromiso. El orden sin filtros lo sirve el índice `movimientos_fecha_id_idx`. Para rangos
+        grandes conviene filtrar por fecha, producto o bodega. Además, el conteo y la página son dos consultas sin una
+        instantánea común: un movimiento confirmado entre dos peticiones de un recorrido que incluya el día de hoy puede
+        desplazar las filas y repetir una en la página siguiente.
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdProducto'
+        - $ref: '#/components/parameters/FiltroIdBodega'
+        - name: id_usuario
+          in: query
+          description: 'Solo los movimientos que registró ese usuario.'
+          schema: { type: integer, format: int32, minimum: 1 }
+        - name: tipo
+          in: query
+          description: 'Solo los movimientos de ese tipo (comparación exacta, con mayúsculas).'
+          schema: { $ref: '#/components/schemas/TipoMovimiento' }
+        - name: fecha_desde
+          in: query
+          description: 'Desde el día UTC indicado, inclusive, a las 00:00:00.000 UTC.'
+          schema: { type: string, format: date }
+        - name: fecha_hasta
+          in: query
+          description: 'Hasta el día UTC indicado, inclusive; todo ese día UTC (hasta las 23:59:59.999).'
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página del kardex.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoMovimientos' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /movimientos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdMovimientoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Movimientos]
+      operationId: obtenerMovimiento
+      summary: Obtener un movimiento
+      description: |
+        **Roles:** ADMINISTRADOR, CONTADOR y OPERADOR_BODEGA. Un operador de bodega solo ve los de su bodega: uno de otra bodega
+        es **403** y no 404 (el operador consulta «el kardex de su bodega»), y un operador sin bodega asignada recibe 403 aunque el
+        movimiento no exista. Un `{id}` que no sea un entero positivo es 404.
+      responses:
+        '200':
+          description: 'El movimiento.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Movimiento' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /lotes:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Lotes]
+      operationId: listarLotes
+      summary: Listar lotes
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA; ms-notificaciones y ms-reportes (internos) (RF17).
+
+        En orden FEFO: `fecha_vencimiento` ascendente, los lotes sin fecha al final y, a igual fecha, `id_lote` ascendente (un
+        orden total, así que dos páginas seguidas no repiten ni saltan filas). `vence_antes_de` es **estricto**: un lote que
+        vence ese día no entra, ni uno sin fecha. `con_existencia=true` omite los lotes en 0; con `false`, o sin él, no filtra.
+        `codigo_lote` distingue mayúsculas de minúsculas. Los lotes nacen y cambian con los movimientos: no se consultan por id.
+        Un operador de bodega solo ve su bodega.
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdProducto'
+        - $ref: '#/components/parameters/FiltroIdBodega'
+        - name: vence_antes_de
+          in: query
+          description: 'Solo los lotes que vencen antes de ese día (estricto).'
+          schema: { type: string, format: date }
+        - name: con_existencia
+          in: query
+          description: 'Con `true`, solo los lotes con `cantidad_disponible` mayor que 0.'
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de lotes.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoLotes' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /lotes/sugerencia-salida:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Lotes]
+      operationId: sugerirSalidaDeLotes
+      summary: Sugerir de qué lotes sacar una cantidad (FEFO)
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA (RF17). Los tres parámetros son obligatorios.
+
+        Del más próximo a vencer al último, con la **misma regla FEFO** que aplica la salida real sobre los mismos lotes. Es una
+        consulta: no reserva nada, así que el stock puede cambiar entre la sugerencia y la salida. Asigna **solo desde lotes**
+        con existencia: si no alcanzan es 409 `STOCK_INSUFICIENTE` (`disponible` es lo que suman los lotes), aunque el saldo sí
+        alcance con stock sin lote. La suma de `cantidad_sugerida` es exactamente `cantidad` y ningún lote aparece con 0. Es un
+        arreglo plano, sin paginar. Un operador de bodega solo consulta su bodega (otra, 403).
+      parameters:
+        - name: id_producto
+          in: query
+          required: true
+          description: 'Producto del que se quiere sacar.'
+          schema: { type: integer, format: int32, minimum: 1 }
+        - name: id_bodega
+          in: query
+          required: true
+          description: 'Bodega de la que se quiere sacar.'
+          schema: { type: integer, format: int32, minimum: 1 }
+        - name: cantidad
+          in: query
+          required: true
+          description: 'Unidades que se quieren sacar (entero, 1 o más).'
+          schema: { type: integer, format: int32, minimum: 1 }
+      responses:
+        '200':
+          description: 'Los lotes y la cantidad a tomar de cada uno.'
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SugerenciaLote' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409':
+          description: 'Los lotes de la bodega no alcanzan para la cantidad pedida (`STOCK_INSUFICIENTE`, con `disponible` y `solicitado`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /traslados:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Traslados]
+      operationId: crearTraslado
+      summary: Crear un traslado (envío)
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA (RF04).
+
+        Un traslado cambia stock en **dos pasos** y entre ambos la mercancía está **en tránsito** (fuera de todo saldo). Este
+        paso saca `cantidad` de la bodega de **origen** con un movimiento `TRASLADO_SALIDA` y deja el traslado `EN_TRANSITO`; la
+        recepción (`POST /traslados/{id}/recepcion`) la suma al destino. El traslado y su movimiento se escriben siempre
+        juntos: si algo falla no queda ninguno. Para cada producto, saldos más traslados en tránsito suman siempre lo mismo.
+
+        Un traslado **nunca hace FEFO**: con `id_lote` saca de ese lote; sin él mueve solo stock **sin lote** (el saldo menos lo
+        que suman los lotes), y si no alcanza es 409 `STOCK_INSUFICIENTE` con `disponible` igual a ese stock sin lote y un
+        mensaje que pide indicar `id_lote`. Si el destino ya tiene un lote con el mismo código y **otra** fecha de vencimiento
+        (incluida una nula frente a una fecha), es 409 `CONFLICTO` ahora, antes de sacar nada, porque la recepción fallaría con la
+        mercancía en tránsito.
+
+        **Orden de las comprobaciones:** identidad (401) → `Idempotency-Key` (400) → repetición (200) → cuerpo (422, también
+        «misma bodega») → alcance (el operador solo envía desde SU bodega, la de origen: 403) → producto en ms-catalogo (404,
+        503; la Tabla 9 no lo lista, pero el servicio lo confirma) → bodegas y lote (404; 409 `BODEGA_INACTIVA` si el origen o el
+        destino están inactivos) → transacción (409). No evalúa el umbral.
+
+        **Idempotencia.** La repetición de la creación devuelve 200 con el traslado en su estado **actual** (por ejemplo
+        `RECIBIDO`, si ya se recibió) y el movimiento de salida original.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevoTraslado' }
+      responses:
+        '201':
+          description: 'Traslado creado `EN_TRANSITO`, con el movimiento `TRASLADO_SALIDA` del origen.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrasladoConMovimiento' }
+        '200':
+          description: 'La clave ya se había usado con este usuario: el traslado en su estado actual y el movimiento original.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrasladoConMovimiento' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403':
+          description: 'El operador de bodega no tiene bodega asignada o la bodega de origen es de otra bodega.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorSinPermiso' }
+        '404':
+          description: 'El producto no existe en ms-catalogo, o no existe la bodega de origen, la de destino o el `id_lote` (en esa bodega y producto).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+        '409':
+          description: |
+            `STOCK_INSUFICIENTE` (no alcanza el saldo, el stock sin lote o el lote), `BODEGA_INACTIVA` (origen o destino) o
+            `CONFLICTO` (el destino tiene el mismo lote con otra fecha de vencimiento: `campo` `id_lote`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503':
+          description: 'ms-catalogo no responde. No se creó nada.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+    get:
+      tags: [Traslados]
+      operationId: listarTraslados
+      summary: Listar traslados
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA. Del envío más reciente al más antiguo (`fecha_envio` y `id_traslado`
+        descendentes). Un operador de bodega ve los traslados cuyo origen **o** destino es su bodega (sin bodega asignada, o
+        con otra `id_bodega`, 403), y `meta.total` cuenta solo esos.
+      parameters:
+        - name: estado
+          in: query
+          description: 'Solo los traslados en ese estado.'
+          schema: { $ref: '#/components/schemas/EstadoTraslado' }
+        - name: id_bodega
+          in: query
+          description: 'Solo los traslados cuyo origen **o** destino es esa bodega. Un operador de bodega que pida otra recibe 403.'
+          schema: { type: integer, format: int32, minimum: 1 }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de traslados.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoTraslados' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /traslados/{id}/recepcion:
+    parameters:
+      - $ref: '#/components/parameters/IdTrasladoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Traslados]
+      operationId: recibirTraslado
+      summary: Recibir un traslado
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA (RF04).
+
+        Suma la cantidad a la bodega de **destino** con un movimiento `TRASLADO_ENTRADA` y deja el traslado `RECIBIDO`. El
+        operador de bodega solo recibe en SU bodega, la de destino (otra, 403). Si el traslado llevaba lote, el destino recrea el
+        mismo lote (mismo código y misma fecha de vencimiento); si no, entra como stock sin lote. El cuerpo es opcional:
+        `{observacion?}`. No llama al catálogo ni evalúa el umbral.
+
+        **Una sola recepción.** Dos recepciones simultáneas con claves distintas: una gana y la otra recibe 409
+        `TRASLADO_YA_RECIBIDO`; con la misma clave, la perdedora responde 200 con lo de la ganadora.
+
+        **La recepción puede fallar y el traslado sigue EN_TRANSITO**: la mercancía queda en tránsito hasta regularizarlo y volver a
+        enviar la recepción (los errores no se guardan: sirve la misma clave). Los casos son 409 `BODEGA_INACTIVA` si la bodega de
+        destino está inactiva (hasta reactivarla); 409 `CONFLICTO` si en el destino existe, o se creó después del envío, un lote
+        con ese código y **otra** fecha de vencimiento (el mensaje nombra el lote y las dos fechas); y 422 si el saldo del destino
+        superaría 2 147 483 647 unidades (límite irreal en la práctica).
+
+        **Idempotencia.** La recepción tiene su **propia** clave (la de esta petición). Si ya se usó en una recepción de este
+        mismo traslado, 200 con el traslado y el movimiento originales; si pertenece a la recepción de **otro** traslado, 409
+        `CONFLICTO`, porque devolver la de otro sería un error silencioso. **Orden:** identidad (401) → clave (400) → `{id}` (404)
+        → repetición → traslado inexistente (404) → alcance (403) → cuerpo (422) → transacción (409, 422).
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecepcionTraslado' }
+      responses:
+        '200':
+          description: 'El traslado `RECIBIDO` y el movimiento `TRASLADO_ENTRADA` del destino (también en la repetición de la misma recepción).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrasladoConMovimiento' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403':
+          description: 'El operador de bodega no tiene bodega asignada o la bodega de destino del traslado es de otra bodega.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorSinPermiso' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '409':
+          description: |
+            `TRASLADO_YA_RECIBIDO`; `BODEGA_INACTIVA` (el destino está inactivo: el traslado sigue `EN_TRANSITO`); o `CONFLICTO`
+            (un lote del destino con otra fecha de vencimiento, y el traslado sigue `EN_TRANSITO`; o una `Idempotency-Key` que ya
+            se usó en la recepción de otro traslado).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422':
+          description: 'La `observacion` no es válida, o el saldo del destino superaría 2 147 483 647 (el traslado sigue `EN_TRANSITO`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /conteos:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Conteos]
+      operationId: programarConteo
+      summary: Programar un conteo físico
+      description: |
+        **Roles:** ADMINISTRADOR (RF18). El conteo nace `PROGRAMADO` con una línea por producto, y `cantidad_sistema` es el saldo
+        de ese instante.
+
+        **Líneas.** Sin `ids_producto`, las líneas son los productos con existencia (`cantidad_disponible` > 0) en esa bodega.
+        Con `ids_producto`, los que se indiquen (sin repetidos), aunque no tengan saldo (`cantidad_sistema` 0): los ids no se
+        comprueban en ms-catalogo. Una lista vacía es 422, y también lo es que no resulte ninguna línea.
+
+        **Tope de 1 000 líneas por conteo.** Más de 1 000 `ids_producto` es 422; sin `ids_producto`, si la bodega tiene más de
+        1 000 productos con existencia es 422 y el mensaje pide contar por partes indicando `ids_producto`. El motivo: aprobar un
+        conteo bloquea a la vez los saldos de todas sus líneas, y uno enorme dejaría media bodega sin moverse varios segundos.
+
+        `fecha_programada` es una fecha real que no sea anterior al día UTC de hoy («hoy» vale). Una bodega inexistente es 404 y
+        una inactiva, 409 `BODEGA_INACTIVA`. No lleva `Idempotency-Key`: no mueve stock.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevoConteo' }
+      responses:
+        '201':
+          description: 'Conteo `PROGRAMADO`, con sus líneas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conteo' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404':
+          description: 'La bodega no existe.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+        '409':
+          description: 'La bodega está inactiva (`BODEGA_INACTIVA`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422':
+          description: |
+            Datos no válidos: `fecha_programada` pasada o inexistente, `ids_producto` vacía, repetida o de más de 1 000, o una
+            bodega sin productos con existencia y sin `ids_producto`, o con más de 1 000.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+    get:
+      tags: [Conteos]
+      operationId: listarConteos
+      summary: Listar conteos
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA. Cada conteo viene **sin sus líneas** (`detalles`): es un resumen. Por
+        `fecha_programada` y `id_conteo` descendentes. Un operador de bodega solo ve los de su bodega (otra `id_bodega` o sin bodega
+        asignada, 403) y `meta.total` cuenta solo esos.
+      parameters:
+        - $ref: '#/components/parameters/FiltroIdBodega'
+        - name: estado
+          in: query
+          description: 'Solo los conteos en ese estado.'
+          schema: { $ref: '#/components/schemas/EstadoConteo' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: 'Página de conteos, sin líneas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListadoConteos' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /conteos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdConteoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    get:
+      tags: [Conteos]
+      operationId: obtenerConteo
+      summary: Obtener un conteo con sus líneas
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA. Las líneas van ordenadas por `id_producto`. Un operador de bodega solo ve los de su
+        bodega: uno de otra bodega es **403** y no 404, y un operador sin bodega asignada recibe 403 aunque el conteo no exista. Un
+        `{id}` que no sea un entero positivo es 404.
+      responses:
+        '200':
+          description: 'El conteo con sus líneas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conteo' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /conteos/{id}/detalles:
+    parameters:
+      - $ref: '#/components/parameters/IdConteoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    put:
+      tags: [Conteos]
+      operationId: registrarDetallesConteo
+      summary: Registrar las cantidades contadas
+      description: |
+        **Roles:** ADMINISTRADOR y OPERADOR_BODEGA (RF18). Por cada línea enviada, `cantidad_sistema` se **refresca con el saldo de
+        ese instante** y `diferencia` es `cantidad_contada − cantidad_sistema`; el conteo pasa a `EN_REVISION`.
+
+        Se puede enviar solo algunas líneas y repetir mientras el conteo no esté `APROBADO` (cada vez se refrescan las líneas
+        enviadas); uno `APROBADO` es 409 `CONTEO_ESTADO_INVALIDO`. `cantidad_contada` es un entero ≥ 0. Un `id_producto` repetido, o
+        que no está en el conteo, es 422 y no se guarda ninguna línea del cuerpo. **Tope de 1 000 líneas:** `detalles` con más es
+        422. No toca saldos ni el kardex, no llama a otros servicios y no necesita `Idempotency-Key`: repetirlo con el mismo cuerpo
+        deja el mismo resultado (salvo que el saldo haya cambiado, y entonces lo correcto es la foto nueva).
+
+        El operador de bodega solo registra lo contado en los conteos de su bodega (otro, o sin bodega asignada, 403).
+        **Orden:** identidad (401) → `{id}` (404) → tope y alcance sin bodega (422, 403) → conteo inexistente (404) → alcance (403)
+        → cuerpo (422) → transacción (409, 422).
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LecturaConteo' }
+      responses:
+        '200':
+          description: 'El conteo `EN_REVISION`, con `cantidad_sistema` y `diferencia` en las líneas contadas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conteo' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404':
+          description: 'El conteo no existe, o el `{id}` no es un entero positivo.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+        '409':
+          description: 'El conteo ya fue aprobado (`CONTEO_ESTADO_INVALIDO`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422':
+          description: |
+            `detalles` vacío, de más de 1 000 líneas, con un elemento mal formado, con un `id_producto` repetido o con un producto
+            que no está en el conteo (el `campo` nombra la posición: `detalles[2].id_producto`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /conteos/{id}/aprobacion:
+    parameters:
+      - $ref: '#/components/parameters/IdConteoRuta'
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Conteos]
+      operationId: aprobarConteo
+      summary: Aprobar un conteo y ajustar el inventario
+      description: |
+        **Roles:** ADMINISTRADOR (RF18). Aprueba un conteo `EN_REVISION` y aplica un movimiento `AJUSTE` por cada línea **contada**
+        con `diferencia` distinta de 0; después queda `APROBADO`, con `fecha_aprobacion` y `id_usuario_aprueba`. Las líneas que
+        nunca se contaron se ignoran.
+
+        **Se ajusta con la diferencia guardada al contar, no contra el saldo actual.** Si hubo movimientos entre el conteo y la
+        aprobación, el saldo queda en saldo actual más la diferencia (el recuento es una foto del momento del conteo y las ventas
+        posteriores son reales); solo si no hubo movimientos queda igual a lo contado.
+
+        Todo ocurre en una transacción: si un ajuste negativo dejara un saldo negativo, 409 `STOCK_INSUFICIENTE`, no se aplica
+        **ningún** ajuste, el conteo sigue `EN_REVISION` y la clave no se guarda. Solo se aprueba un conteo `EN_REVISION`; otro estado
+        (también la segunda de dos aprobaciones simultáneas con claves distintas) es 409 `CONTEO_ESTADO_INVALIDO`. Con la bodega
+        inactiva, 409 `BODEGA_INACTIVA`, aunque no haya diferencias. Tras confirmar se evalúa el umbral de cada producto ajustado.
+
+        **Idempotencia.** Con la misma clave y el mismo conteo se devuelve 200 con el conteo y sus movimientos **originales**, sin
+        nuevos ajustes ni nueva evaluación del umbral, también cuando no hubo diferencias. Una clave que se usó para aprobar **otro**
+        conteo es 409 `CONFLICTO`. La respuesta nunca trae la clave guardada.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      responses:
+        '200':
+          description: 'El conteo `APROBADO` y un movimiento `AJUSTE` por cada línea ajustada, por `id_producto` (también en la repetición de la misma aprobación).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConteoAprobado' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoExiste' }
+        '409':
+          description: |
+            `CONTEO_ESTADO_INVALIDO` (no está `EN_REVISION`), `BODEGA_INACTIVA`, `STOCK_INSUFICIENTE` (un ajuste negativo dejaría un
+            saldo negativo) o `CONFLICTO` (la `Idempotency-Key` ya aprobó otro conteo).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '422':
+          description: 'Un ajuste haría que un saldo superara 2 147 483 647 (`campo` `cantidad`). No se aplica ningún ajuste.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+  /internas/saldos/carga-inicial:
+    parameters:
+      - *usuarioId
+      - *usuarioRol
+      - *usuarioBodega
+      - *idPeticion
+    post:
+      tags: [Internas]
+      operationId: cargarSaldosIniciales
+      summary: Cargar los saldos iniciales (solo ms-reportes)
+      description: |
+        **Roles:** solo ms-reportes (interno; el Gateway no publica esta ruta) (RF16). Importa el inventario de arranque: cada fila
+        válida crea un movimiento `CARGA_INICIAL`, que solo suma stock.
+
+        **Respuesta.** Si la petición está bien formada es **siempre 200** `{creados, rechazados: [{fila, motivo}]}`, también cuando
+        todas las filas se rechazan (`creados: 0`). `fila` es la posición en `filas` (**base 1**) y `rechazados` va ordenado por
+        `fila`. `motivo` es un texto libre en español que puede cambiar: no debe interpretarse por programa. Una fila se rechaza si no
+        es un objeto; si `id_producto`, `id_bodega` o `cantidad` no son enteros ≥ 1 (0, negativos, decimales y texto se rechazan);
+        si `codigo_lote` está vacío o tiene más de 50 caracteres; si `fecha_vencimiento` no es una fecha real o viene sin
+        `codigo_lote`; o por un error de negocio (bodega inexistente o inactiva, lote que ya existe con otra fecha, saldo que
+        superaría 2 147 483 647). Un error que no es de negocio (por ejemplo, la base cae a mitad) es 500: las filas anteriores ya
+        están aplicadas y repetir con la misma clave las cuenta y completa el resto.
+
+        **Tope.** `filas` es una lista no vacía de **como máximo 1 000** filas (vacía, que no sea una lista o con más, 422). El cuerpo
+        admite hasta **1 MB** (413 por encima), mientras que las demás rutas aceptan 100 kB. ms-reportes debe trocear las
+        importaciones de más de 1 000 filas.
+
+        **Una transacción por fila.** Las filas se procesan en orden, cada una en su transacción (éxito parcial): una carga de 1 000
+        filas no mantiene bloqueados 1 000 saldos a la vez. En una medición local, 1 000 filas tardaron unos 5 s (unas 9 sentencias
+        por fila), más que los 3 s que espera ms-reportes: converge con un reintento con la misma clave, sin duplicar nada.
+
+        **Idempotencia por fila.** La fila `n` (base 1) lleva la clave `<id_usuario>:ini:<Idempotency-Key>#<n>`. Antes de procesar,
+        una consulta busca cuáles de esas claves ya existen: esas filas cuentan como `creados` sin volver a leerse ni a validarse,
+        aunque la repetición se solape con la primera ejecución (ms-reportes reintenta tras su plazo con la misma clave mientras el
+        servidor sigue trabajando).
+
+        **Sin catálogo ni umbral.** Es un llamador interno de confianza: no consulta ms-catalogo (ms-reportes ya resolvió los códigos;
+        mil llamadas HTTP por carga serían inviables con su plazo de 3 s) ni evalúa el umbral (la carga solo suma).
+
+        **Identidad.** Exige `X-User-Id` **y** `X-User-Rol` (401 si falta alguno): cada movimiento guarda su autor (RF10), así que
+        ms-reportes debe reenviar los dos. No aplica el alcance por bodega.
+      parameters:
+        - $ref: '#/components/parameters/UsuarioIdEscritura'
+        - $ref: '#/components/parameters/UsuarioRolEscritura'
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      # Hasta 1 MiB = 1 048 576 bytes, frente a los 102 400 del resto de las rutas. Una prueba lo compara con el servicio.
+      requestBody:
+        required: true
+        x-tamano-maximo-cuerpo-bytes: 1048576
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CargaInicial' }
+      responses:
+        '200':
+          description: 'Resultado de la carga (también la repetición con la misma clave). Si hay `rechazados`, las demás filas sí se aplicaron.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResultadoCargaInicial' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '413':
+          description: 'El cuerpo supera 1 MB.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorPeticionMalFormada' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
+        '422':
+          description: '`filas` no es una lista, está vacía o tiene más de 1 000 filas.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+        '500': { $ref: '#/components/responses/ErrorInterno' }
+
+components:
+  parameters:
+    # ---- Paginación y filtros comunes (consulta) ----
+    Pagina:
+      name: pagina
+      in: query
+      description: 'Número de página, desde 1. Menor que 1, repetido o vacío es 422.'
+      schema: { type: integer, format: int32, minimum: 1, default: 1 }
+    PorPagina:
+      name: por_pagina
+      in: query
+      description: 'Filas por página, de 1 a 100. Fuera de ese rango, repetido o vacío es 422.'
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    FiltroIdProducto:
+      name: id_producto
+      in: query
+      description: 'Solo las filas de ese producto.'
+      schema: { type: integer, format: int32, minimum: 1 }
+    FiltroIdBodega:
+      name: id_bodega
+      in: query
+      description: 'Solo las filas de esa bodega. Un operador de bodega que pida una bodega distinta de la suya recibe 403.'
+      schema: { type: integer, format: int32, minimum: 1 }
+
+    # ---- Parámetros de ruta ----
+    IdBodegaRuta:
+      name: id
+      in: path
+      required: true
+      description: 'Identificador de la bodega. Si no es un entero positivo, la respuesta es 404.'
+      schema: { type: integer, format: int32, minimum: 1 }
+    IdMovimientoRuta:
+      name: id
+      in: path
+      required: true
+      description: 'Identificador del movimiento. Si no es un entero positivo, la respuesta es 404.'
+      schema: { type: integer, format: int32, minimum: 1 }
+    IdTrasladoRuta:
+      name: id
+      in: path
+      required: true
+      description: 'Identificador del traslado. Si no es un entero positivo, la respuesta es 404.'
+      schema: { type: integer, format: int32, minimum: 1 }
+    IdConteoRuta:
+      name: id
+      in: path
+      required: true
+      description: 'Identificador del conteo. Si no es un entero positivo, la respuesta es 404.'
+      schema: { type: integer, format: int32, minimum: 1 }
+    IdProductoRuta:
+      name: id_producto
+      in: path
+      required: true
+      description: 'Identificador del producto en ms-catalogo. Si no es un entero positivo, la respuesta es 404.'
+      schema: { type: integer, format: int32, minimum: 1 }
+
+    # ---- Cabeceras de identidad (las repone el Gateway) ----
+    UsuarioId:
+      name: X-User-Id
+      in: header
+      required: false
+      description: 'Usuario autenticado. Opcional en las lecturas (llamadas internas); si viene, debe ser un entero positivo (401 si no).'
+      schema: { type: integer, format: int32, minimum: 1 }
+    UsuarioRol:
+      name: X-User-Rol
+      in: header
+      required: false
+      description: 'Rol del usuario. Obligatorio junto con `X-User-Id` (sin él, 401); un valor distinto de los cuatro roles es 401.'
+      schema: { type: string, enum: [ADMINISTRADOR, OPERADOR_BODEGA, VENDEDOR, CONTADOR] }
+    UsuarioBodega:
+      name: X-User-Bodega
+      in: header
+      required: false
+      description: 'Bodega del operador de bodega (el Gateway la envía solo para ese rol). Si viene, debe ser un entero positivo (401 si no).'
+      schema: { type: integer, format: int32, minimum: 1 }
+    IdPeticion:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: 'Identificador de la petición, para rastrearla en los registros. Solo se acepta con letras, dígitos y `. _ : -`, de 1 a 128 caracteres; si no, el servicio genera uno.'
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    UsuarioIdEscritura:
+      name: X-User-Id
+      in: header
+      required: true
+      description: 'Usuario autenticado. Obligatorio en toda escritura (401 si falta): cada cambio guarda su autor (RF10).'
+      schema: { type: integer, format: int32, minimum: 1 }
+    UsuarioRolEscritura:
+      name: X-User-Rol
+      in: header
+      required: true
+      description: 'Rol del usuario, junto con `X-User-Id`.'
+      schema: { type: string, enum: [ADMINISTRADOR, OPERADOR_BODEGA, VENDEDOR, CONTADOR] }
+    ClaveIdempotencia:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Clave única de la operación (RNF17). De 1 a 200 caracteres sin contar los espacios de los extremos, y sin `#`. Falta, vacía o
+        inválida es 400. Se acota por usuario y por operación (ver «Idempotencia»).
+      schema: { type: string, minLength: 1, maxLength: 200 }
+      example: movimiento-2026-11-10-0001
+
+  responses:
+    PeticionMalFormada:
+      description: |
+        Petición mal formada (`PETICION_MAL_FORMADA`): el cuerpo no es un JSON válido o, en las operaciones que la exigen, falta la
+        cabecera `Idempotency-Key`, está vacía, tiene más de 200 caracteres o lleva `#`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorPeticionMalFormada' }
+    NoAutenticado:
+      description: |
+        Sin autenticar (`NO_AUTENTICADO`): una cabecera de identidad inválida, `X-User-Id` sin `X-User-Rol`, o una escritura sin `X-User-Id`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorNoAutenticado' }
+    SinPermiso:
+      description: |
+        Sin permiso (`SIN_PERMISO`): el operador de bodega no tiene bodega asignada, o la consulta o la operación nombra una bodega que
+        no es la suya (alcance por bodega).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorSinPermiso' }
+    NoExiste:
+      description: 'El recurso no existe (`NO_EXISTE`). Un `{id}` que no sea un entero positivo también es 404.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorNoExiste' }
+    DatosNoValidos:
+      description: |
+        Datos no válidos (`DATOS_NO_VALIDOS`): `detalles` trae un elemento `{campo, mensaje}` por cada campo o parámetro inválido, todos
+        a la vez. Un entero que llega como texto, un decimal, un parámetro repetido o vacío, o un valor fuera de rango es inválido.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDatosNoValidos' }
+    CuerpoDemasiadoGrande:
+      description: 'El cuerpo supera 100 kB (`PETICION_MAL_FORMADA`, estado 413).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorPeticionMalFormada' }
+          example: { error: { codigo: PETICION_MAL_FORMADA, mensaje: El cuerpo de la petición supera el tamaño máximo permitido, detalles: [] } }
+    CodificacionNoSoportada:
+      description: 'La codificación de caracteres o de contenido del cuerpo no está soportada; solo UTF-8 (`PETICION_MAL_FORMADA`, estado 415).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorPeticionMalFormada' }
+          example: { error: { codigo: PETICION_MAL_FORMADA, mensaje: La codificación de caracteres del cuerpo no está soportada, detalles: [] } }
+    NoDisponible:
+      description: 'El servicio no está disponible (`SERVICIO_NO_DISPONIBLE`).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
+    ErrorInterno:
+      description: 'Error interno (`ERROR_INTERNO`), sin traza ni mensaje del error aunque esté en modo de depuración. Queda registrado con su `X-Request-Id`.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorInterno' }
+
+  schemas:
+    # ---- Errores: uno por estado, con los códigos que ese estado puede traer ----
+    ErrorDetalle:
+      type: object
+      description: 'Un campo o parámetro con su problema. `STOCK_INSUFICIENTE` añade lo disponible y lo solicitado.'
+      required: [campo, mensaje]
+      additionalProperties: false
+      properties:
+        campo: { type: string, description: 'Campo del cuerpo o parámetro afectado; una posición se escribe `detalles[2].id_producto`.' }
+        mensaje: { type: string }
+        disponible: { type: integer, minimum: 0, description: 'Solo en `STOCK_INSUFICIENTE`: lo que hay disponible.' }
+        solicitado: { type: integer, minimum: 1, description: 'Solo en `STOCK_INSUFICIENTE`: lo que se pidió.' }
+      example: { campo: cantidad, mensaje: 'Disponible: 3; solicitado: 5', disponible: 3, solicitado: 5 }
+    ErrorPeticionMalFormada:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [PETICION_MAL_FORMADA] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: PETICION_MAL_FORMADA, mensaje: Falta la cabecera Idempotency-Key, detalles: [] } }
+    ErrorNoAutenticado:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [NO_AUTENTICADO] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: NO_AUTENTICADO, mensaje: Falta la cabecera X-User-Id, detalles: [] } }
+    ErrorSinPermiso:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [SIN_PERMISO] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: SIN_PERMISO, mensaje: El operador de bodega solo puede operar sobre su bodega, detalles: [] } }
+    ErrorNoExiste:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [NO_EXISTE] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: NO_EXISTE, mensaje: La bodega no existe, detalles: [] } }
+    ErrorConflicto:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo:
+              type: string
+              enum: [CODIGO_DUPLICADO, STOCK_INSUFICIENTE, BODEGA_INACTIVA, TRASLADO_YA_RECIBIDO, CONTEO_ESTADO_INVALIDO, CONFLICTO]
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: TRASLADO_YA_RECIBIDO, mensaje: El traslado ya fue recibido, detalles: [] } }
+    ErrorDatosNoValidos:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [DATOS_NO_VALIDOS] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example:
+        error:
+          codigo: DATOS_NO_VALIDOS
+          mensaje: Los datos enviados no son válidos
+          detalles:
+            - { campo: cantidad, mensaje: debe ser un número entero entre 1 y 2147483647 }
+    ErrorNoDisponible:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [SERVICIO_NO_DISPONIBLE] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: SERVICIO_NO_DISPONIBLE, mensaje: El servicio ms-catalogo no está disponible, detalles: [] } }
+    ErrorInterno:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [codigo, mensaje, detalles]
+          additionalProperties: false
+          properties:
+            codigo: { type: string, enum: [ERROR_INTERNO] }
+            mensaje: { type: string }
+            detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
+      example: { error: { codigo: ERROR_INTERNO, mensaje: Error interno del servidor, detalles: [] } }
+
+    # ---- Piezas comunes ----
+    Id:
+      type: integer
+      format: int32
+      minimum: 1
+      description: 'Identificador entero positivo (hasta 2 147 483 647).'
+      example: 1
+    Meta:
+      type: object
+      description: 'Datos de paginación de un listado.'
+      required: [pagina, por_pagina, total]
+      additionalProperties: false
+      properties:
+        pagina: { type: integer, minimum: 1, description: 'Página devuelta.' }
+        por_pagina: { type: integer, minimum: 1, maximum: 100, description: 'Filas por página.' }
+        total: { type: integer, minimum: 0, description: 'Filas de TODO el filtro, no solo de la página.' }
+      example: { pagina: 1, por_pagina: 20, total: 2 }
+    MetaSaldos:
+      type: object
+      description: 'Paginación de `GET /saldos`, con `cantidad_total` cuando se filtró por `id_producto`.'
+      required: [pagina, por_pagina, total]
+      additionalProperties: false
+      properties:
+        pagina: { type: integer, minimum: 1 }
+        por_pagina: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, minimum: 0 }
+        cantidad_total:
+          type: integer
+          minimum: 0
+          description: 'Solo con `id_producto`. Suma de `cantidad_disponible` de todas las filas del filtro efectivo (no de la página).'
+      example: { pagina: 1, por_pagina: 20, total: 2, cantidad_total: 150 }
+    TipoMovimiento:
+      type: string
+      description: 'Los nueve tipos de movimiento del kardex.'
+      enum: [ENTRADA, SALIDA, AJUSTE, DEVOLUCION_CLIENTE, ENTRADA_COMPRA, DEVOLUCION_PROVEEDOR, TRASLADO_SALIDA, TRASLADO_ENTRADA, CARGA_INICIAL]
+      example: ENTRADA
+    TipoMovimientoRegistrable:
+      type: string
+      description: |
+        Los tipos que acepta `POST /movimientos`. Suman `ENTRADA`, `DEVOLUCION_CLIENTE` y `ENTRADA_COMPRA`; restan `SALIDA` y
+        `DEVOLUCION_PROVEEDOR`; `AJUSTE` suma o resta según el signo de `cantidad`.
+      enum: [ENTRADA, SALIDA, AJUSTE, DEVOLUCION_CLIENTE, ENTRADA_COMPRA, DEVOLUCION_PROVEEDOR]
+      example: SALIDA
+    EstadoTraslado:
+      type: string
+      enum: [EN_TRANSITO, RECIBIDO]
+      example: EN_TRANSITO
+    EstadoConteo:
+      type: string
+      description: 'PROGRAMADO al crearlo, EN_REVISION al registrar lo contado y APROBADO al aprobarlo.'
+      enum: [PROGRAMADO, EN_REVISION, APROBADO]
+      example: PROGRAMADO
+
+    # ---- Bodegas ----
+    Bodega:
+      type: object
+      required: [id_bodega, codigo, nombre, ciudad, direccion, activa]
+      additionalProperties: false
+      properties:
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        codigo: { type: string, maxLength: 30, description: 'Código de la bodega, único sin distinguir mayúsculas.' }
+        nombre: { type: string, maxLength: 100 }
+        ciudad: { type: string, maxLength: 100 }
+        direccion: { type: string, maxLength: 255 }
+        activa: { type: boolean, description: 'Una bodega inactiva no recibe movimientos, traslados ni conteos nuevos.' }
+      example:
+        id_bodega: 1
+        codigo: BOD-MZL-01
+        nombre: Bodega principal Manizales
+        ciudad: Manizales
+        direccion: 'Carrera 23 # 65-10'
+        activa: true
+    NuevaBodega:
+      type: object
+      description: 'Los cuatro campos son obligatorios. `codigo` se guarda sin los espacios de los extremos.'
+      required: [codigo, nombre, ciudad, direccion]
+      properties:
+        codigo: { type: string, minLength: 1, maxLength: 30 }
+        nombre: { type: string, minLength: 1, maxLength: 100 }
+        ciudad: { type: string, minLength: 1, maxLength: 100 }
+        direccion: { type: string, minLength: 1, maxLength: 255 }
+      example: { codigo: BOD-PER-01, nombre: Bodega Pereira, ciudad: Pereira, direccion: 'Avenida 30 de Agosto # 40-22' }
+    CambiosBodega:
+      type: object
+      description: 'Los tres campos son obligatorios. El código no es editable.'
+      required: [nombre, ciudad, direccion]
+      properties:
+        nombre: { type: string, minLength: 1, maxLength: 100 }
+        ciudad: { type: string, minLength: 1, maxLength: 100 }
+        direccion: { type: string, minLength: 1, maxLength: 255 }
+      example: { nombre: Bodega principal, ciudad: Manizales, direccion: 'Carrera 23 # 65-12' }
+    ListadoBodegas:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Bodega' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ---- Saldos y umbrales ----
+    Saldo:
+      type: object
+      description: 'Existencia de un producto en una bodega (suma de sus lotes más el stock sin lote).'
+      required: [id_saldo, id_producto, id_bodega, cantidad_disponible, fecha_actualizacion]
+      additionalProperties: false
+      properties:
+        id_saldo: { $ref: '#/components/schemas/Id' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        cantidad_disponible: { type: integer, format: int32, minimum: 0 }
+        fecha_actualizacion: { type: string, format: date-time, description: 'Instante del último movimiento que cambió este saldo.' }
+      example: { id_saldo: 7, id_producto: 25, id_bodega: 1, cantidad_disponible: 120, fecha_actualizacion: '2026-11-10T14:32:05.000Z' }
+    ListadoSaldos:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Saldo' } }
+        meta: { $ref: '#/components/schemas/MetaSaldos' }
+    SaldoBajoUmbral:
+      type: object
+      required: [id_producto, cantidad_total, cantidad_minima]
+      additionalProperties: false
+      properties:
+        id_producto: { $ref: '#/components/schemas/Id' }
+        cantidad_total: { type: integer, format: int32, minimum: 0, description: 'Total del producto en todas las bodegas.' }
+        cantidad_minima: { type: integer, format: int32, minimum: 1, description: 'Stock mínimo del producto (siempre mayor que `cantidad_total`).' }
+      example: { id_producto: 25, cantidad_total: 30, cantidad_minima: 50 }
+    Umbral:
+      type: object
+      required: [id_producto, cantidad_minima, fecha_actualizacion]
+      additionalProperties: false
+      properties:
+        id_producto: { $ref: '#/components/schemas/Id' }
+        cantidad_minima: { type: integer, format: int32, minimum: 0 }
+        fecha_actualizacion: { type: string, format: date-time }
+      example: { id_producto: 25, cantidad_minima: 50, fecha_actualizacion: '2026-11-10T14:32:05.000Z' }
+    CambioUmbral:
+      type: object
+      required: [cantidad_minima]
+      properties:
+        cantidad_minima: { type: integer, format: int32, minimum: 0, description: 'Stock mínimo del producto en total. Con 0 nunca hay alerta.' }
+      example: { cantidad_minima: 50 }
+    ListadoUmbrales:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Umbral' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ---- Movimientos y lotes ----
+    NuevoMovimiento:
+      type: object
+      required: [tipo, id_producto, id_bodega, cantidad]
+      properties:
+        tipo: { $ref: '#/components/schemas/TipoMovimientoRegistrable' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        cantidad:
+          type: integer
+          format: int32
+          minimum: -2147483647
+          description: 'En `AJUSTE`, un entero con signo distinto de 0; en los demás tipos, un entero de 1 en adelante (el signo lo pone el tipo).'
+        id_lote:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+          description: 'Lote al que entra o del que sale; debe ser de esa bodega y producto. No puede ir junto con `lote`.'
+        lote:
+          type: object
+          nullable: true
+          description: 'Entrada a un lote por su código (solo en un movimiento que suma). Se crea si no existe. No puede ir junto con `id_lote`.'
+          required: [codigo_lote, fecha_vencimiento]
+          properties:
+            codigo_lote: { type: string, minLength: 1, maxLength: 50, description: 'Código del lote; distingue mayúsculas de minúsculas.' }
+            fecha_vencimiento: { type: string, format: date, description: 'Obligatoria al enviar `lote`. Si el lote ya existe con otra fecha, 409.' }
+        documento_referencia: { type: string, maxLength: 100, nullable: true, description: 'Factura, remisión u otro documento de origen.' }
+        observacion: { type: string, maxLength: 500, nullable: true }
+      example:
+        tipo: ENTRADA
+        id_producto: 25
+        id_bodega: 1
+        cantidad: 40
+        lote: { codigo_lote: L2026-114, fecha_vencimiento: '2027-03-01' }
+        documento_referencia: FAC-4521
+        observacion: Recepción de pedido
+    Movimiento:
+      type: object
+      description: 'Un renglón del kardex. `cantidad` es siempre positiva salvo en un `AJUSTE` negativo.'
+      required: [id_movimiento, tipo, id_producto, id_bodega, id_lote, id_traslado, id_conteo, cantidad, saldo_resultante, fecha, id_usuario, documento_referencia, observacion]
+      additionalProperties: false
+      properties:
+        id_movimiento: { $ref: '#/components/schemas/Id' }
+        tipo: { $ref: '#/components/schemas/TipoMovimiento' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        id_lote: { type: integer, format: int32, minimum: 1, nullable: true, description: 'Lote afectado; en una salida por FEFO, el primero que se consumió. `null` si no tocó ningún lote.' }
+        id_traslado: { type: integer, format: int32, minimum: 1, nullable: true, description: 'Traslado al que pertenece, si es un `TRASLADO_SALIDA` o un `TRASLADO_ENTRADA`.' }
+        id_conteo: { type: integer, format: int32, minimum: 1, nullable: true, description: 'Conteo cuya aprobación lo generó, si es su `AJUSTE`.' }
+        cantidad: { type: integer, format: int32 }
+        saldo_resultante: { type: integer, format: int32, minimum: 0, description: 'Saldo de la bodega tras el movimiento.' }
+        fecha: { type: string, format: date-time }
+        id_usuario: { $ref: '#/components/schemas/Id' }
+        documento_referencia: { type: string, nullable: true }
+        observacion: { type: string, nullable: true }
+      example:
+        id_movimiento: 301
+        tipo: ENTRADA
+        id_producto: 25
+        id_bodega: 1
+        id_lote: 12
+        id_traslado: null
+        id_conteo: null
+        cantidad: 40
+        saldo_resultante: 120
+        fecha: '2026-11-10T14:32:05.000Z'
+        id_usuario: 3
+        documento_referencia: FAC-4521
+        observacion: Recepción de pedido
+    ListadoMovimientos:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Movimiento' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+    Lote:
+      type: object
+      required: [id_lote, id_producto, id_bodega, codigo_lote, fecha_vencimiento, cantidad_disponible]
+      additionalProperties: false
+      properties:
+        id_lote: { $ref: '#/components/schemas/Id' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        codigo_lote: { type: string, maxLength: 50 }
+        fecha_vencimiento: { type: string, format: date, nullable: true, description: '`null` si el lote se cargó sin fecha (solo la carga inicial lo permite).' }
+        cantidad_disponible: { type: integer, format: int32, minimum: 0 }
+      example: { id_lote: 12, id_producto: 25, id_bodega: 1, codigo_lote: L2026-114, fecha_vencimiento: '2027-03-01', cantidad_disponible: 40 }
+    ListadoLotes:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Lote' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+    SugerenciaLote:
+      type: object
+      required: [id_lote, codigo_lote, fecha_vencimiento, cantidad_sugerida]
+      additionalProperties: false
+      properties:
+        id_lote: { $ref: '#/components/schemas/Id' }
+        codigo_lote: { type: string }
+        fecha_vencimiento: { type: string, format: date, nullable: true }
+        cantidad_sugerida: { type: integer, format: int32, minimum: 1, description: 'Unidades que se toman de este lote.' }
+      example: { id_lote: 12, codigo_lote: L2026-114, fecha_vencimiento: '2027-03-01', cantidad_sugerida: 10 }
+
+    # ---- Traslados ----
+    Traslado:
+      type: object
+      required: [id_traslado, id_producto, id_bodega_origen, id_bodega_destino, id_lote, cantidad, estado, fecha_envio, fecha_recepcion, id_usuario_envia, id_usuario_recibe]
+      additionalProperties: false
+      properties:
+        id_traslado: { $ref: '#/components/schemas/Id' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega_origen: { $ref: '#/components/schemas/Id' }
+        id_bodega_destino: { $ref: '#/components/schemas/Id' }
+        id_lote: { type: integer, format: int32, minimum: 1, nullable: true, description: 'Lote de ORIGEN que se traslada, o `null` si se trasladó stock sin lote.' }
+        cantidad: { type: integer, format: int32, minimum: 1 }
+        estado: { $ref: '#/components/schemas/EstadoTraslado' }
+        fecha_envio: { type: string, format: date-time }
+        fecha_recepcion: { type: string, format: date-time, nullable: true, description: '`null` mientras esté `EN_TRANSITO`.' }
+        id_usuario_envia: { $ref: '#/components/schemas/Id' }
+        id_usuario_recibe: { type: integer, format: int32, minimum: 1, nullable: true, description: '`null` mientras esté `EN_TRANSITO`.' }
+      example:
+        id_traslado: 5
+        id_producto: 25
+        id_bodega_origen: 1
+        id_bodega_destino: 2
+        id_lote: 12
+        cantidad: 10
+        estado: EN_TRANSITO
+        fecha_envio: '2026-11-12T09:15:00.000Z'
+        fecha_recepcion: null
+        id_usuario_envia: 3
+        id_usuario_recibe: null
+    ListadoTraslados:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/Traslado' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+    NuevoTraslado:
+      type: object
+      required: [id_producto, id_bodega_origen, id_bodega_destino, cantidad]
+      properties:
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega_origen: { $ref: '#/components/schemas/Id' }
+        id_bodega_destino: { type: integer, format: int32, minimum: 1, description: 'Debe ser distinta de `id_bodega_origen` (422 si no).' }
+        cantidad: { type: integer, format: int32, minimum: 1 }
+        id_lote:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+          description: 'Lote de la bodega de origen que se traslada. Sin él se mueve solo stock sin lote (un traslado nunca hace FEFO).'
+      example: { id_producto: 25, id_bodega_origen: 1, id_bodega_destino: 2, cantidad: 10, id_lote: 12 }
+    RecepcionTraslado:
+      type: object
+      description: 'El cuerpo es opcional.'
+      properties:
+        observacion: { type: string, minLength: 1, maxLength: 500, nullable: true }
+      example: { observacion: Llegó completo }
+    TrasladoConMovimiento:
+      type: object
+      description: 'El traslado y el movimiento de stock que acaba de hacer (`TRASLADO_SALIDA` al crearlo, `TRASLADO_ENTRADA` al recibirlo).'
+      required: [id_traslado, id_producto, id_bodega_origen, id_bodega_destino, id_lote, cantidad, estado, fecha_envio, fecha_recepcion, id_usuario_envia, id_usuario_recibe, movimiento]
+      additionalProperties: false
+      properties:
+        id_traslado: { $ref: '#/components/schemas/Id' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        id_bodega_origen: { $ref: '#/components/schemas/Id' }
+        id_bodega_destino: { $ref: '#/components/schemas/Id' }
+        id_lote: { type: integer, format: int32, minimum: 1, nullable: true, description: 'Lote de ORIGEN que se traslada, o `null` si se trasladó stock sin lote.' }
+        cantidad: { type: integer, format: int32, minimum: 1 }
+        estado: { $ref: '#/components/schemas/EstadoTraslado' }
+        fecha_envio: { type: string, format: date-time }
+        fecha_recepcion: { type: string, format: date-time, nullable: true, description: '`null` mientras esté `EN_TRANSITO`.' }
+        id_usuario_envia: { $ref: '#/components/schemas/Id' }
+        id_usuario_recibe: { type: integer, format: int32, minimum: 1, nullable: true, description: '`null` mientras esté `EN_TRANSITO`.' }
+        movimiento: { $ref: '#/components/schemas/Movimiento' }
+
+    # ---- Conteos ----
+    ConteoResumen:
+      type: object
+      description: 'Un conteo sin sus líneas.'
+      required: [id_conteo, id_bodega, estado, fecha_programada, fecha_aprobacion, id_usuario_aprueba]
+      additionalProperties: false
+      properties:
+        id_conteo: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        estado: { $ref: '#/components/schemas/EstadoConteo' }
+        fecha_programada: { type: string, format: date }
+        fecha_aprobacion: { type: string, format: date-time, nullable: true, description: '`null` hasta que se aprueba.' }
+        id_usuario_aprueba: { type: integer, format: int32, minimum: 1, nullable: true, description: '`null` hasta que se aprueba.' }
+      example: { id_conteo: 9, id_bodega: 1, estado: PROGRAMADO, fecha_programada: '2026-11-20', fecha_aprobacion: null, id_usuario_aprueba: null }
+    ListadoConteos:
+      type: object
+      required: [datos, meta]
+      additionalProperties: false
+      properties:
+        datos: { type: array, items: { $ref: '#/components/schemas/ConteoResumen' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+    DetalleConteo:
+      type: object
+      description: 'Una línea del conteo.'
+      required: [id_detalle_conteo, id_producto, cantidad_sistema, cantidad_contada, diferencia]
+      additionalProperties: false
+      properties:
+        id_detalle_conteo: { $ref: '#/components/schemas/Id' }
+        id_producto: { $ref: '#/components/schemas/Id' }
+        cantidad_sistema: { type: integer, format: int32, minimum: 0, description: 'Saldo del sistema al programar y, tras registrar lo contado, al momento de contar.' }
+        cantidad_contada: { type: integer, format: int32, minimum: 0, nullable: true, description: '`null` mientras no se haya contado.' }
+        diferencia: { type: integer, format: int32, nullable: true, description: '`cantidad_contada − cantidad_sistema` al contar, con signo; `null` mientras no se haya contado.' }
+      example: { id_detalle_conteo: 31, id_producto: 25, cantidad_sistema: 120, cantidad_contada: 118, diferencia: -2 }
+    Conteo:
+      type: object
+      description: 'Un conteo con sus líneas, ordenadas por `id_producto`.'
+      required: [id_conteo, id_bodega, estado, fecha_programada, fecha_aprobacion, id_usuario_aprueba, detalles]
+      additionalProperties: false
+      properties:
+        id_conteo: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        estado: { $ref: '#/components/schemas/EstadoConteo' }
+        fecha_programada: { type: string, format: date }
+        fecha_aprobacion: { type: string, format: date-time, nullable: true, description: '`null` hasta que se aprueba.' }
+        id_usuario_aprueba: { type: integer, format: int32, minimum: 1, nullable: true, description: '`null` hasta que se aprueba.' }
+        detalles: { type: array, items: { $ref: '#/components/schemas/DetalleConteo' } }
+    ConteoAprobado:
+      type: object
+      description: 'El conteo `APROBADO` con sus líneas y los movimientos `AJUSTE` que se aplicaron (uno por línea ajustada, por `id_producto`).'
+      required: [id_conteo, id_bodega, estado, fecha_programada, fecha_aprobacion, id_usuario_aprueba, detalles, movimientos]
+      additionalProperties: false
+      properties:
+        id_conteo: { $ref: '#/components/schemas/Id' }
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        estado: { $ref: '#/components/schemas/EstadoConteo' }
+        fecha_programada: { type: string, format: date }
+        fecha_aprobacion: { type: string, format: date-time, description: Instante en que se aprobó. }
+        id_usuario_aprueba: { $ref: '#/components/schemas/Id' }
+        detalles: { type: array, items: { $ref: '#/components/schemas/DetalleConteo' } }
+        movimientos: { type: array, items: { $ref: '#/components/schemas/Movimiento' } }
+    NuevoConteo:
+      type: object
+      required: [id_bodega, fecha_programada]
+      properties:
+        id_bodega: { $ref: '#/components/schemas/Id' }
+        fecha_programada: { type: string, format: date, description: 'Fecha real que no sea anterior al día UTC de hoy («hoy» vale).' }
+        ids_producto:
+          type: array
+          nullable: true
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Id' }
+          description: 'Productos a contar, sin repetidos. Si se omite, todos los productos con existencia en la bodega (máximo 1 000).'
+      example: { id_bodega: 1, fecha_programada: '2026-11-20', ids_producto: [25, 31] }
+    LecturaConteo:
+      type: object
+      required: [detalles]
+      properties:
+        detalles:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          description: 'Las líneas contadas; puede ser solo una parte de las del conteo. Un `id_producto` no puede repetirse ni estar fuera del conteo.'
+          items:
+            type: object
+            required: [id_producto, cantidad_contada]
+            properties:
+              id_producto: { $ref: '#/components/schemas/Id' }
+              cantidad_contada: { type: integer, format: int32, minimum: 0 }
+      example: { detalles: [{ id_producto: 25, cantidad_contada: 118 }, { id_producto: 31, cantidad_contada: 40 }] }
+
+    # ---- Carga inicial ----
+    CargaInicial:
+      type: object
+      required: [filas]
+      properties:
+        filas:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          description: 'Una lista no vacía de 1 000 filas como máximo. Una fila que no cumple el esquema no hace fallar la petición, se devuelve en `rechazados`.'
+          items:
+            type: object
+            required: [id_producto, id_bodega, cantidad]
+            properties:
+              id_producto: { $ref: '#/components/schemas/Id' }
+              id_bodega: { $ref: '#/components/schemas/Id' }
+              cantidad: { type: integer, format: int32, minimum: 1 }
+              codigo_lote: { type: string, minLength: 1, maxLength: 50, nullable: true, description: 'Sin él (o `null`) el stock entra sin lote.' }
+              fecha_vencimiento: { type: string, format: date, nullable: true, description: 'Solo se admite junto con `codigo_lote`.' }
+      example:
+        filas:
+          - { id_producto: 25, id_bodega: 1, cantidad: 40, codigo_lote: L2026-114, fecha_vencimiento: '2027-03-01' }
+          - { id_producto: 31, id_bodega: 1, cantidad: 15 }
+    ResultadoCargaInicial:
+      type: object
+      required: [creados, rechazados]
+      additionalProperties: false
+      properties:
+        creados: { type: integer, minimum: 0, description: 'Filas que quedaron aplicadas (también las que ya se habían aplicado con la misma clave).' }
+        rechazados:
+          type: array
+          description: 'Las filas rechazadas, ordenadas por `fila`.'
+          items:
+            type: object
+            required: [fila, motivo]
+            additionalProperties: false
+            properties:
+              fila: { type: integer, minimum: 1, description: 'Posición de la fila en `filas`, desde 1.' }
+              motivo: { type: string, description: 'Texto libre en español; puede cambiar.' }
+      example: { creados: 1, rechazados: [{ fila: 2, motivo: 'cantidad: debe ser un número entero entre 1 y 2147483647' }] }
+
+    # ---- Salud ----
+    Salud:
+      type: object
+      required: [estado, servicio]
+      additionalProperties: false
+      properties:
+        estado: { type: string, enum: [ok] }
+        servicio: { type: string, enum: [ms-inventario] }
+      example: { estado: ok, servicio: ms-inventario }
