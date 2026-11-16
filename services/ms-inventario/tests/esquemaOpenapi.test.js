@@ -90,10 +90,27 @@ describe('format', () => {
     for (const valor of ['2027-02-30', '2027-02-29', '2027-13-01', '2027-3-1', '27-03-01', '2027-03-01T00:00:00Z', '', 'mañana']) incumple(esquema, valor, 'fecha YYYY-MM-DD');
   });
 
-  it('date-time: ISO 8601 con hora y huso (Z o ±hh:mm), con o sin fracción', () => {
+  it('date: los años 0001 a 0099 son años reales (el servicio los acepta) y no se confunden con 19xx; el año 0000 no existe', () => {
+    const esquema = { type: 'string', format: 'date' };
+    for (const valor of ['0001-01-01', '0050-01-01', '0099-12-31', '0004-02-29', '1900-01-01']) cumple(esquema, valor);
+    // El año 50 no es bisiesto, el 100 tampoco (es múltiplo de 100 y no de 400) y el 96 sí.
+    for (const valor of ['0000-01-01', '0050-02-29', '0100-02-29', '0050-13-01']) incumple(esquema, valor, 'fecha YYYY-MM-DD');
+    cumple(esquema, '0096-02-29');
+  });
+
+  it('date-time: en este documento es Date#toISOString(): UTC con la Z y exactamente tres decimales', () => {
     const esquema = { type: 'string', format: 'date-time' };
-    for (const valor of ['2026-11-15T10:00:00.000Z', '2026-11-15T10:00:00Z', '2026-11-15T10:00:00.123456+00:00', '2026-11-15T05:00:00-05:00']) cumple(esquema, valor);
-    for (const valor of ['2026-11-15', '2026-11-15T10:00:00', '2026-11-15 10:00:00Z', '2026-13-15T10:00:00Z', '2026-02-30T10:00:00Z', '2026-11-15T25:00:00Z', 'ayer']) incumple(esquema, valor, 'ISO 8601');
+    for (const valor of ['2026-11-15T10:00:00.000Z', '2026-11-10T14:32:05.123Z', '2028-02-29T23:59:59.999Z']) cumple(esquema, valor);
+    for (const valor of [
+      '2026-11-15T10:00:00Z', // sin milisegundos
+      '2026-11-10T09:32:05.000-05:00', // huso distinto de Z
+      '2026-11-10T14:32:05.000+00:00', // UTC escrito como +00:00
+      '2026-11-10T14:32:05-00:00',
+      '2026-11-15T10:00:00.12Z', // dos decimales
+      '2026-11-15T10:00:00.123456Z', // seis decimales
+      '2026-11-15T10:00:00.000z', // z minúscula
+    ]) incumple(esquema, valor, 'toISOString');
+    for (const valor of ['2026-11-15', '2026-11-15T10:00:00.000', '2026-11-15 10:00:00.000Z', '2026-13-15T10:00:00.000Z', '2026-02-30T10:00:00.000Z', '2026-11-15T25:00:00.000Z', 'ayer']) incumple(esquema, valor, 'toISOString');
   });
 
   it('int32: dentro de [-2147483648, 2147483647]', () => {
@@ -329,6 +346,18 @@ describe('revisarEsquema (revisión estructural, sin valores)', () => {
     expect(texto).toContain('$.d: en OpenAPI 3.0 los hermanos de $ref se ignoran');
     expect(texto).toContain('$.e: un arreglo debe declarar items');
     expect(lista.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('todo esquema que no sea una referencia debe declarar type (si no, admitiría cualquier valor en silencio)', () => {
+    expect(revisarEsquema(DOC, { description: 'sin tipo' }).join()).toContain('$: debe declarar type');
+    expect(revisarEsquema(DOC, { type: 'object', properties: { a: { description: 'sin tipo' } } }).join()).toContain('$.a: debe declarar type');
+    expect(revisarEsquema(DOC, { type: 'array', items: {} }).join()).toContain('$[]: debe declarar type');
+    expect(revisarEsquema(DOC, { type: 'object', additionalProperties: { nullable: true } }).join()).toContain('${}: debe declarar type');
+    // Una referencia no lleva type (lo lleva el esquema al que apunta) y no es un problema.
+    const documento = { components: { schemas: { Bien: { type: 'string' } } } };
+    expect(revisarEsquema(documento, { type: 'object', properties: { a: { $ref: '#/components/schemas/Bien' } } })).toEqual([]);
+    // validar() sigue admitiendo un esquema sin type (es una opción del validador, no del documento).
+    expect(validar(DOC, {}, 'cualquier cosa')).toEqual([]);
   });
 
   it('items sin type array y nullable que no es booleano también se señalan', () => {

@@ -4,7 +4,8 @@
 //
 // Solo entiende el subconjunto de OpenAPI que usa el documento. Una palabra clave que NO implementa lanza un Error y nunca se
 // ignora en silencio: un esquema con una restricción que nadie aplica daría una garantía falsa. Lo que entiende:
-//   $ref, type (string, integer, number, boolean, object, array), nullable, enum, format (date, date-time, int32, int64),
+//   $ref, type (string, integer, number, boolean, object, array), nullable, enum, format (date, date-time —solo como lo escribe
+//   Date#toISOString()—, int32, int64),
 //   minimum, maximum, minLength, maxLength, properties, required, additionalProperties (false, true o un esquema), items,
 //   minItems, maxItems, uniqueItems.
 // Las anotaciones (description, example, title, default…) y las extensiones x-* no restringen nada y se ignoran.
@@ -44,14 +45,18 @@ const esFechaReal = (texto) => {
   const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto);
   if (!partes) return false;
   const [anio, mes, dia] = partes.slice(1).map(Number);
-  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
-  // Date.UTC corrige las fechas imposibles (30 de febrero): se exige que el día vuelva igual.
+  // Date.UTC(anio, ...) lleva los años 0 a 99 a 1900 a 1999: los años 0001 a 0099 se fijan con setUTCFullYear.
+  const fecha = new Date(0);
+  fecha.setUTCFullYear(anio, mes - 1, dia);
+  // Date corrige las fechas imposibles (30 de febrero): se exige que el día vuelva igual.
   return anio >= 1 && fecha.getUTCFullYear() === anio && fecha.getUTCMonth() === mes - 1 && fecha.getUTCDate() === dia;
 };
 
-// ISO 8601 con hora y huso (Z o ±hh:mm), con o sin fracción de segundo: 2026-11-15T10:00:00.000Z.
+// En ESTE documento `format: date-time` significa lo que escribe Date#toISOString(): UTC con la Z y exactamente tres decimales
+// (2026-11-15T10:00:00.000Z). No es el date-time más amplio de la RFC 3339 (con otro huso o sin milisegundos): el documento promete
+// ese formato y un desfase del servidor (p. ej. un replacer que escriba ...05-00:00) tiene que ponerse en rojo.
 const esFechaHora = (texto) => {
-  const partes = /^(\d{4}-\d{2}-\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(\.\d+)?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(texto);
+  const partes = /^(\d{4}-\d{2}-\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)\.\d{3}Z$/.exec(texto);
   return partes !== null && esFechaReal(partes[1]);
 };
 
@@ -111,6 +116,9 @@ function problemasDelNodo(documento, esquema, ruta) {
 function revisarEsquema(documento, esquema, ruta = '$') {
   const problemas = problemasDelNodo(documento, esquema, ruta);
   if (!esObjeto(esquema) || '$ref' in esquema) return problemas;
+  // Un esquema sin type admite cualquier valor en silencio: el documento debe declararlo siempre. validar() sí lo admite (el validador
+  // no impone esta regla al documento: la impone esta revisión).
+  if (esquema.type === undefined) problemas.push(`${ruta}: debe declarar type`);
   for (const [nombre, propiedad] of Object.entries(esObjeto(esquema.properties) ? esquema.properties : {})) {
     problemas.push(...revisarEsquema(documento, propiedad, `${ruta}.${nombre}`));
   }
@@ -135,7 +143,7 @@ function validarTipo(esquema, valor, ruta) {
 
 function validarFormato(esquema, valor, ruta) {
   if (esquema.format === 'date' && !esFechaReal(valor)) return [`${ruta}: debe ser una fecha YYYY-MM-DD real (es ${JSON.stringify(valor)})`];
-  if (esquema.format === 'date-time' && !esFechaHora(valor)) return [`${ruta}: debe ser una fecha y hora ISO 8601 con huso (es ${JSON.stringify(valor)})`];
+  if (esquema.format === 'date-time' && !esFechaHora(valor)) return [`${ruta}: debe ser una fecha y hora como la escribe toISOString(), p. ej. 2026-11-15T10:00:00.000Z (es ${JSON.stringify(valor)})`];
   if (esquema.format === 'int32' && (valor < INT32_MIN || valor > INT32_MAX)) return [`${ruta}: fuera del rango int32 (es ${valor})`];
   if (esquema.format === 'int64' && !Number.isSafeInteger(valor)) return [`${ruta}: fuera del rango entero seguro (es ${valor})`];
   return [];
