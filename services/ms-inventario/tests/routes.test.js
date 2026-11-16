@@ -64,6 +64,7 @@ const CONTEOS = [
   ['get', '/conteos'],
   ['get', '/conteos/:id'],
   ['put', '/conteos/:id/detalles'],
+  ['post', '/conteos/:id/aprobacion'],
 ];
 
 let request;

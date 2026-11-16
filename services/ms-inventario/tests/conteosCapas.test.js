@@ -139,6 +139,8 @@ promesasReales(conteoRepository, {
   bloquearPorId: [1],
   registrarContados: [{ idConteo: 1, idBodega: 1, lineas: [{ idProducto: 5, cantidadContada: 3 }] }],
   marcarEnRevision: [1],
+  marcarAprobado: [1, { idUsuarioAprueba: 7, claveAprobacion: '7:con:k' }],
+  findByClaveAprobacion: ['7:con:k'],
 }, { titulo: 'conteoRepository', db: () => db });
 
 describe('conteoRepository: registro de lo contado', () => {
@@ -221,6 +223,39 @@ describe('conteoRepository: registro de lo contado', () => {
   });
 });
 
+describe('conteoRepository: aprobación', () => {
+  let conteo;
+  beforeEach(async () => {
+    conteo = await nuevoConteo();
+    await db('conteos').where({ id_conteo: conteo.id_conteo }).update({ estado: 'EN_REVISION' });
+  });
+
+  it('marcarAprobado pasa a APROBADO SOLO un EN_REVISION, con fecha_aprobacion = clock_timestamp() (no el inicio de la transacción), el usuario y la clave; devuelve la cabecera sin la clave', async () => {
+    /* D24, D32(d). */
+    await db.transaction(async (trx) => {
+      const { rows: [{ inicio }] } = await trx.raw('SELECT now() AS inicio');
+      await trx.raw('SELECT pg_sleep(0.05)');
+      const aprobado = await conteoRepository.marcarAprobado(trx, conteo.id_conteo, { idUsuarioAprueba: 9, claveAprobacion: '9:con:k' });
+      expect(aprobado).toEqual({ ...conteo, estado: 'APROBADO', fecha_aprobacion: expect.any(Date), id_usuario_aprueba: 9 });
+      expect(aprobado.fecha_aprobacion.getTime()).toBeGreaterThan(inicio.getTime());
+    });
+    expect((await db('conteos').where({ id_conteo: conteo.id_conteo }).first()).clave_aprobacion).toBe('9:con:k');
+    expect(await conteoRepository.marcarAprobado(db, conteo.id_conteo, { idUsuarioAprueba: 10, claveAprobacion: '10:con:k' })).toBeUndefined();
+    const programado = await nuevoConteo({ fechaProgramada: '2026-11-21' });
+    expect(await conteoRepository.marcarAprobado(db, programado.id_conteo, { idUsuarioAprueba: 10, claveAprobacion: '10:con:j' })).toBeUndefined();
+  });
+
+  it('findByClaveAprobacion devuelve la cabecera del conteo con esa clave (comparación exacta) o undefined; los valores viajan enlazados', async () => {
+    /* La repetición se decide por esta lectura. */
+    await conteoRepository.marcarAprobado(db, conteo.id_conteo, { idUsuarioAprueba: 9, claveAprobacion: '9:con:clave-54321' });
+    const sql = await conSql(db, async () => {
+      expect(await conteoRepository.findByClaveAprobacion(db, '9:con:clave-54321')).toMatchObject({ id_conteo: conteo.id_conteo, estado: 'APROBADO' });
+      expect(await conteoRepository.findByClaveAprobacion(db, '9:con:CLAVE-54321')).toBeUndefined();
+    });
+    for (const texto of sql) expect(texto).not.toMatch(/54321|select \*/i);
+  });
+});
+
 describe('conteoService: programar, obtener y listar', () => {
   const ADMIN = { idUsuario: 7, rol: 'ADMINISTRADOR', idBodega: null, requestId: 'r1' };
   const OPERADOR = { idUsuario: 8, rol: 'OPERADOR_BODEGA', idBodega: 2, requestId: 'r1' };
@@ -296,6 +331,33 @@ describe('conteoService: programar, obtener y listar', () => {
     expect(await atrapar(conteoService.registrarDetalles({ db }, peticion()))).toMatchObject({ status: 422 });
     const hecho = await conteoService.registrarDetalles({ db }, peticion({ body: { detalles: [{ id_producto: 5, cantidad_contada: 2 }] } }));
     expect(hecho).toMatchObject({ estado: 'EN_REVISION', detalles: [{ id_producto: 5, cantidad_sistema: 0, cantidad_contada: 2, diferencia: 2 }] });
+  });
+
+  it('aprobar: orden 401 (sin X-User-Id) → 400 (clave) → 404 (id) → 404 (conteo); devuelve { conteo, movimientos, replayed } y luego replayed: true', async () => {
+    /* El controlador responde 200 en los dos casos. */
+    const deps = { db, clients: { notificaciones: { notificarStockBajo: jest.fn() } }, logger: { info() {}, error() {} } };
+    const peticion = (extra) => ({ idConteo: 1, claveIdempotencia: 'k1', identity: ADMIN, ...extra });
+    expect(await atrapar(conteoService.aprobar(deps, peticion({ identity: INTERNA, claveIdempotencia: undefined, idConteo: 'x' })))).toMatchObject({ status: 401 });
+    expect(await atrapar(conteoService.aprobar(deps, peticion({ claveIdempotencia: undefined, idConteo: 'x' })))).toMatchObject({ status: 400 });
+    expect(await atrapar(conteoService.aprobar(deps, peticion({ idConteo: 'x' })))).toMatchObject({ status: 404 });
+    expect(await atrapar(conteoService.aprobar(deps, peticion()))).toMatchObject({ status: 404, codigo: 'NO_EXISTE' });
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 4 });
+    const creado = await conteoService.programar({ db }, { body: cuerpo({ fecha_programada: '9999-12-31' }), identity: ADMIN });
+    await conteoService.registrarDetalles({ db }, { idConteo: creado.id_conteo, body: { detalles: [{ id_producto: 5, cantidad_contada: 6 }] }, identity: ADMIN });
+    const primera = await conteoService.aprobar(deps, peticion({ idConteo: String(creado.id_conteo) }));
+    expect(primera).toEqual({ conteo: expect.objectContaining({ estado: 'APROBADO' }), movimientos: [expect.objectContaining({ cantidad: 2 })], replayed: false });
+    expect(await conteoService.aprobar(deps, peticion({ idConteo: creado.id_conteo }))).toEqual({ ...primera, replayed: true });
+  });
+
+  it('aprobar: una aprobación cuya clave guardada no encuentra los ajustes de sus líneas (estado imposible) → Error (500), nunca una respuesta inventada', async () => {
+    /* La repetición relee cada AJUSTE por su clave derivada. */
+    const creado = await nuevoConteo();
+    await db('detalles_conteo').insert({ id_conteo: creado.id_conteo, id_producto: 5, cantidad_sistema: 1, cantidad_contada: 3, diferencia: 2 });
+    await db('conteos').where({ id_conteo: creado.id_conteo }).update({ estado: 'APROBADO', fecha_aprobacion: db.fn.now(), id_usuario_aprueba: 7, clave_aprobacion: '7:con:k-roto' });
+    const error = await atrapar(conteoService.aprobar({ db }, { idConteo: creado.id_conteo, claveIdempotencia: 'k-roto', identity: ADMIN }));
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toHaveProperty('status');
+    await db('conteos').where({ id_conteo: creado.id_conteo }).del(); // deja la base coherente
   });
 
   it('crearConteoService se construye sin dependencias y las lee en cada llamada', async () => {

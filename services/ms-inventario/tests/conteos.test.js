@@ -1,13 +1,21 @@
+const knex = require('knex');
+const supertest = require('supertest');
+const { createApp } = require('../src/app');
+const { construirConfigKnex } = require('../src/config/db');
+const { delta } = require('../src/domain/tipos');
 const conteoRepository = require('../src/repositories/conteoRepository');
-const { buildTestApp } = require('./helpers/app');
+const { OPERACIONES, claveAlmacenada } = require('../src/services/idempotencia');
+const movimientoService = require('../src/services/movimientoService');
+const stockService = require('../src/services/stockService');
+const { buildTestApp, entornoValido } = require('./helpers/app');
 const { esperarBloqueo } = require('./helpers/bloqueos');
-const { truncateAll } = require('./helpers/db');
-const { crearBodega, crearSaldo, headers } = require('./helpers/fixtures');
-const { esError, datosNoValidos, recursoNoExiste } = require('./helpers/respuestas');
+const { configDePrueba, truncateAll } = require('./helpers/db');
+const { crearBodega, crearLote, crearSaldo, crearUmbral, headers } = require('./helpers/fixtures');
+const { ISO_8601, esError, datosNoValidos, recursoNoExiste, stockInsuficiente } = require('./helpers/respuestas');
 
 // Conteos físicos (RF18) de punta a punta, contra PostgreSQL real y con clientes falsos: POST /conteos (programar), GET /conteos
-// (listado), GET /conteos/{id} y PUT /conteos/{id}/detalles (registrar lo contado). Las capas por separado están en
-// conteosCapas.test.js.
+// (listado), GET /conteos/{id}, PUT /conteos/{id}/detalles (registrar lo contado) y POST /conteos/{id}/aprobacion (aprobar: un
+// AJUSTE por cada diferencia). Las capas por separado están en conteosCapas.test.js.
 //
 // El reloj del servicio está FIJADO (`now` inyectado, D32(g)): ninguna prueba depende del día en que corre ni falla a medianoche.
 //
@@ -551,5 +559,452 @@ describe('PUT /conteos/{id}/detalles: rechazos (nada cambia)', () => {
     }
     esError(await pendiente, 409, 'CONTEO_ESTADO_INVALIDO');
     expect(lineas(await conteoRepository.findById(db, conteo.id_conteo))).toEqual([[5, 10, null, null], [6, 0, null, null]]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// POST /conteos/{id}/aprobacion
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const CLAVES_MOVIMIENTO = [
+  'id_movimiento', 'tipo', 'id_producto', 'id_bodega', 'id_lote', 'id_traslado', 'id_conteo', 'cantidad', 'saldo_resultante',
+  'fecha', 'id_usuario', 'documento_referencia', 'observacion',
+];
+
+let contadorClaves = 0;
+const nuevaClave = () => `kc-${(contadorClaves += 1)}`;
+// POST /conteos/{id}/aprobacion; `clave` null no envía la cabecera.
+function aprobar(id, { clave = nuevaClave(), cabeceras = ADM, cliente = request } = {}) {
+  const peticion = cliente.post(`/conteos/${id}/aprobacion`).set(cabeceras);
+  if (clave !== null) peticion.set('Idempotency-Key', clave);
+  return peticion.send();
+}
+// POST /movimientos (un movimiento normal entre el conteo y la aprobación).
+const moverStock = (tipo, idProducto, cantidad, idBodega = b1) => request.post('/movimientos').set(ADM).set('Idempotency-Key', nuevaClave())
+  .send({ tipo, id_producto: idProducto, id_bodega: idBodega, cantidad });
+const saldoDe = async (idProducto, idBodega = b1) => (await db('saldos').where({ id_producto: idProducto, id_bodega: idBodega }).first())?.cantidad_disponible;
+const aviso = () => clients.notificaciones.notificarStockBajo;
+
+/**
+ * Deja un conteo EN_REVISION por la API: siembra los saldos `{id_producto: cantidad}` de la bodega, programa el conteo con
+ * `ids` (por omisión, los de los saldos) y registra lo `contado` `{id_producto: cantidad_contada}`.
+ */
+async function enRevision({ saldos = {}, ids, contado, idBodega = b1 }) {
+  for (const [idProducto, cantidad] of Object.entries(saldos)) await crearSaldo(db, { idProducto: Number(idProducto), idBodega, cantidad });
+  const idsProducto = ids ?? Object.keys(saldos).map(Number);
+  const programado = await programar({ id_bodega: idBodega, fecha_programada: '2026-11-20', ids_producto: idsProducto });
+  expect(programado.status).toBe(201);
+  const detalles = Object.entries(contado).map(([idProducto, cantidad]) => ({ id_producto: Number(idProducto), cantidad_contada: cantidad }));
+  const res = await registrar(programado.body.id_conteo, detalles);
+  expect(res.status).toBe(200);
+  return res.body;
+}
+
+describe('POST /conteos/{id}/aprobacion: aprobación (200)', () => {
+  it('200 APROBADO con exactamente sus campos y un AJUSTE con signo por cada diferencia ≠ 0, con id_conteo, ordenados por id_producto; sin movimientos intermedios el saldo queda IGUAL a lo contado; las líneas sin contar y las de diferencia 0 no se ajustan', async () => {
+    /* RF18, D32(a)(b)(i). */
+    const conteo = await enRevision({ saldos: { 3: 4, 5: 10, 7: 0, 8: 6 }, contado: { 8: 6, 5: 12, 3: 1 } });
+    expect(lineas(conteo)).toEqual([[3, 4, 1, -3], [5, 10, 12, 2], [7, 0, null, null], [8, 6, 6, 0]]);
+    const res = await aprobar(conteo.id_conteo, { clave: 'k-aprob' });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual([...CLAVES_CONTEO, 'movimientos'].sort());
+    const { movimientos, ...aprobado } = res.body;
+    expect(aprobado).toEqual({ ...conteo, estado: 'APROBADO', fecha_aprobacion: expect.stringMatching(ISO_8601), id_usuario_aprueba: 7 });
+    for (const movimiento of movimientos) expect(Object.keys(movimiento).sort()).toEqual([...CLAVES_MOVIMIENTO].sort());
+    expect(movimientos).toEqual([
+      expect.objectContaining({ tipo: 'AJUSTE', id_producto: 3, id_bodega: b1, cantidad: -3, saldo_resultante: 1, id_conteo: conteo.id_conteo, id_usuario: 7, id_lote: null, id_traslado: null }),
+      expect.objectContaining({ tipo: 'AJUSTE', id_producto: 5, id_bodega: b1, cantidad: 2, saldo_resultante: 12, id_conteo: conteo.id_conteo, id_usuario: 7, id_lote: null }),
+    ]);
+    expect([await saldoDe(3), await saldoDe(5), await saldoDe(7), await saldoDe(8)]).toEqual([1, 12, 0, 6]);
+    expect(JSON.stringify(res.body)).not.toMatch(/clave/);
+    // La clave guardada es la de la operación «con» del usuario; cada AJUSTE lleva su derivada por id_producto (D25d, D32(d)).
+    expect((await db('conteos').where({ id_conteo: conteo.id_conteo }).first()).clave_aprobacion).toBe(claveAlmacenada(7, OPERACIONES.CONTEO, 'k-aprob'));
+    expect(await db('movimientos').orderBy('id_producto').pluck('clave_idempotencia')).toEqual(['7:con:k-aprob#3', '7:con:k-aprob#5']);
+    expect((await obtener(conteo.id_conteo)).body).toEqual(aprobado);
+    expect(clients.catalogo.obtenerProducto).not.toHaveBeenCalled();
+  });
+
+  it('D32(a): ajusta con la diferencia GUARDADA, no contra el saldo actual: contado 12 con sistema 10 (+2), luego se venden 3 (saldo 7) → la aprobación deja 9, no 12', async () => {
+    /* El recuento es una foto del momento del conteo; las ventas posteriores son reales. */
+    const conteo = await enRevision({ saldos: { 5: 10 }, contado: { 5: 12 } });
+    expect((await moverStock('SALIDA', 5, 3)).status).toBe(201);
+    expect(await saldoDe(5)).toBe(7);
+    const res = await aprobar(conteo.id_conteo);
+    expect(res.status).toBe(200);
+    expect(res.body.movimientos).toEqual([expect.objectContaining({ tipo: 'AJUSTE', cantidad: 2, saldo_resultante: 9 })]);
+    expect(await saldoDe(5)).toBe(9);
+  });
+
+  it('con lotes: el ajuste negativo sale por FEFO (el movimiento lleva el primer lote consumido) y el positivo entra como stock sin lote', async () => {
+    /* D27: las reglas de lotes van por el signo del cambio. */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const l1 = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L1', fechaVencimiento: '2027-01-31', cantidad: 4 });
+    const l2 = await crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: 'L2', fechaVencimiento: '2027-03-31', cantidad: 3 });
+    await crearSaldo(db, { idProducto: 6, idBodega: b1, cantidad: 2 });
+    const l3 = await crearLote(db, { idBodega: b1, idProducto: 6, codigoLote: 'L3', fechaVencimiento: '2027-02-28', cantidad: 2 });
+    const conteo = await enRevision({ ids: [5, 6], contado: { 5: 5, 6: 4 } });
+    const res = await aprobar(conteo.id_conteo);
+    expect(res.status).toBe(200);
+    expect(res.body.movimientos).toEqual([
+      expect.objectContaining({ id_producto: 5, cantidad: -5, saldo_resultante: 5, id_lote: l1.id_lote }),
+      expect.objectContaining({ id_producto: 6, cantidad: 2, saldo_resultante: 4, id_lote: null }),
+    ]);
+    const cantidades = Object.fromEntries((await db('lotes').select('id_lote', 'cantidad_disponible')).map((l) => [l.id_lote, l.cantidad_disponible]));
+    expect(cantidades).toEqual({ [l1.id_lote]: 0, [l2.id_lote]: 2, [l3.id_lote]: 2 });
+  });
+
+  it('sin ninguna diferencia → 200 APROBADO con movimientos [] y la clave guardada; su repetición → 200 igual sin tocar nada', async () => {
+    /* D5: clave_aprobacion detecta la repetición aunque no haya ningún movimiento. */
+    const conteo = await enRevision({ saldos: { 5: 10, 6: 3 }, contado: { 5: 10 } });
+    const primera = await aprobar(conteo.id_conteo, { clave: 'k-cero' });
+    expect(primera.status).toBe(200);
+    expect(primera.body).toMatchObject({ estado: 'APROBADO', movimientos: [] });
+    expect((await db('conteos').first()).clave_aprobacion).toBe('7:con:k-cero');
+    const antes = await foto();
+    const segunda = await aprobar(conteo.id_conteo, { clave: 'k-cero' });
+    expect(segunda.status).toBe(200);
+    expect(segunda.body).toEqual(primera.body);
+    expect(await foto()).toEqual(antes);
+  });
+});
+
+describe('POST /conteos/{id}/aprobacion: Idempotency-Key (RNF17, D32(d))', () => {
+  it('la misma clave → 200 con el MISMO conteo y los MISMOS id_movimiento, sin nuevos ajustes y SIN volver a evaluar el umbral', async () => {
+    /* La repetición se resuelve por clave_aprobacion. */
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 50 });
+    const conteo = await enRevision({ saldos: { 5: 10, 6: 1 }, contado: { 5: 8, 6: 3 } });
+    const primera = await aprobar(conteo.id_conteo, { clave: 'k-rep' });
+    expect(primera.status).toBe(200);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+    const antes = await foto();
+    const segunda = await aprobar(conteo.id_conteo, { clave: 'k-rep' });
+    expect(segunda.status).toBe(200);
+    expect(segunda.body).toEqual(primera.body);
+    expect(segunda.body.movimientos.map((m) => m.id_movimiento)).toEqual(primera.body.movimientos.map((m) => m.id_movimiento));
+    expect(await foto()).toEqual(antes);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+  });
+
+  it('aprobar un conteo PROGRAMADO → 409 CONTEO_ESTADO_INVALIDO; uno ya APROBADO con OTRA clave → 409; nada cambia', async () => {
+    /* D32(c). */
+    await crearSaldo(db, { idProducto: 5, idBodega: b1, cantidad: 10 });
+    const programado = (await programar(cuerpoConteo())).body;
+    let antes = await foto();
+    esError(await aprobar(programado.id_conteo), 409, 'CONTEO_ESTADO_INVALIDO');
+    expect(await foto()).toEqual(antes);
+    const conteo = (await registrar(programado.id_conteo, [{ id_producto: 5, cantidad_contada: 7 }])).body;
+    expect((await aprobar(conteo.id_conteo, { clave: 'k-1' })).status).toBe(200);
+    antes = await foto();
+    esError(await aprobar(conteo.id_conteo, { clave: 'k-2' }), 409, 'CONTEO_ESTADO_INVALIDO');
+    expect(await foto()).toEqual(antes);
+    expect(await saldoDe(5)).toBe(7);
+  });
+
+  it('D32(d): la misma clave sobre OTRO conteo → 409 CONFLICTO y el otro sigue EN_REVISION; con otra clave sí se aprueba', async () => {
+    /* Devolver la aprobación de otro conteo sería un error silencioso. */
+    const a = await enRevision({ saldos: { 5: 10 }, contado: { 5: 9 } });
+    const b = await enRevision({ saldos: { 6: 10 }, contado: { 6: 8 } });
+    expect((await aprobar(a.id_conteo, { clave: 'k-x' })).status).toBe(200);
+    const antes = await foto();
+    esError(await aprobar(b.id_conteo, { clave: 'k-x' }), 409, 'CONFLICTO');
+    expect(await foto()).toEqual(antes);
+    expect((await aprobar(b.id_conteo, { clave: 'k-y' })).status).toBe(200);
+    expect(await saldoDe(6)).toBe(8);
+  });
+
+  it('D25: OTRO usuario con la MISMA clave hace su propia aprobación (otro conteo → 200); sobre el ya aprobado → 409 CONTEO_ESTADO_INVALIDO', async () => {
+    /* La clave se acota por usuario. */
+    const a = await enRevision({ saldos: { 5: 10 }, contado: { 5: 9 } });
+    const b = await enRevision({ saldos: { 6: 10 }, contado: { 6: 8 } });
+    expect((await aprobar(a.id_conteo, { clave: 'k-u' })).status).toBe(200);
+    const otro = headers('ADMINISTRADOR', { idUsuario: 9 });
+    esError(await aprobar(a.id_conteo, { clave: 'k-u', cabeceras: otro }), 409, 'CONTEO_ESTADO_INVALIDO');
+    const propia = await aprobar(b.id_conteo, { clave: 'k-u', cabeceras: otro });
+    expect(propia.status).toBe(200);
+    expect(propia.body).toMatchObject({ id_usuario_aprueba: 9, movimientos: [expect.objectContaining({ id_usuario: 9, cantidad: -2 })] });
+    expect((await db('conteos').where({ id_conteo: b.id_conteo }).first()).clave_aprobacion).toBe('9:con:k-u');
+  });
+
+  it.each([['ausente', null], ['vacía', ''], ['de 201 caracteres', 'k'.repeat(201)], ['con «#»', 'abc#1']])('cabecera %s → 400 PETICION_MAL_FORMADA y nada cambia (también con un id inválido)', async (_caso, clave) => {
+    /* D25, D25c. Control: la clave de 200 caracteres vale. */
+    const conteo = await enRevision({ saldos: { 5: 10 }, contado: { 5: 9 } });
+    const antes = await foto();
+    esError(await aprobar(conteo.id_conteo, { clave }), 400, 'PETICION_MAL_FORMADA');
+    esError(await aprobar('abc', { clave }), 400, 'PETICION_MAL_FORMADA');
+    expect(await foto()).toEqual(antes);
+    expect((await aprobar(conteo.id_conteo, { clave: 'k'.repeat(200) })).status).toBe(200);
+  });
+
+  it('sin X-User-Id → 401 (antes que la clave); ids inválidos o inexistentes → 404', async () => {
+    /* requireUser → clave → id. */
+    const conteo = await enRevision({ saldos: { 5: 10 }, contado: { 5: 9 } });
+    const antes = await foto();
+    esError(await request.post(`/conteos/${conteo.id_conteo}/aprobacion`).send(), 401, 'NO_AUTENTICADO');
+    for (const id of ['9999', '0', '-1', 'abc', '2147483648']) recursoNoExiste(await aprobar(id));
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('un 409 STOCK_INSUFICIENTE (un ajuste negativo dejaría el saldo negativo) deshace TODO: sin movimientos, el conteo sigue EN_REVISION y sin clave; tras reponer stock la MISMA clave da 200', async () => {
+    /* D32(a), D25: los errores no se guardan. El ajuste de p3 (+1, aplicado antes) también se deshace. */
+    const conteo = await enRevision({ saldos: { 3: 1, 5: 10 }, contado: { 3: 2, 5: 2 } });
+    expect((await moverStock('SALIDA', 5, 5)).status).toBe(201);
+    const antes = await foto();
+    stockInsuficiente(await aprobar(conteo.id_conteo, { clave: 'k-neg' }), 'cantidad', 5, 8);
+    expect(await foto()).toEqual(antes);
+    expect((await db('conteos').where({ id_conteo: conteo.id_conteo }).first())).toMatchObject({ estado: 'EN_REVISION', clave_aprobacion: null });
+    expect((await moverStock('ENTRADA', 5, 3)).status).toBe(201);
+    const res = await aprobar(conteo.id_conteo, { clave: 'k-neg' });
+    expect(res.status).toBe(200);
+    expect([await saldoDe(3), await saldoDe(5)]).toEqual([2, 0]);
+  });
+
+  it('bodega INACTIVA → 409 BODEGA_INACTIVA, sin movimientos ni clave (aunque no haya diferencias); al reactivarla, la misma clave da 200', async () => {
+    /* D12, D32(j). */
+    const conDiferencias = await enRevision({ saldos: { 5: 10 }, contado: { 5: 9 } });
+    const sinDiferencias = await enRevision({ saldos: { 6: 4 }, contado: { 6: 4 } });
+    await db('bodegas').where({ id_bodega: b1 }).update({ activa: false });
+    const antes = await foto();
+    esError(await aprobar(conDiferencias.id_conteo, { clave: 'k-ina' }), 409, 'BODEGA_INACTIVA');
+    esError(await aprobar(sinDiferencias.id_conteo, { clave: 'k-ina-0' }), 409, 'BODEGA_INACTIVA');
+    expect(await foto()).toEqual(antes);
+    await db('bodegas').where({ id_bodega: b1 }).update({ activa: true });
+    expect((await aprobar(conDiferencias.id_conteo, { clave: 'k-ina' })).status).toBe(200);
+    expect((await aprobar(sinDiferencias.id_conteo, { clave: 'k-ina-0' })).status).toBe(200);
+  });
+
+  it('un fallo del motor que no es de negocio en el SEGUNDO ajuste → 500 ERROR_INTERNO genérico y el primero también se deshace (conteo EN_REVISION, sin clave)', async () => {
+    /* D18: sin traza ni mensaje; la transacción es una sola. */
+    const conteo = await enRevision({ saldos: { 3: 1, 5: 10 }, contado: { 3: 2, 5: 2 } });
+    const original = stockService.aplicarMovimiento;
+    let llamadas = 0;
+    jest.spyOn(stockService, 'aplicarMovimiento').mockImplementation(async (trx, datos) => {
+      llamadas += 1;
+      if (llamadas === 2) throw new Error('fallo interno simulado');
+      return original(trx, datos);
+    });
+    const antes = await foto();
+    const res = await aprobar(conteo.id_conteo);
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: { codigo: 'ERROR_INTERNO', mensaje: expect.any(String), detalles: [] } });
+    expect(JSON.stringify(res.body)).not.toMatch(/simulado/);
+    expect(llamadas).toBe(2);
+    expect(await foto()).toEqual(antes);
+  });
+});
+
+describe('POST /conteos/{id}/aprobacion: umbral (D13, D32(j))', () => {
+  it('un ajuste que deja el total del producto en 4 con mínimo 5 avisa UNA vez; uno que lo deja en 5 no avisa', async () => {
+    /* Alerta solo si el total de las bodegas es ESTRICTAMENTE menor que el mínimo. */
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 5 });
+    await crearUmbral(db, { idProducto: 6, cantidadMinima: 5 });
+    await crearSaldo(db, { idProducto: 5, idBodega: b2, cantidad: 1 });
+    const conteo = await enRevision({ saldos: { 5: 10, 6: 9 }, contado: { 5: 3, 6: 5 } });
+    expect((await aprobar(conteo.id_conteo)).status).toBe(200);
+    expect(aviso()).toHaveBeenCalledTimes(1);
+    expect(aviso()).toHaveBeenCalledWith(expect.objectContaining({ idProducto: 5, idBodega: b1, cantidadTotal: 4, cantidadMinima: 5 }), expect.any(Object));
+  });
+
+  it('un aviso que RECHAZA o que LANZA no cambia la respuesta (200) y el rechazo tiene manejador (ningún unhandledRejection)', async () => {
+    /* Como en movimientos.test.js: dentro de Jest se comprueba que la promesa rechazada recibe un manejador. */
+    await crearUmbral(db, { idProducto: 5, cantidadMinima: 50 });
+    await crearUmbral(db, { idProducto: 6, cantidadMinima: 50 });
+    const rechazada = Promise.reject(new Error('ms-notificaciones caído'));
+    const then = jest.spyOn(rechazada, 'then');
+    aviso().mockReturnValueOnce(rechazada).mockImplementationOnce(() => { throw new Error('fallo síncrono'); });
+    const conteo = await enRevision({ saldos: { 5: 10, 6: 10 }, contado: { 5: 9, 6: 9 } });
+    const res = await aprobar(conteo.id_conteo);
+    expect(res.status).toBe(200);
+    expect(res.body.movimientos).toHaveLength(2);
+    await new Promise((resolver) => setImmediate(resolver));
+    expect(then.mock.calls.some(([, alRechazar]) => typeof alRechazar === 'function')).toBe(true);
+    expect(aviso()).toHaveBeenCalledTimes(2);
+  });
+
+  it('si evaluarUmbral misma LANZA (un fallo inesperado), la aprobación ya confirmada sigue respondiendo 200 y se evalúan los demás productos', async () => {
+    /* try/catch alrededor de cada evaluación (D32(j)). */
+    const espia = jest.spyOn(movimientoService, 'evaluarUmbral').mockRejectedValueOnce(new Error('roto'));
+    const conteo = await enRevision({ saldos: { 5: 10, 6: 10 }, contado: { 5: 9, 6: 9 } });
+    const res = await aprobar(conteo.id_conteo);
+    expect(res.status).toBe(200);
+    expect(espia).toHaveBeenCalledTimes(2);
+    expect(espia.mock.calls.map(([, datos]) => [datos.idProducto, datos.tipo])).toEqual([[5, 'AJUSTE'], [6, 'AJUSTE']]);
+  });
+});
+
+describe('POST /conteos/{id}/aprobacion: concurrencia (PostgreSQL real)', () => {
+  const sinCincoXX = (respuestas) => expect(respuestas.filter((res) => res.status >= 500).map((res) => res.body)).toEqual([]);
+
+  it('la aprobación bloquea la fila del conteo ANTES de mirar el estado: si otra transacción la tiene y lo aprueba, la aprobación espera y responde 409', async () => {
+    /* D32(d), determinista con esperarBloqueo. */
+    const conteo = await enRevision({ saldos: { 5: 10 }, contado: { 5: 10 } });
+    const otra = await db.transaction();
+    let pendiente;
+    try {
+      await otra('conteos').where({ id_conteo: conteo.id_conteo }).forUpdate().first();
+      pendiente = aprobar(conteo.id_conteo).then((res) => res);
+      await esperarBloqueo(db);
+      await otra('conteos').where({ id_conteo: conteo.id_conteo }).update({
+        estado: 'APROBADO', fecha_aprobacion: db.fn.now(), id_usuario_aprueba: 99, clave_aprobacion: '99:con:otra',
+      });
+      await otra.commit();
+    } catch (error) {
+      await otra.rollback().catch(() => {});
+      throw error;
+    }
+    esError(await pendiente, 409, 'CONTEO_ESTADO_INVALIDO');
+  });
+
+  it('6 aprobaciones simultáneas del MISMO conteo con claves distintas → exactamente un 200 y cinco 409 CONTEO_ESTADO_INVALIDO; los ajustes se aplican UNA vez', async () => {
+    /* La fila del conteo serializa las aprobaciones. */
+    const conteo = await enRevision({ saldos: { 3: 4, 5: 10 }, contado: { 3: 6, 5: 7 } });
+    const respuestas = await Promise.all([1, 2, 3, 4, 5, 6].map((i) => aprobar(conteo.id_conteo, { clave: `par-${i}` })));
+    sinCincoXX(respuestas);
+    expect(respuestas.filter((res) => res.status === 200)).toHaveLength(1);
+    expect(respuestas.filter((res) => res.status === 409).map((res) => res.body.error.codigo)).toEqual(Array(5).fill('CONTEO_ESTADO_INVALIDO'));
+    expect([await saldoDe(3), await saldoDe(5)]).toEqual([6, 7]);
+    expect(await db('movimientos').count({ n: '*' })).toEqual([{ n: 2 }]);
+  });
+
+  it('8 aprobaciones simultáneas con la MISMA clave → las 8 responden 200 con los mismos movimientos; los ajustes se aplican UNA vez', async () => {
+    /* Las perdedoras releen clave_aprobacion tras su 409 y responden la original. */
+    const conteo = await enRevision({ saldos: { 3: 4, 5: 10 }, contado: { 3: 6, 5: 7 } });
+    const respuestas = await Promise.all(Array.from({ length: 8 }, () => aprobar(conteo.id_conteo, { clave: 'k-igual' })));
+    sinCincoXX(respuestas);
+    expect(respuestas.map((res) => res.status)).toEqual(Array(8).fill(200));
+    for (const res of respuestas) expect(res.body).toEqual(respuestas[0].body);
+    expect(respuestas[0].body.movimientos).toHaveLength(2);
+    expect([await saldoDe(3), await saldoDe(5)]).toEqual([6, 7]);
+  });
+
+  it('dos aprobaciones simultáneas de DOS conteos de la misma bodega con líneas solapadas (insertadas en orden inverso) → sin interbloqueo: las dos 200', async () => {
+    /* D25c, D32(e): las dos toman los saldos por id_producto ascendente. */
+    for (const idProducto of [1, 2, 3, 4]) await crearSaldo(db, { idProducto, idBodega: b1, cantidad: 20 });
+    const a = await enRevision({ ids: [1, 2, 3, 4], contado: { 1: 21, 2: 19, 3: 22, 4: 18 } });
+    const b = await enRevision({ ids: [4, 3, 2, 1], contado: { 4: 23, 3: 17, 2: 24, 1: 16 } });
+    const respuestas = await Promise.all([aprobar(a.id_conteo), aprobar(b.id_conteo)]);
+    sinCincoXX(respuestas);
+    expect(respuestas.map((res) => res.status)).toEqual([200, 200]);
+    expect([1, 2, 3, 4].map((p) => (a.detalles[p - 1].diferencia + b.detalles[p - 1].diferencia + 20))).toEqual(
+      await Promise.all([1, 2, 3, 4].map((p) => saldoDe(p))),
+    );
+  });
+
+  it('determinista: A ajusta su primer producto y espera a que B quede bloqueado; como B también empieza por el id_producto MENOR, espera a A (no toma otro saldo antes) y las dos terminan', async () => {
+    /* Sin el orden ascendente, B tomaría primero el producto 2 (su primera línea insertada) y A, al pedirlo, cerraría el ciclo (40P01). */
+    for (const idProducto of [1, 2]) await crearSaldo(db, { idProducto, idBodega: b1, cantidad: 20 });
+    const a = await enRevision({ ids: [1, 2], contado: { 1: 21, 2: 22 } });
+    const b = await enRevision({ ids: [2, 1], contado: { 2: 19, 1: 18 } });
+    const original = stockService.aplicarMovimiento;
+    let avisarPrimero;
+    const primeroDeA = new Promise((resolver) => { avisarPrimero = resolver; });
+    let pausado = false;
+    jest.spyOn(stockService, 'aplicarMovimiento').mockImplementation(async (trx, datos) => {
+      const movimiento = await original(trx, datos);
+      if (datos.idConteo === a.id_conteo && !pausado) {
+        pausado = true;
+        avisarPrimero();
+        await esperarBloqueo(db); // B ya espera un saldo que A tiene
+      }
+      return movimiento;
+    });
+    const pedidoA = aprobar(a.id_conteo).then((res) => res);
+    await primeroDeA;
+    const pedidoB = aprobar(b.id_conteo).then((res) => res);
+    const [resA, resB] = await Promise.all([pedidoA, pedidoB]);
+    expect([resA.status, resB.status]).toEqual([200, 200]);
+    expect(resA.body.movimientos.map((m) => m.id_producto)).toEqual([1, 2]);
+    expect(resB.body.movimientos.map((m) => m.id_producto)).toEqual([1, 2]);
+    expect([await saldoDe(1), await saldoDe(2)]).toEqual([19, 21]);
+  });
+
+  it('control del anterior: dos transacciones que toman los MISMOS dos saldos en orden INVERSO sí se interbloquean (40P01); por eso importa el orden', async () => {
+    /* Evidencia de que el interbloqueo es real en PostgreSQL y no un supuesto. Tarda deadlock_timeout (1 s). */
+    for (const idProducto of [1, 2]) await crearSaldo(db, { idProducto, idBodega: b1, cantidad: 20 });
+    const ajuste = (trx, idProducto, clave) => stockService.aplicarMovimiento(trx, {
+      tipo: 'AJUSTE', idProducto, idBodega: b1, cantidad: 1, claveIdempotencia: clave, idUsuario: 7,
+    });
+    const t1 = await db.transaction();
+    const t2 = await db.transaction();
+    try {
+      await ajuste(t1, 1, 'dl-1a');
+      await ajuste(t2, 2, 'dl-2a');
+      const espera1 = ajuste(t1, 2, 'dl-1b').then(() => null, (error) => error);
+      await esperarBloqueo(db);
+      const espera2 = ajuste(t2, 1, 'dl-2b').then(() => null, (error) => error);
+      const errores = (await Promise.all([espera1, espera2])).filter(Boolean);
+      expect(errores.map((error) => error.code)).toEqual(['40P01']);
+    } finally {
+      await t1.rollback().catch(() => {});
+      await t2.rollback().catch(() => {});
+    }
+  });
+
+  it('mezcla adversarial: una aprobación de 9 líneas simultánea con salidas, entradas, ajustes y traslados sobre los MISMOS saldos, con un pool de 3 conexiones: sin 5xx, sin 40P01/40001 y kardex encadenado', async () => {
+    /* D24, D25c, D32(e): ningún ciclo de bloqueos; cada saldo_resultante es el anterior más su cambio. */
+    const configuracion = construirConfigKnex(configDePrueba());
+    const dbChico = knex({ ...configuracion, pool: { min: 0, max: 3 } });
+    const errores = [];
+    const chico = supertest(createApp({
+      db: dbChico, clients, logger: { info() {}, error: (linea) => errores.push(linea) }, env: entornoValido(), now: () => reloj,
+    }));
+    try {
+      const productos = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+      const inicial = {};
+      for (const p of productos) {
+        inicial[`${p}-${b1}`] = 30;
+        inicial[`${p}-${b2}`] = 10;
+        await crearSaldo(db, { idProducto: p, idBodega: b1, cantidad: 30 });
+        await crearSaldo(db, { idProducto: p, idBodega: b2, cantidad: 10 });
+      }
+      await crearLote(db, { idBodega: b1, idProducto: 2, codigoLote: 'A', fechaVencimiento: '2027-01-31', cantidad: 8 });
+      await crearLote(db, { idBodega: b1, idProducto: 4, codigoLote: 'B', fechaVencimiento: '2027-02-28', cantidad: 6 });
+      // Contado: diferencias de los dos signos (y una en 0) sobre los 9 productos.
+      const contado = { 1: 25, 2: 20, 3: 33, 4: 22, 5: 30, 6: 36, 7: 24, 8: 31, 9: 27 };
+      const conteo = await enRevision({ ids: productos, contado });
+      // Traslados ya en tránsito hacia b1 para recibir durante la mezcla.
+      const previos = [];
+      for (const p of [3, 6]) {
+        const res = await request.post('/traslados').set(ADM).set('Idempotency-Key', nuevaClave()).send({ id_producto: p, id_bodega_origen: b2, id_bodega_destino: b1, cantidad: 2 });
+        expect(res.status).toBe(201);
+        previos.push(res.body.id_traslado);
+      }
+      const post = (ruta, cuerpo) => chico.post(ruta).set(ADM).set('Idempotency-Key', nuevaClave()).send(cuerpo);
+      const mov = (tipo, p, cantidad, idBodega = b1) => post('/movimientos', { tipo, id_producto: p, id_bodega: idBodega, cantidad });
+      const pedidos = [
+        aprobar(conteo.id_conteo, { clave: 'k-mezcla', cliente: chico }),
+        aprobar(conteo.id_conteo, { clave: 'k-mezcla', cliente: chico }),
+        ...productos.map((p) => mov('SALIDA', p, 3)),
+        ...productos.filter((p) => p % 2 === 0).map((p) => mov('ENTRADA', p, 2)),
+        ...productos.filter((p) => p % 3 === 0).map((p) => mov('AJUSTE', p, -1)),
+        ...[9, 7, 5, 3, 1].map((p) => post('/traslados', { id_producto: p, id_bodega_origen: b1, id_bodega_destino: b2, cantidad: 2 })),
+        ...[2, 4].map((p) => post('/traslados', { id_producto: p, id_bodega_origen: b2, id_bodega_destino: b1, cantidad: 1 })),
+        ...previos.map((id) => post(`/traslados/${id}/recepcion`, {})),
+        ...productos.map((p) => mov('SALIDA', p, 2)),
+      ];
+      const respuestas = await Promise.all(pedidos);
+      sinCincoXX(respuestas);
+      expect(errores).toEqual([]);
+      for (const res of respuestas) expect([200, 201, 409]).toContain(res.status);
+      for (const res of respuestas.filter((r) => r.status === 409)) expect(res.body.error.codigo).toBe('STOCK_INSUFICIENTE');
+      expect(respuestas.slice(0, 2).map((res) => res.status)).toEqual([200, 200]);
+      expect(respuestas[1].body).toEqual(respuestas[0].body);
+      expect(respuestas[0].body.movimientos.map((m) => [m.id_producto, m.cantidad])).toEqual(
+        conteo.detalles.filter((l) => l.diferencia !== 0).map((l) => [l.id_producto, l.diferencia]),
+      );
+      // Kardex encadenado por (producto, bodega): desde el saldo sembrado, cada saldo_resultante es el anterior más su cambio.
+      for (const p of productos) {
+        for (const idBodega of [b1, b2]) {
+          let saldo = inicial[`${p}-${idBodega}`];
+          for (const fila of await db('movimientos').where({ id_producto: p, id_bodega: idBodega }).orderBy([{ column: 'fecha' }, { column: 'id_movimiento' }])) {
+            saldo += delta(fila.tipo, fila.cantidad);
+            expect({ p, idBodega, id: fila.id_movimiento, saldo: fila.saldo_resultante }).toEqual({ p, idBodega, id: fila.id_movimiento, saldo });
+          }
+          expect(saldo).toBeGreaterThanOrEqual(0);
+          expect(await saldoDe(p, idBodega)).toBe(saldo);
+        }
+      }
+    } finally {
+      await dbChico.destroy();
+    }
   });
 });

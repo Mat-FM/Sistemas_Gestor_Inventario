@@ -1,8 +1,12 @@
-const { e } = require('../errors');
+const { describirError, e } = require('../errors');
 const { cuerpoObjeto, entero, fecha, idRuta, recoger, validarCampos } = require('../http/validate');
 const { requireUser, scopeBodega } = require('../middleware/identity');
 const bodegaRepository = require('../repositories/bodegaRepository');
 const conteoRepository = require('../repositories/conteoRepository');
+const movimientoRepository = require('../repositories/movimientoRepository');
+const { OPERACIONES, claveAlmacenada, derivada, leerClaveIdempotencia } = require('./idempotencia');
+const movimientoService = require('./movimientoService');
+const stockService = require('./stockService');
 
 // Lógica de negocio de los conteos físicos (RF18; RNF13). Un conteo pasa por tres estados (D32(c)):
 // - PROGRAMADO (POST /conteos): nace con una línea por producto y `cantidad_sistema` = el saldo de ese instante;
@@ -204,14 +208,134 @@ async function registrarDetalles({ db }, { idConteo, body, identity }) {
   });
 }
 
+/**
+ * Las líneas que se ajustan al aprobar (D32(a)(b)): las CONTADAS (`cantidad_contada` registrada) con `diferencia ≠ 0`, por
+ * id_producto ascendente (D25c, D32(e): el orden de bloqueo de los saldos; dos aprobaciones de la misma bodega nunca se esperan
+ * en orden cruzado). Las que nunca se contaron se ignoran.
+ */
+const lineasAjustables = (detalles) => detalles
+  .filter((linea) => linea.cantidad_contada !== null && linea.diferencia !== 0)
+  .sort((a, b) => a.id_producto - b.id_producto);
+
+/**
+ * Respuesta de una aprobación ya hecha con esta clave (RNF17, D32(d)): el conteo hallado por `clave_aprobacion` solo es una
+ * repetición si es ESTE; si es OTRO, la clave ya se usó en otra operación → 409 CONFLICTO (devolver la aprobación de otro conteo
+ * sería un error silencioso). Devuelve el conteo en su estado actual (APROBADO, inmutable) con sus movimientos ORIGINALES,
+ * releídos por la clave derivada de cada línea ajustada. Un ajuste que falte es un estado imposible: Error (500).
+ */
+async function repeticionDeAprobacion(db, hallado, idConteo, base) {
+  if (hallado.id_conteo !== idConteo) {
+    throw e.conflicto('CONFLICTO', 'La Idempotency-Key ya se usó en otra operación: la aprobación de otro conteo');
+  }
+  const conteo = await conteoRepository.findById(db, idConteo);
+  const movimientos = [];
+  for (const linea of lineasAjustables(conteo.detalles)) {
+    const movimiento = await movimientoRepository.findByClave(db, derivada(base, linea.id_producto));
+    if (!movimiento) throw new Error(`El conteo ${idConteo} aprobado no tiene el AJUSTE del producto ${linea.id_producto}`);
+    movimientos.push(movimiento);
+  }
+  return { conteo, movimientos, replayed: true };
+}
+
+/**
+ * Relectura tras un fallo de la transacción de la aprobación (como idempotencia.resolverFallo, pero por `clave_aprobacion`, que
+ * existe también cuando no hubo ningún ajuste): otra petición del mismo usuario con la misma clave pudo confirmar entre medias
+ * (aquí llega como 409 CONTEO_ESTADO_INVALIDO, como el 23505 de una clave o como cualquier rechazo del motor). Si la halla, la
+ * respuesta es la de repeticionDeAprobacion; si no (o si la relectura también falla), relanza el MISMO error original.
+ */
+async function resolverFalloDeAprobacion(db, base, idConteo, error) {
+  let hallado;
+  try {
+    hallado = await conteoRepository.findByClaveAprobacion(db, base);
+  } catch {
+    throw error;
+  }
+  if (!hallado) throw error;
+  return repeticionDeAprobacion(db, hallado, idConteo, base);
+}
+
+// Un logger roto no puede cambiar la respuesta de una aprobación ya confirmada.
+function registrarFallo(logger, registro) {
+  try {
+    logger?.error(registro);
+  } catch {
+    // se ignora: registrar es secundario
+  }
+}
+
+/**
+ * Aprueba un conteo (POST /conteos/{id}/aprobacion). Orden (cada paso decide antes que el siguiente):
+ * 1. requireUser: sin X-User-Id → 401. 2. Idempotency-Key: falta, vacía, más de 200 caracteres o con «#» → 400.
+ * 3. {id} de la ruta inválido → 404. 4. `base = claveAlmacenada(idUsuario, OPERACIONES.CONTEO, clave)`.
+ * 5. Repetición (D32(d)): si `clave_aprobacion = base` existe: de ESTE conteo → 200 con el conteo y sus movimientos originales,
+ *    sin ajustes nuevos ni umbral; de OTRO → 409 CONFLICTO. 6. Conteo inexistente → 404.
+ * 7. Transacción (READ COMMITTED). ORDEN DE BLOQUEO (D32(e)): fila del conteo (FOR UPDATE) → saldos de las líneas por id_producto
+ *    ascendente (los toma el motor, uno por AJUSTE) → lotes (FEFO, D27). El estado se mira DESPUÉS de bloquear: no EN_REVISION →
+ *    409 CONTEO_ESTADO_INVALIDO (dos aprobaciones simultáneas: una gana; con la MISMA clave, la perdedora relee y responde 200).
+ *    Bodega inactiva → 409 BODEGA_INACTIVA, también sin diferencias (D12, D32(j)). Por cada línea contada con diferencia ≠ 0,
+ *    un AJUSTE de esa diferencia GUARDADA (con signo, D32(a): no se recalcula contra el saldo actual) con `idConteo` y la clave
+ *    derivada(base, id_producto) (D25d). Después, APROBADO con fecha, usuario y `clave_aprobacion = base` (también sin ajustes).
+ *    Si algo falla (409 STOCK_INSUFICIENTE de un ajuste negativo, 422 de desborde, un 5xx) se deshace TODO: ningún ajuste, el
+ *    conteo sigue EN_REVISION y la clave no se guarda (un reintento con la misma clave se vuelve a ejecutar).
+ * 8. Tras confirmar, el umbral (D13) por cada producto ajustado, fuera de la transacción y dentro de try/catch: el aviso no se
+ *    espera y un fallo solo se registra; nunca cambia la respuesta.
+ * No llama al catálogo: los productos son los del conteo.
+ * @param {{db: object, clients: {notificaciones: object}, logger: object}} deps
+ * @param {{idConteo: string|number, claveIdempotencia: string|undefined, identity: object}} peticion
+ * @returns {Promise<{conteo: Conteo, movimientos: Movimiento[], replayed: boolean}>} movimientos por id_producto
+ */
+async function aprobar(deps, { idConteo, claveIdempotencia, identity }) {
+  const { db, logger } = deps;
+  requireUser(identity);
+  const clave = leerClaveIdempotencia(claveIdempotencia);
+  const id = leerIdConteo(idConteo);
+  const base = claveAlmacenada(identity.idUsuario, OPERACIONES.CONTEO, clave);
+
+  const repetido = await conteoRepository.findByClaveAprobacion(db, base);
+  if (repetido) return repeticionDeAprobacion(db, repetido, id, base);
+  if (!(await conteoRepository.findById(db, id))) throw conteoNoExiste();
+
+  let resultado;
+  try {
+    resultado = await db.transaction(async (trx) => {
+      const conteo = await conteoRepository.bloquearPorId(trx, id); // PRIMER bloqueo; el estado se mira después
+      if (conteo.estado !== 'EN_REVISION') throw estadoInvalido(`El conteo está ${conteo.estado}: solo se aprueba uno EN_REVISION`);
+      const bodega = await bodegaRepository.findById(trx, conteo.id_bodega);
+      if (!bodega.activa) throw e.conflicto('BODEGA_INACTIVA', 'La bodega está inactiva: no admite ajustes');
+      const movimientos = [];
+      for (const linea of lineasAjustables(await conteoRepository.listarDetalles(trx, id))) {
+        movimientos.push(await stockService.aplicarMovimiento(trx, {
+          tipo: 'AJUSTE', idProducto: linea.id_producto, idBodega: conteo.id_bodega, cantidad: linea.diferencia, idConteo: id,
+          claveIdempotencia: derivada(base, linea.id_producto), idUsuario: identity.idUsuario,
+        }));
+      }
+      const aprobado = await conteoRepository.marcarAprobado(trx, id, { idUsuarioAprueba: identity.idUsuario, claveAprobacion: base });
+      if (!aprobado) throw new Error(`El conteo ${id} bloqueado y EN_REVISION no se pudo marcar como aprobado`);
+      return { conteo: await conteoRepository.findById(trx, id), movimientos };
+    });
+  } catch (error) {
+    return resolverFalloDeAprobacion(db, base, id, error);
+  }
+
+  for (const movimiento of resultado.movimientos) {
+    try {
+      await movimientoService.evaluarUmbral(deps, { tipo: 'AJUSTE', idProducto: movimiento.id_producto, idBodega: movimiento.id_bodega, identity });
+    } catch (error) {
+      registrarFallo(logger, { mensaje: 'No se pudo evaluar el umbral tras aprobar el conteo', id_conteo: id, id_producto: movimiento.id_producto, error: describirError(error) });
+    }
+  }
+  return { ...resultado, replayed: false };
+}
+
 /** Servicio con sus dependencias fijadas, para el controlador. Las lee en cada llamada. */
 function crearConteoService(deps = {}) {
   return {
     programar: (peticion) => programar(deps, peticion),
     registrarDetalles: (peticion) => registrarDetalles(deps, peticion),
+    aprobar: (peticion) => aprobar(deps, peticion),
     obtener: (peticion) => obtener(deps, peticion),
     listar: (consulta) => listar(deps, consulta),
   };
 }
 
-module.exports = { programar, registrarDetalles, obtener, listar, crearConteoService };
+module.exports = { programar, registrarDetalles, aprobar, obtener, listar, crearConteoService };

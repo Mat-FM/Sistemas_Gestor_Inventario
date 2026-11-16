@@ -12,6 +12,7 @@ function rutasConteos({ db, clients, logger, now } = {}) {
     { metodo: 'get', ruta: '/conteos', handler: controlador.listar },
     { metodo: 'get', ruta: '/conteos/:id', handler: controlador.obtener },
     { metodo: 'put', ruta: '/conteos/:id/detalles', handler: controlador.registrarDetalles },
+    { metodo: 'post', ruta: '/conteos/:id/aprobacion', handler: controlador.aprobar },
   ];
 }
 

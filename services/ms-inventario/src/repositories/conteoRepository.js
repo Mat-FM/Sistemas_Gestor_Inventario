@@ -151,6 +151,33 @@ async function marcarEnRevision(trx, id) {
   return conteo;
 }
 
+/**
+ * Marca un conteo EN_REVISION como APROBADO, con `fecha_aprobacion = clock_timestamp()` (el instante de la escritura, no el
+ * inicio de la transacción, D24), el usuario que lo aprueba y la clave de la aprobación (`clave_aprobacion`, D5: detecta la
+ * repetición aunque no haya ajustes; única: otra aprobación con la misma clave guardada choca con
+ * `conteos_clave_aprobacion_key`). Solo cambia un conteo que siga EN_REVISION (la condición va en el WHERE); si no, undefined.
+ * @param {{idUsuarioAprueba: number, claveAprobacion: string}} datos la clave tal como se ALMACENA (claveAlmacenada)
+ * @returns {Promise<object|undefined>} la cabecera actualizada (sin la clave)
+ */
+async function marcarAprobado(trx, id, { idUsuarioAprueba, claveAprobacion }) {
+  const [conteo] = await trx(TABLA)
+    .where({ id_conteo: id, estado: 'EN_REVISION' })
+    .update({
+      estado: 'APROBADO', fecha_aprobacion: trx.raw('clock_timestamp()'), id_usuario_aprueba: idUsuarioAprueba, clave_aprobacion: claveAprobacion,
+    })
+    .returning(COLUMNAS);
+  return conteo;
+}
+
+/**
+ * La cabecera del conteo aprobado con esa clave, tal como se ALMACENA (`<id_usuario>:con:<clave>`). Comparación exacta.
+ * @returns {Promise<object|undefined>}
+ */
+async function findByClaveAprobacion(dbOrTrx, claveAprobacion) {
+  return dbOrTrx(TABLA).select(COLUMNAS).where({ clave_aprobacion: claveAprobacion }).first();
+}
+
 module.exports = {
   insertarConteo, insertarDetalles, listarDetalles, findById, listar, bloquearPorId, registrarContados, marcarEnRevision,
+  marcarAprobado, findByClaveAprobacion,
 };

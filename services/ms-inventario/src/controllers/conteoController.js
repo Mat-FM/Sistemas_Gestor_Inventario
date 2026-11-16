@@ -17,7 +17,7 @@ function leerFiltros(query) {
 
 /**
  * Controlador fino de los conteos físicos (RNF13): toma de la petición el cuerpo, el {id} de la ruta y la identidad, llama al
- * servicio y arma la respuesta. El {id} y el cuerpo los valida el servicio (su orden frente al alcance es parte del contrato). La
+ * servicio y arma la respuesta (la aprobación lee además la cabecera Idempotency-Key). El {id} y el cuerpo los valida el servicio (su orden frente al alcance es parte del contrato). La
  * identidad (X-User-Id) también la exige registrarRutas en las escrituras; las lecturas son válidas sin ella (D8).
  * Los métodos no usan `this`: se pasan sueltos como handlers de Express. Un error lanzado, también en `async`, llega al
  * manejador de errores (Express 5).
@@ -46,6 +46,17 @@ function crearConteoController({ conteoService }) {
     // PUT /conteos/{id}/detalles → 200 conteo EN_REVISION con cantidad_sistema y diferencia en cada línea
     async registrarDetalles(req, res) {
       res.json(await conteoService.registrarDetalles({ idConteo: req.params.id, body: req.body, identity: req.identity }));
+    },
+
+    // POST /conteos/{id}/aprobacion + Idempotency-Key → 200 { ...Conteo APROBADO, movimientos: [AJUSTE por id_producto] }, también
+    // cuando es la repetición de la misma aprobación. El {id} lo valida el servicio, DESPUÉS de la clave.
+    async aprobar(req, res) {
+      const { conteo, movimientos } = await conteoService.aprobar({
+        idConteo: req.params.id,
+        claveIdempotencia: req.headers['idempotency-key'],
+        identity: req.identity,
+      });
+      res.json({ ...conteo, movimientos });
     },
   };
 }
