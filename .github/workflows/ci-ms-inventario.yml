@@ -1,0 +1,89 @@
+name: CI ms-inventario
+
+# Pruebas de ms-inventario con cobertura mínima del 60 % (RNF20).
+# Corre en cada pull request que toque el servicio o este mismo archivo. Sigue el esquema de ci-ms-catalogo.yml, con una
+# diferencia: las pruebas de este servicio usan PostgreSQL de verdad (el motor de stock bloquea saldos con SELECT ... FOR UPDATE
+# y hay pruebas de concurrencia que SQLite no podría reproducir), así que el job levanta un servicio postgres:16, el mismo
+# motor que usa el docker-compose.yml. Los otros servicios (ms-catalogo, ms-notificaciones) se simulan: no hace falta ninguno.
+on:
+  pull_request:
+    paths:
+      - 'services/ms-inventario/**'
+      - '.github/workflows/ci-ms-inventario.yml'
+
+# El token solo necesita leer el código.
+permissions:
+  contents: read
+
+# Una ejecución nueva sobre la misma rama cancela la anterior, que ya quedó obsoleta.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/ms-inventario
+
+    # Base de datos desechable: nace con el job y se destruye con él. La contraseña es la de ejemplo de .env.example y no
+    # protege nada (no hay datos ni acceso desde fuera del ejecutor): ningún valor real va en este archivo.
+    # El rol que crea POSTGRES_USER es superusuario, pero a las pruebas les basta CREATEDB: globalSetup crea inventario_test
+    # (si falta) y algunas suites crean y borran bases temporales *_test (D21). Se comprobó con un rol LOGIN CREATEDB sin
+    # superusuario (la suite completa pasa) y sin CREATEDB (globalSetup falla con «permission denied to create database»).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: inventario
+          POSTGRES_PASSWORD: change_me
+          POSTGRES_DB: inventario_db
+        ports:
+          - 5432:5432
+        # Los pasos esperan a que el estado sea «healthy». El -h 127.0.0.1 obliga a comprobar por TCP: sin él pg_isready usa
+        # el socket Unix y el servidor temporal con que la imagen arranca por primera vez (solo escucha ahí) lo daría por listo
+        # antes de que acepte las conexiones del puerto publicado.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U inventario -d inventario_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # Node 22: package.json exige >= 22.9 (npm test usa --env-file-if-exists, que no existe antes).
+      - name: Preparar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/ms-inventario/package-lock.json
+
+      - name: Instalar las dependencias
+        run: npm ci
+
+      # En la CI no hay .env (no se versiona): todo el entorno que necesitan el servicio y las pruebas va aquí, con los
+      # mismos nombres que .env.example. tests/ci.test.js comprueba que no falte ninguno. npm test no lleva --coverage, así que el
+      # umbral global del 60 % de jest.config.js solo se exige con test:cov: si algún porcentaje baja de 60, el paso falla.
+      - name: Ejecutar las pruebas con cobertura mínima del 60 %
+        run: npm run test:cov
+        env:
+          SERVICE_NAME: ms-inventario
+          PORT: '3000'
+          LOG_LEVEL: info
+          # El servicio postgres de arriba. Las pruebas usan TEST_DB_NAME (distinta de DB_NAME, o la guardia D21 se niega).
+          DB_HOST: 127.0.0.1
+          DB_PORT: '5432'
+          DB_NAME: inventario_db
+          DB_USER: inventario
+          DB_PASSWORD: change_me
+          TEST_DB_NAME: inventario_test
+          # Direcciones de los otros servicios: las pruebas usan clientes falsos, pero /health exige que estén definidas.
+          MS_CATALOGO_URL: http://ms-catalogo:8000
+          MS_NOTIFICACIONES_URL: http://ms-notificaciones:5000
+          CALL_TIMEOUT_MS: '3000'
