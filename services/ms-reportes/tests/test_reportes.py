@@ -40,8 +40,9 @@ def datos(servicios):
         {"id_categoria": 3, "nombre": "Aguas", "id_categoria_padre": 2},
         {"id_categoria": 4, "nombre": "Otros", "id_categoria_padre": None},
     ])
-    servicios.responder("/bodegas", [{"id_bodega": 1, "codigo": "B1", "nombre": "Centro"},
-                                     {"id_bodega": 2, "codigo": "B2", "nombre": "Norte"}])
+    servicios.responder("/bodegas", lambda llamada: paginado([{"id_bodega": 1, "codigo": "B1", "nombre": "Centro"},
+                                                              {"id_bodega": 2, "codigo": "B2", "nombre": "Norte"}],
+                                                             llamada))
     servicios.responder("/saldos", lambda llamada: paginado(
         [s for s in SALDOS if llamada["params"].get("id_bodega") in (None, s["id_bodega"])], llamada))
     servicios.responder("/saldos/bajo-umbral", [{"id_producto": 2, "cantidad_total": 0, "cantidad_minima": 5}])

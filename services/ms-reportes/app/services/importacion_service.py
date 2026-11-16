@@ -2,14 +2,15 @@
 
 1. Lee el archivo y valida cada fila con las reglas del servicio destino (errores con su campo).
 2. Convierte la categoría, el producto y la bodega en sus identificadores (llamadas 6 y 7 de la Entrega 2).
-3. Envía las filas válidas al servicio dueño del dato y agrega las que este rechace (sin campo).
+3. Envía las filas válidas al servicio dueño del dato, en bloques de 1 000 como máximo (el límite de la carga inicial de
+   ms-inventario), y agrega las que este rechace (sin campo).
 4. Guarda la importación con sus errores.
 
 Estados: PROCESADA si ninguna fila tiene error; CON_ERRORES si al menos una lo tiene (aunque no se cree ninguna);
-FALLIDA si un servicio no respondió. En ese caso se guarda un error de toda la importación, con numero_fila 0.
+FALLIDA si un servicio no respondió. En ese caso se guarda un error de toda la importación, con numero_fila 0, y
+filas_validas cuenta solo los bloques que el destino alcanzó a confirmar.
 """
 
-import uuid
 from dataclasses import dataclass, field
 
 from app.clients import catalogo, inventario, proveedores
@@ -21,6 +22,7 @@ from app.models import ErrorImportacion, Importacion
 from app.repositories import importacion_repository as repositorio
 
 FILA_GENERAL = 0  # numero_fila del error que no es de una fila sino de toda la importación
+TAMANO_BLOQUE = 1000  # filas por llamada al servicio destino
 
 
 @dataclass
@@ -56,21 +58,25 @@ def importar(tipo: str, nombre_archivo: str, contenido: bytes, id_usuario: int) 
         # 2. Conversión de códigos y nombres en identificadores.
         a_enviar = _convertir(tipo, validas, resultado) if validas else []
 
-        # 3. Envío de las filas válidas.
-        if a_enviar:
+        # 3. Envío de las filas válidas, bloque por bloque.
+        for inicio in range(0, len(a_enviar), TAMANO_BLOQUE):
             enviando = True
-            respuesta = _enviar(tipo, [datos for _, datos in a_enviar])
-            creados = int(respuesta["creados"])
+            bloque = a_enviar[inicio:inicio + TAMANO_BLOQUE]
+            respuesta = _enviar(tipo, [datos for _, datos in bloque])
+            creados_del_bloque = int(respuesta["creados"])
             for rechazo in respuesta["rechazados"]:
-                # `fila` es la posición en la lista enviada, desde 1: se traduce al número de fila del archivo.
-                numero = a_enviar[int(rechazo["fila"]) - 1][0]
-                resultado.agregar(numero, None, str(rechazo["motivo"]))
+                # `fila` es la posición dentro del bloque enviado, desde 1: se traduce al número de fila del archivo.
+                posicion = int(rechazo["fila"])
+                if not 1 <= posicion <= len(bloque):
+                    raise IndexError(posicion)
+                resultado.agregar(bloque[posicion - 1][0], None, str(rechazo["motivo"]))
+            creados += creados_del_bloque
     except ServicioNoDisponible as e:
-        estado, creados = "FALLIDA", 0
+        estado = "FALLIDA"
         resultado.agregar(FILA_GENERAL, None, _mensaje_de_falla(f"{e.servicio} no respondió.", enviando))
     except (KeyError, IndexError, TypeError, ValueError):
         # Un servicio respondió 200 pero con otra forma.
-        estado, creados = "FALLIDA", 0
+        estado = "FALLIDA"
         resultado.agregar(FILA_GENERAL, None, _mensaje_de_falla("Un servicio dio una respuesta no válida.", enviando))
 
     if estado != "FALLIDA" and resultado.filas_con_error:
@@ -168,5 +174,5 @@ def _enviar(tipo: str, filas: list[dict]) -> dict:
         return catalogo.crear_productos(filas)
     if tipo == "PROVEEDORES":
         return proveedores.crear_proveedores(filas)
-    # Una clave por importación: si se reintenta el envío, ms-inventario no duplica los movimientos.
-    return inventario.carga_inicial(filas, str(uuid.uuid4()))
+    # La clave de idempotencia se deriva del contenido del bloque (ver inventario.carga_inicial).
+    return inventario.carga_inicial(filas)

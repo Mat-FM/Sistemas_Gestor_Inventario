@@ -32,7 +32,8 @@ class ServiciosFalsos:
         return [llamada for llamada in self.llamadas if llamada["url"].endswith(ruta)]
 
     def __call__(self, metodo, url, headers=None, timeout=None, params=None, json=None):
-        llamada = {"metodo": metodo, "url": url, "headers": headers or {}, "params": params or {}, "json": json}
+        llamada = {"metodo": metodo, "url": url, "headers": headers or {}, "timeout": timeout, "params": params or {},
+                   "json": json}
         self.llamadas.append(llamada)
         # La ruta más larga primero: /saldos/bajo-umbral antes que /saldos.
         for ruta in sorted(self.respuestas, key=len, reverse=True):
