@@ -1,0 +1,45 @@
+# Lo que no debe entrar a la imagen: dependencias instaladas en el equipo, secretos locales, pruebas y archivos generados.
+# Las dependencias se instalan dentro de la imagen con Composer, y el contenedor no usa Node ni Vite (no sirve vistas).
+#
+# Secretos y basura del sistema, en CUALQUIER carpeta (`**/`) y no solo en la raíz: `COPY . .` copia todo el árbol, y un
+# `config/.env`, un `.DS_Store` (macOS) o un `database/database.sqlite` entrarían en la imagen. Los patrones sin `**/` solo
+# excluyen en la raíz del contexto.
+**/.env
+**/.env.*
+**/.DS_Store
+**/*.log
+**/*.sqlite
+**/*.sqlite-journal
+**/.phpunit.result.cache
+**/.phpunit.cache
+**/node_modules
+**/.git
+
+# Solo en la raíz del contexto.
+# vendor: lo instala Composer dentro de la imagen, sin los paquetes de desarrollo.
+vendor
+# bootstrap/cache: el packages.php del equipo nombra paquetes de desarrollo (pail, collision...) que la imagen no tiene. Composer
+# lo regenera al construir (`dump-autoload --no-dev`), así que esto es una defensa: la imagen no depende del estado del equipo.
+# Se excluyen los archivos y no la carpeta, que sí hace falta.
+bootstrap/cache/*.php
+# storage: lo que el equipo acumula (registros, vistas compiladas, caché, cargas). El Dockerfile crea las carpetas vacías.
+storage/framework
+storage/logs
+storage/app
+tests
+phpunit.xml
+package.json
+vite.config.js
+.npmrc
+resources/css
+resources/js
+.editorconfig
+.gitattributes
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+
+# No excluir, porque la imagen los lee en ejecución: openapi.yaml y resources/docs/ (los sirve /docs; sin ellos responde 500),
+# lang/ (los mensajes en español), config/, routes/, app/, bootstrap/, public/ (con su .htaccess), artisan, composer.json y
+# composer.lock, y database/migrations y database/seeders (las ejecuta `php artisan migrate --seed`).
