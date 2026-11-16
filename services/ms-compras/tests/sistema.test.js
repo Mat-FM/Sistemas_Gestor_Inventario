@@ -32,3 +32,25 @@ test('migrar dos veces no falla ni repite migraciones', async () => {
   const { rows } = await pool.query('SELECT count(*)::int AS n FROM migracion');
   expect(rows[0].n).toBe(1);
 });
+
+describe('errores de la base de datos', () => {
+  const { manejarErrores } = require('../src/middleware/errores');
+  const responder = () => {
+    const res = { status: jest.fn(() => res), json: jest.fn(() => res) };
+    return res;
+  };
+
+  test('el pool lleno responde 503 en vez de colgar o dar 500', () => {
+    const res = responder();
+    manejarErrores(new Error('timeout exceeded when trying to connect'), { contexto: {} }, res, () => {});
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json.mock.calls[0][0].error.codigo).toBe('SERVICIO_NO_DISPONIBLE');
+  });
+
+  test('esperar demasiado el candado de una orden responde 409 ORDEN_OCUPADA', () => {
+    const res = responder();
+    manejarErrores(Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }), { contexto: {} }, res, () => {});
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].error.codigo).toBe('ORDEN_OCUPADA');
+  });
+});
