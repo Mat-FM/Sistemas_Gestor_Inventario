@@ -387,6 +387,16 @@ const ADICIONALES = [
       await crearSaldo(db, { idProducto: 25, idBodega: b2, cantidad: 9 });
       return { ruta: '/saldos', consulta: { id_producto: 25 }, cabeceras: operador(b1) };
     } },
+  { op: 'GET /saldos', titulo: 'un saldo agotado (0) sigue en el listado', estado: 200,
+    preparar: async () => { await crearSaldo(db, { idProducto: 25, idBodega: b1, cantidad: 0 }); return { ruta: '/saldos', consulta: { id_producto: 25 } }; },
+    verificar: (res) => expect(res.body.datos.map((saldo) => saldo.cantidad_disponible)).toEqual([0]) },
+  { op: 'GET /lotes', titulo: 'sin con_existencia devuelve un lote en 0', estado: 200,
+    preparar: async () => {
+      await crearSaldo(db, { idProducto: 25, idBodega: b1, cantidad: 0 });
+      await crearLote(db, { idBodega: b1, idProducto: 25, codigoLote: 'L-0', fechaVencimiento: '2027-03-01', cantidad: 0 });
+      return { ruta: '/lotes', consulta: { id_producto: 25 } };
+    },
+    verificar: (res) => expect(res.body.datos.map((lote) => lote.cantidad_disponible)).toEqual([0]) },
   { op: 'GET /saldos/bajo-umbral', titulo: 'ningún producto bajo el umbral es una lista vacía', estado: 200, admiteVacios: true,
     preparar: async () => ({ ruta: '/saldos/bajo-umbral' }) },
   { op: 'GET /lotes', titulo: 'sin filtros incluye el lote sin fecha de vencimiento (fecha null)', estado: 200,
@@ -686,6 +696,7 @@ describe('conformidad: más respuestas reales (repeticiones idempotentes, errore
     }
     expect({ op: adicional.op, estado: res.status, cuerpo: res.body }).toEqual({ op: adicional.op, estado: adicional.estado, cuerpo: res.body });
     comprobarRespuesta(adicional.op, res, { admiteVacios: adicional.admiteVacios });
+    if (adicional.verificar) adicional.verificar(res);
     escenariosEjecutados += 1;
   });
 
@@ -728,6 +739,8 @@ describe('conformidad: cobertura de los estados declarados', () => {
 const resolverEsquema = (esquema) => (esquema?.$ref ? documento.components.schemas[esquema.$ref.split('/').pop()] : esquema);
 const OPERACIONES_DE_ESCRITURA = () => Object.keys(PRINCIPALES).filter((clave) => !clave.startsWith('GET '));
 const CON_CUERPO = () => Object.keys(PRINCIPALES).filter((clave) => operacionesPorClave[clave].operacion.requestBody !== undefined);
+// Toda escritura pasa por el analizador de JSON, tenga o no un cuerpo útil: puede dar 400, 413 y 415, y el documento los declara en cada una.
+const ESCRITURAS = () => Object.keys(PRINCIPALES).filter((clave) => !clave.startsWith('GET '));
 const LIMITE_GENERAL = () => documento.info['x-tamano-maximo-cuerpo-bytes'];
 
 const ESTADO_422 = (res, campo) => {
@@ -847,6 +860,7 @@ describe('conformidad generada: cuerpos de petición', () => {
     if (esquema.maximum !== undefined) lista.push([`${esquema.maximum + 1} supera el máximo`, esquema.maximum + 1]);
     if (esquema.type === 'integer' && esquema.maximum === undefined) lista.push(['supera el techo del INTEGER', 2147483648]);
     if (esquema.minLength >= 1) lista.push(['un texto vacío', '']);
+    if (esquema.type === 'string' && esquema.minLength >= 1) lista.push(['un texto de solo espacios (el servicio recorta antes de medir)', '   ']);
     if (esquema.maxLength !== undefined) lista.push([`${esquema.maxLength + 1} caracteres`, 'a'.repeat(esquema.maxLength + 1)]);
     if (esquema.format === 'date') lista.push(['una fecha imposible', '2026-02-30'], ['un texto que no es una fecha', 'no-es-fecha']);
     if (esquema.type === 'array') {
@@ -1076,7 +1090,7 @@ describe('conformidad generada: límites del cuerpo', () => {
     return `${apertura}${'a'.repeat(bytes - Buffer.byteLength(apertura) - Buffer.byteLength(cierre))}${cierre}`;
   }
 
-  it.each(CON_CUERPO().filter((clave) => clave !== 'POST /internas/saldos/carga-inicial'))('%s: admite hasta 100 kB (el límite documentado) y por encima responde 413 PETICION_MAL_FORMADA', async (clave) => {
+  it.each(ESCRITURAS().filter((clave) => clave !== 'POST /internas/saldos/carga-inicial'))('%s: admite hasta 100 kB (el límite documentado) y por encima responde 413 PETICION_MAL_FORMADA', async (clave) => {
     const peticion = await PRINCIPALES[clave].preparar();
     const nueva = () => (peticion.clave === undefined ? {} : { clave: claveNueva() });
     const justo = await enviar(clave, peticion, { cuerpoCrudo: cuerpoDeBytes(LIMITE_GENERAL()), ...nueva() });
@@ -1099,7 +1113,7 @@ describe('conformidad generada: límites del cuerpo', () => {
     expect(medio.status).toBe(200);
   });
 
-  it.each(CON_CUERPO())('%s: un JSON mal formado es 400 y una codificación que no es UTF-8 es 415, los dos PETICION_MAL_FORMADA', async (clave) => {
+  it.each(ESCRITURAS())('%s: un JSON mal formado es 400 y una codificación que no es UTF-8 es 415, los dos PETICION_MAL_FORMADA (también sin usar el cuerpo)', async (clave) => {
     const peticion = await PRINCIPALES[clave].preparar();
     const nueva = peticion.clave === undefined ? {} : { clave: claveNueva() };
     const malo = await enviar(clave, peticion, { cuerpoCrudo: '{"a":', ...nueva });
@@ -1108,6 +1122,29 @@ describe('conformidad generada: límites del cuerpo', () => {
     const latin = await enviar(clave, peticion, { cuerpoCrudo: '{}', tipoContenido: 'application/json; charset=iso-8859-1', ...nueva });
     expect({ clave, estado: latin.status, codigo: latin.body.error?.codigo }).toEqual({ clave, estado: 415, codigo: 'PETICION_MAL_FORMADA' });
     comprobarRespuesta(clave, latin);
+  });
+
+  it.each(ESCRITURAS())('%s: el cuerpo se lee antes de comprobar X-User-Id (JSON ilegible sin X-User-Id es 400, no 401), pero una cabecera de identidad inválida es 401 antes de leerlo', async (clave) => {
+    const peticion = await PRINCIPALES[clave].preparar();
+    const nueva = peticion.clave === undefined ? {} : { clave: claveNueva() };
+    const sinUsuario = await enviar(clave, peticion, { cuerpoCrudo: '{"a":', cabeceras: {}, ...nueva });
+    expect({ clave, estado: sinUsuario.status }).toEqual({ clave, estado: 400 });
+    const inválida = await enviar(clave, peticion, { cuerpoCrudo: '{"a":', cabeceras: { 'X-User-Id': 'abc', 'X-User-Rol': 'ADMINISTRADOR' }, ...nueva });
+    expect({ clave, estado: inválida.status }).toEqual({ clave, estado: 401 });
+  });
+
+  it.each(['GET /saldos', 'GET /health'])('%s: un GET con un cuerpo JSON ilegible, enorme o de otro charset también da 400, 413 o 415 (lo dice «Límites del cuerpo»; los GET no lo declaran)', async (clave) => {
+    const peticion = await PRINCIPALES[clave].preparar();
+    const errores = [
+      [400, await enviar(clave, peticion, { cuerpoCrudo: '{"a":' })],
+      [413, await enviar(clave, peticion, { cuerpoCrudo: JSON.stringify({ relleno: 'a'.repeat(LIMITE_GENERAL()) }) })],
+      [415, await enviar(clave, peticion, { cuerpoCrudo: '{}', tipoContenido: 'application/json; charset=iso-8859-1' })],
+    ];
+    for (const [estado, res] of errores) {
+      expect({ clave, estado: res.status, codigo: res.body.error?.codigo }).toEqual({ clave, estado, codigo: 'PETICION_MAL_FORMADA' });
+    }
+    // Control: el mismo GET sin cuerpo sigue dando su éxito.
+    expect((await enviar(clave, peticion)).status).toBe(200);
   });
 });
 

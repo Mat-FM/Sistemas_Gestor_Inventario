@@ -37,8 +37,8 @@ info:
     limita a la suya y `meta.total` cuenta solo lo de su bodega. `GET /movimientos/{id}` y `GET /conteos/{id}` de otra
     bodega son 403 y no 404. Los demás roles y las llamadas internas no tienen restricción.
 
-    Aplica a `GET /saldos`, al kardex, a los lotes, a los traslados y, de los conteos, a la lectura y al registro de lo
-    contado. **No** aplica a las bodegas, los umbrales, `GET /saldos/bajo-umbral` (totales de todas las bodegas),
+    Aplica a `GET /saldos`, a los movimientos (registro y kardex), a los lotes, a los traslados y, de los conteos, a la
+    lectura y al registro de lo contado. **No** aplica a las bodegas, los umbrales, `GET /saldos/bajo-umbral` (totales de todas las bodegas),
     programar y aprobar un conteo (solo ADMINISTRADOR, lo aplica el Gateway) ni la carga inicial.
 
     ## Formato
@@ -46,7 +46,8 @@ info:
     - JSON en UTF-8. Los campos desconocidos de un cuerpo y los parámetros de consulta desconocidos **se ignoran**.
     - Instantes en ISO 8601 UTC con milisegundos (`2026-11-10T14:32:05.000Z`). Las fechas de un día
       (`fecha_vencimiento`, `fecha_programada`) son `AAAA-MM-DD`.
-    - Cantidades: enteros (productos empacados), con techo de 2 147 483 647. Un decimal o un texto es 422.
+    - Cantidades: enteros (productos empacados), con techo de 2 147 483 647. Un decimal o un texto es 422 (en la carga
+      inicial, la fila se rechaza en `rechazados` y la petición sigue siendo 200).
     - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}` con `?pagina=1&por_pagina=20` (`por_pagina`
       máximo 100). `meta.total` es el de **todas** las filas del filtro, no el de la página. Un parámetro inválido
       (`pagina` menor que 1, `por_pagina` fuera de 1 a 100, un filtro con un valor que no corresponde), repetido o vacío
@@ -63,7 +64,10 @@ info:
 
     Un cuerpo de más de **100 kB** es **413** `PETICION_MAL_FORMADA`; solo `POST /internas/saldos/carga-inicial` admite
     hasta **1 MB**. Un JSON mal formado es 400 y una codificación de caracteres que no sea UTF-8, 415, los dos con el
-    mismo código. Estos tres errores pueden darse en cualquier `POST` o `PUT`, aunque la operación no use el cuerpo.
+    mismo código. Estos tres errores pueden darse en cualquier petición que envíe un cuerpo JSON (también un GET o
+    `/health`), aunque la operación no use el cuerpo; solo las escrituras los declaran en cada operación. El cuerpo se
+    lee antes de comprobar que venga `X-User-Id`: un JSON mal formado, demasiado grande o en otro charset es 400, 413 o 415
+    antes que el 401 por faltar `X-User-Id` (una cabecera de identidad inválida sí se rechaza antes, sin leer el cuerpo).
 
     ## Fechas por día (UTC)
 
@@ -76,8 +80,9 @@ info:
 
     Registrar movimientos, crear y recibir traslados, aprobar un conteo y la carga inicial exigen la cabecera
     `Idempotency-Key` (1 a 200 caracteres sin espacios en los extremos y sin `#`; si falta es 400). Si la misma clave
-    llega otra vez, el servicio devuelve la respuesta original (200) **sin repetir la operación**, aunque el cuerpo sea
-    otro. La clave se acota por **usuario y por operación**: otro usuario, o el mismo usuario en otra operación, no la
+    llega otra vez, el servicio devuelve el resultado ya registrado (200) **sin repetir la operación** (ver cada
+    operación: la creación de un traslado lo devuelve en su estado actual y la carga inicial es idempotente por fila).
+    En los movimientos, los traslados y las recepciones la repetición no mira el cuerpo, aunque sea otro. La clave se acota por **usuario y por operación**: otro usuario, o el mismo usuario en otra operación, no la
     reconoce como repetición (la misma clave sirve para un movimiento y para un traslado sin chocar; crear y recibir un
     traslado con la misma clave son dos operaciones distintas). Los errores no se guardan: tras un 409 o un 422 el
     reintento con la misma clave se vuelve a ejecutar. Quien llama (p. ej. ms-compras) debe reenviar siempre el mismo
@@ -90,8 +95,8 @@ info:
       `CALL_TIMEOUT_MS` (3 s por defecto). Como es una lectura, se reintenta hasta 3 veces con esperas de 0,2, 0,4 y 0,8 s
       (peor caso: unos 13 s). Tras **5 llamadas fallidas seguidas** (una llamada falla cuando agota sus reintentos) se
       deja de llamar durante **30 s**; el estado del cortacircuitos es **por proceso** (con varias copias, cada una lleva
-      el suyo). Si no responde, la operación se rechaza con **503** `SERVICIO_NO_DISPONIBLE` y no cambia nada. Un 404 del
-      catálogo es 404 aquí. Una repetición de una clave de idempotencia ya registrada no llama al catálogo.
+      el suyo). Si no responde, o responde algo que el contrato no prevé (otro 4xx, una redirección o un producto distinto del
+      pedido), la operación se rechaza con **503** `SERVICIO_NO_DISPONIBLE` y no cambia nada. Un 404 del catálogo es 404 aquí. Una repetición de una clave de idempotencia ya registrada no llama al catálogo.
     - **ms-notificaciones** (aviso de stock bajo, sin espera): tras confirmar un movimiento, si el total de las bodegas
       queda por debajo del umbral del producto se avisa sin esperar la respuesta y sin reintentos. Un fallo del aviso solo
       se anota en el registro: nunca cambia la respuesta ni impide el movimiento.
@@ -288,6 +293,8 @@ paths:
         ella no se puede recibir hasta reactivarla.
 
         Es idempotente: inactivar una bodega que ya está inactiva responde 200 con la bodega. No lleva `Idempotency-Key`.
+
+        No usa el cuerpo, pero se lee igual: un JSON ilegible, de más de 100 kB o en otro charset es 400, 413 o 415.
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
@@ -299,8 +306,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Bodega' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoExiste' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /bodegas/{id}/activar:
@@ -313,6 +323,8 @@ paths:
       description: |
         **Roles:** ADMINISTRADOR. Es idempotente: activar una bodega que ya está activa responde 200 con la bodega. No lleva
         `Idempotency-Key`.
+
+        No usa el cuerpo, pero se lee igual: un JSON ilegible, de más de 100 kB o en otro charset es 400, 413 o 415.
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
@@ -324,8 +336,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Bodega' }
+        '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoExiste' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
   /saldos:
@@ -458,7 +473,7 @@ paths:
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '503':
-          description: 'ms-catalogo no responde (red, plazo, error del servicio o cortacircuitos abierto). No se escribió nada.'
+          description: 'ms-catalogo no responde (red, plazo, error del servicio o cortacircuitos abierto) o responde algo que el contrato no prevé. No se escribió nada.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
@@ -472,8 +487,9 @@ paths:
       description: |
         **Roles:** ADMINISTRADOR y OPERADOR_BODEGA; ms-compras (interno) para `ENTRADA_COMPRA` y `DEVOLUCION_PROVEEDOR` (RF04, RF10).
 
-        **Orden de las comprobaciones:** identidad (401) → `Idempotency-Key` (400) → repetición (200) → cuerpo (422; 403 para
-        los tipos reservados) → alcance por bodega (403) → producto en ms-catalogo (404, 503) → transacción (404, 409, 422).
+        **Orden de las comprobaciones** (el cuerpo se lee antes: un JSON mal formado, demasiado grande o en otro charset es
+        400, 413 o 415 antes que la falta de `X-User-Id`): identidad (401) → `Idempotency-Key` (400) → repetición (200) →
+        cuerpo (422; 403 para los tipos reservados) → alcance por bodega (403) → producto en ms-catalogo (404, 503) → transacción (404, 409, 422).
 
         **Tipos.** Por esta ruta se registran `ENTRADA`, `SALIDA`, `AJUSTE`, `DEVOLUCION_CLIENTE`, `ENTRADA_COMPRA` y
         `DEVOLUCION_PROVEEDOR`. `TRASLADO_SALIDA`, `TRASLADO_ENTRADA` y `CARGA_INICIAL` son 403: los crean los traslados y la
@@ -584,7 +600,7 @@ paths:
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '503':
-          description: 'ms-catalogo no responde. No se registró ningún movimiento ni cambió ningún saldo.'
+          description: 'ms-catalogo no responde, o responde algo que el contrato no prevé. No se registró ningún movimiento ni cambió ningún saldo.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
@@ -784,8 +800,9 @@ paths:
         (incluida una nula frente a una fecha), es 409 `CONFLICTO` ahora, antes de sacar nada, porque la recepción fallaría con la
         mercancía en tránsito.
 
-        **Orden de las comprobaciones:** identidad (401) → `Idempotency-Key` (400) → repetición (200) → cuerpo (422, también
-        «misma bodega») → alcance (el operador solo envía desde SU bodega, la de origen: 403) → producto en ms-catalogo (404,
+        **Orden de las comprobaciones** (el cuerpo se lee antes: un JSON mal formado, demasiado grande o en otro charset es
+        400, 413 o 415 antes que la falta de `X-User-Id`): identidad (401) → `Idempotency-Key` (400) → repetición (200) →
+        cuerpo (422, también «misma bodega») → alcance (el operador solo envía desde SU bodega, la de origen: 403) → producto en ms-catalogo (404,
         503; la Tabla 9 no lo lista, pero el servicio lo confirma) → bodegas y lote (404; 409 `BODEGA_INACTIVA` si el origen o el
         destino están inactivos) → transacción (409). No evalúa el umbral.
 
@@ -836,7 +853,7 @@ paths:
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '503':
-          description: 'ms-catalogo no responde. No se creó nada.'
+          description: 'ms-catalogo no responde, o responde algo que el contrato no prevé. No se creó nada.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorNoDisponible' }
@@ -887,7 +904,8 @@ paths:
 
         Suma la cantidad a la bodega de **destino** con un movimiento `TRASLADO_ENTRADA` y deja el traslado `RECIBIDO`. El
         operador de bodega solo recibe en SU bodega, la de destino (otra, 403). Si el traslado llevaba lote, el destino recrea el
-        mismo lote (mismo código y misma fecha de vencimiento); si no, entra como stock sin lote. El cuerpo es opcional:
+        mismo lote (mismo código y misma fecha de vencimiento); si no, entra como stock sin lote. El `movimiento.id_lote` de la
+        respuesta es el lote del DESTINO (el que se recreó allí), mientras que el `id_lote` del traslado es el de origen. El cuerpo es opcional:
         `{observacion?}`. No llama al catálogo ni evalúa el umbral.
 
         **Una sola recepción.** Dos recepciones simultáneas con claves distintas: una gana y la otra recibe 409
@@ -901,8 +919,9 @@ paths:
 
         **Idempotencia.** La recepción tiene su **propia** clave (la de esta petición). Si ya se usó en una recepción de este
         mismo traslado, 200 con el traslado y el movimiento originales; si pertenece a la recepción de **otro** traslado, 409
-        `CONFLICTO`, porque devolver la de otro sería un error silencioso. **Orden:** identidad (401) → clave (400) → `{id}` (404)
-        → repetición → traslado inexistente (404) → alcance (403) → cuerpo (422) → transacción (409, 422).
+        `CONFLICTO`, porque devolver la de otro sería un error silencioso. **Orden** (el cuerpo se lee antes: un JSON mal
+        formado, demasiado grande o en otro charset es 400, 413 o 415 antes que la falta de `X-User-Id`): identidad (401) →
+        clave (400) → `{id}` (404) → repetición → traslado inexistente (404) → alcance (403) → cuerpo (422) → transacción (409, 422).
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
@@ -1078,7 +1097,7 @@ paths:
         deja el mismo resultado (salvo que el saldo haya cambiado, y entonces lo correcto es la foto nueva).
 
         El operador de bodega solo registra lo contado en los conteos de su bodega (otro, o sin bodega asignada, 403).
-        **Orden:** identidad (401) → `{id}` (404) → tope y alcance sin bodega (422, 403) → conteo inexistente (404) → alcance (403)
+        **Orden:** identidad (401) → `{id}` (404) → alcance sin bodega y tope (403, 422) → conteo inexistente (404) → alcance (403)
         → cuerpo (422) → transacción (409, 422).
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
@@ -1144,6 +1163,8 @@ paths:
         **Idempotencia.** Con la misma clave y el mismo conteo se devuelve 200 con el conteo y sus movimientos **originales**, sin
         nuevos ajustes ni nueva evaluación del umbral, también cuando no hubo diferencias. Una clave que se usó para aprobar **otro**
         conteo es 409 `CONFLICTO`. La respuesta nunca trae la clave guardada.
+
+        No usa el cuerpo, pero se lee igual: un JSON ilegible, de más de 100 kB o en otro charset es 400, 413 o 415.
       parameters:
         - $ref: '#/components/parameters/UsuarioIdEscritura'
         - $ref: '#/components/parameters/UsuarioRolEscritura'
@@ -1166,6 +1187,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorConflicto' }
+        '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
+        '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
         '422':
           description: 'Un ajuste haría que un saldo superara 2 147 483 647 (`campo` `cantidad`). No se aplica ningún ajuste.'
           content:
@@ -1203,6 +1226,11 @@ paths:
         una consulta busca cuáles de esas claves ya existen: esas filas cuentan como `creados` sin volver a leerse ni a validarse,
         aunque la repetición se solape con la primera ejecución (ms-reportes reintenta tras su plazo con la misma clave mientras el
         servidor sigue trabajando).
+
+        **Una clave nueva vuelve a sumar.** La idempotencia es por clave y por posición de la fila, no por el contenido: reenviar las
+        mismas filas con una `Idempotency-Key` NUEVA las suma otra vez. ms-reportes genera un `uuid4` por importación, así que no
+        debe reenviarse un archivo ya aplicado con otra clave. Con la misma clave, las filas ya aplicadas no se vuelven a leer, pero
+        las que se habían rechazado se leen de nuevo del cuerpo nuevo y se procesan (si ahora cumplen, se aplican).
 
         **Sin catálogo ni umbral.** Es un llamador interno de confianza: no consulta ms-catalogo (ms-reportes ya resolvió los códigos;
         mil llamadas HTTP por carga serían inviables con su plazo de 3 s) ni evalúa el umbral (la carga solo suma).
@@ -1531,7 +1559,7 @@ components:
           additionalProperties: false
           properties:
             codigo: { type: string, enum: [ERROR_INTERNO] }
-            mensaje: { type: string }
+            mensaje: { type: string, enum: ['Error interno del servidor'], description: 'Siempre el mismo texto: nunca el mensaje ni la traza del error.' }
             detalles: { type: array, items: { $ref: '#/components/schemas/ErrorDetalle' } }
       example: { error: { codigo: ERROR_INTERNO, mensaje: Error interno del servidor, detalles: [] } }
 
@@ -1713,8 +1741,8 @@ components:
           properties:
             codigo_lote: { type: string, minLength: 1, maxLength: 50, description: 'Código del lote; distingue mayúsculas de minúsculas.' }
             fecha_vencimiento: { type: string, format: date, description: 'Obligatoria al enviar `lote`. Si el lote ya existe con otra fecha, 409.' }
-        documento_referencia: { type: string, maxLength: 100, nullable: true, description: 'Factura, remisión u otro documento de origen.' }
-        observacion: { type: string, maxLength: 500, nullable: true }
+        documento_referencia: { type: string, minLength: 1, maxLength: 100, nullable: true, description: 'Factura, remisión u otro documento de origen, sin los espacios de los extremos.' }
+        observacion: { type: string, minLength: 1, maxLength: 500, nullable: true, description: 'Texto libre, sin los espacios de los extremos.' }
       example:
         tipo: ENTRADA
         id_producto: 25

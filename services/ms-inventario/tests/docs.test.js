@@ -384,19 +384,38 @@ describe('openapi.yaml: estructura del documento', () => {
     }
   });
 
-  it('cada operación documenta los estados que su forma obliga: 401 y 500 siempre; 404 con {id}; 400/413/415/422 con cuerpo; 400 con Idempotency-Key; 422 con consulta', () => {
-    // Las tres escrituras que no usan el cuerpo no declaran cuerpo ni, por tanto, sus errores 413/415 (solo el 400 de la clave).
-    const SIN_CUERPO = ['POST /bodegas/{id}/inactivar', 'POST /bodegas/{id}/activar', 'POST /conteos/{id}/aprobacion'];
+  it('cada operación documenta los estados que su forma obliga: 401 y 500 siempre; 404 con {id}; 400/413/415 en toda escritura; 422 con cuerpo o consulta; 400 con Idempotency-Key', () => {
+    // express.json lee el cuerpo de TODA petición con Content-Type JSON antes de llegar a la ruta: una escritura, tenga o no cuerpo
+    // útil, puede dar 400 (JSON mal formado), 413 (más de 100 kB; 1 MB en la carga inicial) y 415 (otro charset). Los GET no los
+    // declaran: lo dice la descripción general («Límites del cuerpo»).
+    const ESCRITURAS_SIN_CUERPO = ['POST /bodegas/{id}/inactivar', 'POST /bodegas/{id}/activar', 'POST /conteos/{id}/aprobacion'];
     for (const { clave, metodo, operacion, parametros } of operaciones(documento)) {
       const estados = new Set(Object.keys(operacion.responses));
       const obligados = ['401', '500'];
       if (parametros.some((p) => p.in === 'path')) obligados.push('404');
-      if (operacion.requestBody) obligados.push('400', '413', '415', '422');
+      if (metodo !== 'get') obligados.push('400', '413', '415');
+      if (operacion.requestBody) obligados.push('422');
       if (parametros.some((p) => p.name === 'Idempotency-Key')) obligados.push('400');
       if (parametros.some((p) => p.in === 'query')) obligados.push('422');
-      expect({ clave, declaraCuerpo: Boolean(operacion.requestBody) }).toEqual({ clave, declaraCuerpo: metodo !== 'get' && !SIN_CUERPO.includes(clave) });
+      expect({ clave, declaraCuerpo: Boolean(operacion.requestBody) }).toEqual({ clave, declaraCuerpo: metodo !== 'get' && !ESCRITURAS_SIN_CUERPO.includes(clave) });
       expect({ clave, faltan: obligados.filter((estado) => !estados.has(estado)) }).toEqual({ clave, faltan: [] });
+      if (metodo === 'get') expect({ clave, declaraErroresDeCuerpo: ['413', '415'].filter((estado) => estados.has(estado)) }).toEqual({ clave, declaraErroresDeCuerpo: [] });
     }
+  });
+
+  it('todo texto libre de un cuerpo de petición declara minLength 1 y maxLength: el servicio lo recorta y rechaza el vacío con 422', () => {
+    // Los textos pasan por validate.texto (trim, mínimo 1, máximo el de la columna). Un enum o una fecha no son texto libre.
+    let revisados = 0;
+    for (const { clave, operacion } of operaciones(documento)) {
+      const esquema = esquemaJson(operacion.requestBody);
+      if (!esquema) continue;
+      for (const { donde, esquema: nodo } of esquemasInternos(resolverRef(documento, esquema.$ref), clave)) {
+        if (nodo.type !== 'string' || nodo.enum || nodo.format) continue;
+        revisados += 1;
+        expect({ donde, minLength: nodo.minLength, maxLength: nodo.maxLength }).toEqual({ donde, minLength: 1, maxLength: expect.any(Number) });
+      }
+    }
+    expect(revisados).toBeGreaterThanOrEqual(12); // control: bodegas (7), movimientos (3), recepción (1), carga inicial (1)
   });
 
   it('un 2xx de una operación con Idempotency-Key declara también el 200 de la repetición donde hay una operación nueva (201)', () => {
@@ -595,31 +614,51 @@ describe('openapi.yaml: documenta lo que el encargo exige', () => {
     if (Array.isArray(nodo)) return nodo.flatMap(cadenas);
     return nodo && typeof nodo === 'object' ? Object.values(nodo).flatMap(cadenas) : [];
   };
+  // Sin el formato Markdown (negritas y comillas invertidas): quitar una negrita no cambia el sentido y no debe romper la prueba.
   const texto = (donde) => {
     const origen = donde === 'info' ? documento.info.description : cadenas(operaciones(documento).find(({ operacion }) => operacion.operationId === donde).operacion).join(' ');
-    return origen.replace(/\s+/g, ' ');
+    return origen.replace(/\*\*/g, '').replace(/`/g, '').replace(/\s+/g, ' ');
   };
 
   it.each([
     ['D29: los filtros de fecha son días UTC (inferior 00:00, superior hasta 23:59:59.999)', 'info', [/días UTC/, /00:00:00\.000/, /23:59:59\.999/, /22:00 en Colombia/]],
     ['D29: fecha_desde y fecha_hasta en el kardex', 'listarMovimientos', [/días UTC/, /fecha_desde/, /todo ese día UTC/]],
-    ['D31: la recepción puede fallar con el traslado EN_TRANSITO (destino inactivo, lote con otra fecha, desborde)', 'recibirTraslado', [/BODEGA_INACTIVA/, /CONFLICTO/, /otra\*\* fecha de vencimiento/, /sigue EN_TRANSITO/, /2 147 483 647/]],
-    ['D31: la recepción tiene su propia clave y 409 si es de otro traslado', 'recibirTraslado', [/\*\*propia\*\* clave/, /otro\*\* traslado/, /TRASLADO_YA_RECIBIDO/]],
-    ['D32: la aprobación ajusta con la diferencia guardada, con clave y estados', 'aprobarConteo', [/diferencia guardada al contar/, /CONTEO_ESTADO_INVALIDO/, /Idempotency-Key/, /EN_REVISION/, /otro\*\* conteo/]],
+    ['D31: la recepción puede fallar con el traslado EN_TRANSITO (destino inactivo, lote con otra fecha, desborde)', 'recibirTraslado',
+      [/BODEGA_INACTIVA/, /CONFLICTO/, /otra fecha de vencimiento/, /La recepción puede fallar y el traslado sigue EN_TRANSITO/, /2 147 483 647/]],
+    ['D31: la recepción tiene su propia clave y 409 si es de otro traslado', 'recibirTraslado', [/propia clave/, /otro traslado/, /TRASLADO_YA_RECIBIDO/]],
+    ['D31: el movimiento de la recepción lleva el lote del DESTINO y el traslado el de origen', 'recibirTraslado', [/movimiento\.id_lote de la respuesta es el lote del DESTINO/, /id_lote del traslado es el de origen/]],
+    ['D32: la aprobación ajusta con la diferencia guardada, con clave y estados', 'aprobarConteo', [/diferencia guardada al contar/, /CONTEO_ESTADO_INVALIDO/, /Idempotency-Key/, /EN_REVISION/, /otro conteo/]],
     ['D32: GET /conteos va sin detalles', 'listarConteos', [/sin sus líneas/]],
     ['D33: tope de 1 000 líneas al programar un conteo', 'programarConteo', [/1 000/, /ids_producto/, /por partes/]],
-    ['D33: tope de 1 000 líneas al registrar lo contado', 'registrarDetallesConteo', [/Tope de 1 000 líneas/]],
+    ['D33: tope de 1 000 líneas al registrar lo contado, y el orden real de las comprobaciones (403 antes que 422)', 'registrarDetallesConteo', [/Tope de 1 000 líneas/, /alcance sin bodega y tope \(403, 422\)/]],
     ['D34: carga inicial (solo ms-reportes, 1 000 filas, 1 MB, base 1, clave por fila, sin catálogo ni umbral, identidad, medición)', 'cargarSaldosIniciales',
       [/solo ms-reportes/, /1 000/, /1 MB/, /base 1/, /<id_usuario>:ini:<Idempotency-Key>#<n>/, /X-User-Rol/, /no consulta ms-catalogo/, /ni evalúa el umbral/, /5 s/, /texto libre en español/, /siempre 200/]],
-    ['Lotes D26-D28: fecha obligatoria con lote, el signo decide, mayúsculas, FEFO', 'registrarMovimiento', [/obligatoria\*\* al enviar `lote`/, /signo/, /distingue mayúsculas/, /FEFO/, /CONFLICTO/]],
+    ['D34/Ruling 61: una clave NUEVA vuelve a sumar las mismas filas; las rechazadas se releen del cuerpo nuevo', 'cargarSaldosIniciales',
+      [/Una clave nueva vuelve a sumar/, /por clave y por posición de la fila, no por el contenido/, /uuid4 por importación/, /las que se habían rechazado se leen de nuevo del cuerpo nuevo/]],
+    ['Lotes D26-D28: fecha obligatoria con lote, el signo decide, mayúsculas, FEFO', 'registrarMovimiento', [/obligatoria al enviar lote/, /signo/, /distingue mayúsculas/, /FEFO/, /CONFLICTO/]],
     ['Lotes: vence_antes_de y con_existencia', 'listarLotes', [/vence_antes_de/, /con_existencia/, /estricto/, /FEFO/]],
-    ['Kardex: orden, total exacto y limitación de rendimiento (índice, COUNT, sin instantánea)', 'listarMovimientos', [/fecha` descendente/, /id_movimiento` descendente/, /meta\.total` es exacto/, /movimientos_fecha_id_idx/, /instantánea/, /60 000/, /15 s/]],
-    ['Alcance por bodega: 403 y qué no aplica', 'info', [/X-User-Bodega/, /403/, /GET \/movimientos\/\{id\}/, /bajo-umbral/]],
+    ['Kardex: orden, total exacto y limitación de rendimiento (índice, COUNT, sin instantánea)', 'listarMovimientos',
+      [/fecha descendente/, /id_movimiento descendente/, /meta\.total es exacto/, /movimientos_fecha_id_idx/, /instantánea/, /60 000/, /15 s/]],
+    ['Alcance por bodega: 403, qué aplica (también el registro de movimientos) y qué no', 'info',
+      [/X-User-Bodega/, /403/, /GET \/movimientos\/\{id\}/, /bajo-umbral/, /a los movimientos \(registro y kardex\)/]],
     ['Movimientos de otra bodega son 403 y no 404', 'obtenerMovimiento', [/403/, /no 404/]],
-    ['Idempotencia (RNF17): alcance por usuario y operación, qué devuelve una repetición', 'info', [/usuario y por operación/, /sin repetir la operación/, /Los errores no se guardan/]],
-    ['Resiliencia (RNF18): plazos, reintentos, cortacircuitos, 503', 'info', [/CALL_TIMEOUT_MS/, /0,2, 0,4 y 0,8 s/, /5 llamadas fallidas seguidas/, /30 s/, /por proceso/, /503/]],
-    ['Identidad: lecturas internas sin X-User-Id y X-User-Id sin X-User-Rol', 'info', [/Las \*\*lecturas\*\*/, /X-User-Id` sin `X-User-Rol/, /NetworkPolicy/]],
-    ['Límites de cuerpo: 100 kB y 1 MB', 'info', [/100 kB/, /1 MB/, /413/]],
+    ['Idempotencia (RNF17): alcance por usuario y operación, y qué devuelve una repetición (resultado ya registrado, con sus excepciones)', 'info',
+      [/usuario y por operación/, /resultado ya registrado/, /sin repetir la operación/, /la creación de un traslado lo devuelve en su estado actual/, /la carga inicial es idempotente por fila/, /Los errores no se guardan/]],
+    ['Resiliencia (RNF18): nombra CALL_TIMEOUT_MS, las esperas, el cortacircuitos, el estado por proceso y el 503 (también ante una respuesta que el contrato no prevé)', 'info',
+      [/CALL_TIMEOUT_MS/, /3 s por defecto/, /hasta 3 veces/, /0,2, 0,4 y 0,8 s/, /5 llamadas fallidas seguidas/, /30 s/, /por proceso/, /503/, /algo que el contrato no prevé/]],
+    ['Identidad: lecturas internas sin X-User-Id y X-User-Id sin X-User-Rol', 'info', [/Las lecturas/, /X-User-Id sin X-User-Rol/, /NetworkPolicy/]],
+    ['Límites de cuerpo: 100 kB y 1 MB; el cuerpo de cualquier petición se lee antes que la falta de X-User-Id', 'info',
+      [/100 kB/, /1 MB/, /413/, /cualquier petición que envíe un cuerpo JSON \(también un GET o \/health\)/, /un JSON mal formado, demasiado grande o en otro charset es 400, 413 o 415 antes que el 401/]],
+    ['Formato: cantidades enteras; en la carga inicial una fila inválida se rechaza (no es 422)', 'info', [/Un decimal o un texto es 422/, /la fila se rechaza en rechazados/]],
+    ['Orden de las comprobaciones de las escrituras con clave: el cuerpo se lee antes que la falta de X-User-Id', 'registrarMovimiento', [/el cuerpo se lee antes/, /400, 413 o 415 antes que la falta de X-User-Id/]],
+    ['Orden de las comprobaciones de crearTraslado: ídem', 'crearTraslado', [/el cuerpo se lee antes/, /400, 413 o 415 antes que la falta de X-User-Id/]],
+    ['Orden de las comprobaciones de recibirTraslado: ídem', 'recibirTraslado', [/el cuerpo se lee antes/, /400, 413 o 415 antes que la falta de X-User-Id/]],
+    ['Escrituras sin cuerpo: un cuerpo ilegible igual es 400/413/415', 'inactivarBodega', [/No usa el cuerpo/, /400, 413 o 415/]],
+    ['Escrituras sin cuerpo (activar): ídem', 'activarBodega', [/No usa el cuerpo/, /400, 413 o 415/]],
+    ['Escrituras sin cuerpo (aprobar): ídem', 'aprobarConteo', [/No usa el cuerpo/, /400, 413 o 415/]],
+    ['503 del catálogo: también ante una respuesta que el contrato no prevé (umbral, movimiento y traslado)', 'guardarUmbral', [/algo que el contrato no prevé/]],
+    ['503 del catálogo en POST /movimientos', 'registrarMovimiento', [/algo que el contrato no prevé/]],
+    ['503 del catálogo en POST /traslados', 'crearTraslado', [/algo que el contrato no prevé/]],
     ['Rutas internas: /internas y bajo-umbral solo ADM e internos', 'listarSaldosBajoUmbral', [/solo ADMINISTRADOR/, /internos/, /sin paginar/]],
     ['Traslado: nunca hace FEFO; conflicto de fecha al crear', 'crearTraslado', [/nunca hace FEFO/, /CONFLICTO/, /sin lote/, /en tránsito/]],
     ['Contrato: el 404 de un {id} que no es un entero positivo', 'obtenerBodega', [/entero positivo/, /404/]],
