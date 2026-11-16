@@ -74,6 +74,9 @@ async function cambiarEstado(idOrden, cuerpo) {
     throw ApiError.datosInvalidos([{ campo: 'estado', mensaje: 'Debe ser ENVIADA o ANULADA.' }]);
   }
   await enTransaccion(async (db) => {
+    // El mismo candado que la recepción: si hay una recepción en curso, se espera a que termine, así una
+    // anulación no puede ver «sin recepciones» mientras inventario está registrando la mercancía.
+    await repo.tomarCandadoOrdenEnTransaccion(db, idOrden);
     const orden = await repo.obtener(idOrden, db, { bloquear: true });
     if (!orden) throw ApiError.noEncontrado(`No existe la orden de compra ${idOrden}.`, 'ORDEN_NO_ENCONTRADA');
     const permitidos = TRANSICIONES_MANUALES[orden.estado] || [];
