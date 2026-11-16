@@ -14,7 +14,7 @@ import logging
 import time
 
 import requests
-from flask import current_app, g, has_request_context
+from flask import current_app, g, has_request_context, request
 
 from app.errores import ApiError
 from app.registro import CABECERA
@@ -77,6 +77,11 @@ class ClienteServicio:
         # El mismo identificador de la petición, para seguirla en los registros de los dos servicios (RNF10).
         if has_request_context() and "request_id" in g:
             cabeceras[CABECERA] = g.request_id
+        # La identidad que puso el Gateway se reenvía tal cual: ms-inventario la exige en toda escritura (X-User-Id con su rol).
+        if has_request_context():
+            for nombre in ("X-User-Id", "X-User-Rol"):
+                if request.headers.get(nombre):
+                    cabeceras[nombre] = request.headers[nombre]
 
         intentos = 1 + len(ESPERAS_REINTENTO) if reintentar else 1
         respuesta = None

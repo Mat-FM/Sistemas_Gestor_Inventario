@@ -191,6 +191,31 @@ def test_importa_stock_inicial_desde_excel(client, servicios):
     assert envio["headers"]["Idempotency-Key"]
 
 
+def test_la_identidad_del_gateway_se_reenvia_a_ms_inventario_en_cada_intento(client, servicios, sin_esperas):
+    preparar_stock(servicios)
+    servicios.responder("/internas/saldos/carga-inicial", Respuesta(503))
+    cabeceras = {**USUARIO, "X-User-Rol": "ADMINISTRADOR"}
+
+    subir(client, "stock.csv", b"codigo_producto,codigo_bodega,cantidad,codigo_lote,fecha_vencimiento\n"
+                               b"CAF-500,B-CENTRO,5,,\n", tipo="STOCK_INICIAL", cabeceras=cabeceras)
+
+    envios = servicios.llamadas_a("/internas/saldos/carga-inicial")
+    assert len(envios) == 4
+    assert all(envio["headers"]["X-User-Id"] == "7" and envio["headers"]["X-User-Rol"] == "ADMINISTRADOR"
+               for envio in envios)
+
+
+def test_si_la_peticion_no_trae_el_rol_no_se_inventa_la_cabecera(client, servicios):
+    preparar_stock(servicios)
+    servicios.responder("/internas/saldos/carga-inicial", lote_que_crea_todo)
+
+    subir(client, "stock.csv", b"codigo_producto,codigo_bodega,cantidad,codigo_lote,fecha_vencimiento\n"
+                               b"CAF-500,B-CENTRO,5,,\n", tipo="STOCK_INICIAL")
+
+    envio = servicios.llamadas_a("/internas/saldos/carga-inicial")[0]
+    assert envio["headers"]["X-User-Id"] == "7" and "X-User-Rol" not in envio["headers"]
+
+
 def test_la_carga_inicial_se_reintenta_con_la_misma_clave(client, servicios, sin_esperas):
     preparar_stock(servicios)
     servicios.responder("/internas/saldos/carga-inicial", Respuesta(503))
