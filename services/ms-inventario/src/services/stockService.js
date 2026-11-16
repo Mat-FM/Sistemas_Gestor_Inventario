@@ -54,7 +54,8 @@ const saldoRepository = require('../repositories/saldoRepository');
 //   entre un traslado A→B y otro B→A.
 // - Aprobación de conteos (Tarea 12): los AJUSTE de una misma bodega, por id_producto ascendente; así dos aprobaciones
 //   concurrentes de conteos de la misma bodega que comparten productos no se interbloquean.
-// - Carga inicial (Tarea 13): sus filas, ordenadas igual antes de aplicarlas.
+// - Carga inicial (Tarea 13, D34): NO toma varios saldos en una transacción: cada fila va en la SUYA (éxito parcial e
+//   idempotencia por fila), así que no hay ciclo posible y sus filas no se reordenan.
 
 const ENTERO_MAXIMO = 2147483647;
 const LARGO_CLAVE = 255; // movimientos.clave_idempotencia es varchar(255)
@@ -325,4 +326,4 @@ function planificarFefo(lotes, cantidad) {
   return { asignaciones, restante };
 }
 
-module.exports = { aplicarMovimiento, planificarFefo };
+module.exports = { LARGO_CODIGO_LOTE, aplicarMovimiento, planificarFefo };

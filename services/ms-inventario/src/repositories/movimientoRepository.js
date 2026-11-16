@@ -80,6 +80,20 @@ async function findByClave(dbOrTrx, claveAlmacenada) {
 }
 
 /**
+ * Cuáles de esas claves ya tienen un movimiento: UNA consulta (`clave_idempotencia = ANY(?)`, el arreglo viaja como un solo
+ * parámetro enlazado, nunca concatenado) y no una por clave. La usa la carga inicial (D34(a)) para saber, antes de procesar
+ * hasta 1 000 filas, cuáles ya se aplicaron en una petición anterior con la misma Idempotency-Key. Las claves son las ALMACENADAS
+ * (idempotencia.claveAlmacenada / derivada) y se comparan exactas, sin patrones ni mayúsculas ni espacios.
+ * Es la única función que devuelve `clave_idempotencia`, y solo las claves que le pasaron: nunca sale en una respuesta.
+ * @param {string[]} claves claves almacenadas (una repetida no molesta); con un arreglo vacío no hay coincidencias
+ * @returns {Promise<Set<string>>} las que ya existen
+ */
+async function clavesExistentes(dbOrTrx, claves) {
+  const filas = await dbOrTrx(TABLA).select('clave_idempotencia').whereRaw('clave_idempotencia = ANY(?)', [claves]);
+  return new Set(filas.map((fila) => fila.clave_idempotencia));
+}
+
+/**
  * Una página del kardex (RF10, RF15), del más reciente al más antiguo: `fecha DESC, id_movimiento DESC`. El id desempata las
  * filas con la misma `fecha` (el reloj de la base tiene microsegundos, pero la fecha de una siembra o de un movimiento masivo
  * puede repetirse): sin él, dos páginas seguidas podrían repetir o saltar filas. Devuelve además el total de filas del filtro,
@@ -110,4 +124,4 @@ async function findById(dbOrTrx, id) {
   return dbOrTrx(TABLA).select(COLUMNAS).where({ id_movimiento: id }).first();
 }
 
-module.exports = { RESTRICCION_CLAVE, insert, findByClave, listar, findById };
+module.exports = { RESTRICCION_CLAVE, insert, findByClave, clavesExistentes, listar, findById };

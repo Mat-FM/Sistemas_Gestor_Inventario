@@ -1,3 +1,6 @@
+const { crearCargaInicialController } = require('../controllers/cargaInicialController');
+const { crearCargaInicialService } = require('../services/cargaInicialService');
+
 // Rutas internas (`/internas/*`): las llaman solo otros servicios y el Gateway no las publica (RNF09). Hoy, la carga inicial de
 // saldos que consume ms-reportes (RF16, D34).
 
@@ -10,4 +13,16 @@ const RUTA_CARGA_INICIAL = '/internas/saldos/carga-inicial';
  */
 const LIMITE_CUERPO_CARGA_INICIAL = '1mb';
 
-module.exports = { RUTA_CARGA_INICIAL, LIMITE_CUERPO_CARGA_INICIAL };
+/**
+ * Las operaciones internas de la Tabla 9: la carga inicial de saldos (POST, solo ms-reportes). Devuelve entradas
+ * { metodo, ruta, handler } (ver routes/index.js). Arma sus capas a partir de `deps`: { db, logger }. No toca la base al construirse.
+ * Como toda escritura, exige X-User-Id (D8, D22): lo aplica registrarRutas.
+ */
+function rutasInternas({ db, logger } = {}) {
+  const controlador = crearCargaInicialController({ cargaInicialService: crearCargaInicialService({ db, logger }) });
+  return [
+    { metodo: 'post', ruta: RUTA_CARGA_INICIAL, handler: controlador.cargar },
+  ];
+}
+
+module.exports = { RUTA_CARGA_INICIAL, LIMITE_CUERPO_CARGA_INICIAL, rutasInternas };

@@ -87,6 +87,57 @@ describe('movimientoRepository', () => {
     });
   });
 
+  describe('clavesExistentes (la carga inicial, D34(a))', () => {
+    const sembrar = async (...claves) => {
+      for (const claveIdempotencia of claves) await movimientoRepository.insert(db, fila({ claveIdempotencia }));
+    };
+
+    it('devuelve un Set con SOLO las claves pedidas que existen (una consulta para todas), y un Set vacío si ninguna existe', async () => {
+      await sembrar('7:ini:k#1', '7:ini:k#3', '7:ini:otra#2');
+      const encontradas = await movimientoRepository.clavesExistentes(db, ['7:ini:k#1', '7:ini:k#2', '7:ini:k#3']);
+      expect(encontradas).toBeInstanceOf(Set);
+      expect([...encontradas].sort()).toEqual(['7:ini:k#1', '7:ini:k#3']);
+      expect((await movimientoRepository.clavesExistentes(db, ['7:ini:k#2', '7:ini:k#4'])).size).toBe(0);
+      expect((await movimientoRepository.clavesExistentes(db, [])).size).toBe(0);
+    });
+
+    it('la comparación es EXACTA: sin mayúsculas, sin espacios, sin prefijos ni patrones (%, _), y una clave con comillas, llaves y comas se encuentra tal cual', async () => {
+      /* Control positivo: la clave rara existe y se devuelve; las parecidas no. */
+      const rara = `7:ini:a'b"c,{}\\#1`;
+      await sembrar('7:ini:k#1', rara);
+      expect([...(await movimientoRepository.clavesExistentes(db, [rara]))]).toEqual([rara]);
+      const parecidas = ['7:INI:k#1', '7:ini:K#1', ' 7:ini:k#1', '7:ini:k#1 ', '7:ini:k#', '7:ini:k#%', '7:ini:k#_', '7:ini:k#1,7:ini:k#2', '{7:ini:k#1}', "' OR 1=1 --", '7:ini:k#1\\'];
+      expect((await movimientoRepository.clavesExistentes(db, parecidas)).size).toBe(0);
+    });
+
+    it('una sola consulta aunque sean 1 000 claves, y las claves viajan como parámetro enlazado (nunca en el texto de la sentencia)', async () => {
+      await sembrar('7:ini:centinela-unico#17');
+      const pedidas = Array.from({ length: 1000 }, (_, i) => `7:ini:centinela-unico#${i + 1}`);
+      const consultas = [];
+      const registrar = (consulta) => consultas.push(consulta);
+      db.on('query', registrar);
+      let encontradas;
+      try {
+        encontradas = await movimientoRepository.clavesExistentes(db, pedidas);
+      } finally {
+        db.removeListener('query', registrar);
+      }
+      expect([...encontradas]).toEqual(['7:ini:centinela-unico#17']);
+      expect(consultas).toHaveLength(1);
+      expect(consultas[0].sql).not.toMatch(/centinela/);
+      expect(consultas[0].sql).toMatch(/clave_idempotencia = ANY\(\$1\)/);
+      expect(consultas[0].bindings).toHaveLength(1);
+    });
+
+    it('funciona dentro de una transacción (dbOrTrx): ve lo no confirmado de ella y no lo de otra', async () => {
+      await db.transaction(async (trx) => {
+        await movimientoRepository.insert(trx, fila({ claveIdempotencia: '7:ini:t#1' }));
+        expect([...(await movimientoRepository.clavesExistentes(trx, ['7:ini:t#1']))]).toEqual(['7:ini:t#1']);
+        expect((await movimientoRepository.clavesExistentes(db, ['7:ini:t#1'])).size).toBe(0);
+      });
+    });
+  });
+
   describe('listar (el kardex, RF10 y RF15)', () => {
     let b2;
     const claves = (filas) => filas.map((fila) => fila.id_movimiento);
@@ -278,6 +329,7 @@ describe('movimientoRepository', () => {
 promesasReales(movimientoRepository, {
   insert: [{ tipo: 'ENTRADA', idProducto: 5, idBodega: 1, cantidad: 3, saldoResultante: 3, idUsuario: 7, claveIdempotencia: '7:promesa' }],
   findByClave: ['7:k1'],
+  clavesExistentes: [['7:k1', '7:k2']],
   listar: [{ limit: 10, offset: 0 }],
   findById: [1],
 }, { titulo: 'movimientoRepository', db: () => db });

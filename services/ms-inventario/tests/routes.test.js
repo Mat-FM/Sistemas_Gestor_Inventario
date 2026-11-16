@@ -59,6 +59,9 @@ const TRASLADOS = [
   ['get', '/traslados'],
   ['post', '/traslados/:id/recepcion'],
 ];
+const INTERNAS = [
+  ['post', '/internas/saldos/carga-inicial'],
+];
 const CONTEOS = [
   ['post', '/conteos'],
   ['get', '/conteos'],
@@ -132,6 +135,12 @@ describe('rutasDeclaradas', () => {
   it('incluye las operaciones de conteos de la Tabla 9 y ninguna repetida', () => {
     const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
     for (const [metodo, ruta] of CONTEOS) expect(rutas).toContain(`${metodo} ${ruta}`);
+    expect(new Set(rutas).size).toBe(rutas.length);
+  });
+
+  it('incluye la ruta interna de la carga inicial de saldos (Tabla 9, solo ms-reportes) y ninguna repetida', () => {
+    const rutas = rutasDeclaradas(deps).map(({ metodo, ruta }) => `${metodo} ${ruta}`);
+    for (const [metodo, ruta] of INTERNAS) expect(rutas).toContain(`${metodo} ${ruta}`);
     expect(new Set(rutas).size).toBe(rutas.length);
   });
 
