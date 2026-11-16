@@ -81,3 +81,20 @@ def test_rechaza_un_json_mal_formado_o_que_no_es_objeto(cliente):
     assert malo.json["error"]["codigo"] == "PETICION_INVALIDA"
     lista = cliente.post("/internas/notificaciones", json=[1, 2])
     assert lista.status_code == 400
+
+
+def test_acepta_el_aviso_de_stock_bajo_con_el_contrato_de_ms_inventario(cliente):
+    # Mismo cuerpo que arma ms-inventario en notificacionesClient.js (sin rol_destinatario).
+    res = cliente.post(
+        "/internas/notificaciones",
+        json={
+            "tipo": "STOCK_BAJO",
+            "mensaje": "Stock bajo del producto 25 tras un movimiento en la bodega 2: quedan 3 unidades en total y el mínimo es 10.",
+            "id_producto": 25,
+            "id_bodega": 2,
+        },
+    )
+    assert res.status_code == 202
+    notificacion = res.json["notificacion"]
+    assert (notificacion["tipo"], notificacion["id_producto"], notificacion["id_bodega"]) == ("STOCK_BAJO", 25, 2)
+    assert notificacion["rol_destinatario"] == "ADMINISTRADOR"
