@@ -1,0 +1,10 @@
+# Lo que no debe entrar a la imagen: el entorno virtual, los secretos locales, las pruebas y los archivos generados.
+.venv/
+.env
+tests/
+pytest.ini
+requirements-dev.txt
+**/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/

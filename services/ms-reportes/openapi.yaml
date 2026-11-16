@@ -1,0 +1,505 @@
+openapi: 3.0.3
+
+info:
+  title: ms-reportes
+  version: 1.0.0
+  description: |
+    Microservicio de reportes, panel de indicadores e importación masiva validada (RF11, RF14, RF15, RF16).
+    Implementa las operaciones de la Tabla 12 de la Entrega 2.
+
+    **Rutas internas.** Las rutas aquí descritas son las del servicio, **sin el prefijo `/api`**. Desde fuera del
+    clúster se llaman a través del API Gateway con ese prefijo (por ejemplo, `GET /api/importaciones` llega aquí como
+    `GET /importaciones`). El Gateway verifica el token y el rol antes de reenviar la petición y envía el usuario en
+    la cabecera `X-User-Id`; este servicio no revisa roles.
+
+    ## Convenciones
+
+    - Errores: siempre `{"error": {"codigo", "mensaje", "detalles"}}`. `detalles` es una lista vacía salvo en los 422,
+      donde trae un elemento `{campo, mensaje}` por cada error de validación.
+    - Listados: `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}`, con `?pagina=1&por_pagina=20`
+      (`por_pagina` máximo 100).
+    - Fechas en ISO 8601 (UTC). Los filtros de fecha usan el formato AAAA-MM-DD.
+
+    ## Reportes e indicadores (RF11, RF14, RF15)
+
+    Se calculan en el momento con datos de `ms-inventario`, `ms-catalogo` y `ms-compras` (llamada 6) y no se guardan.
+    Si uno de esos servicios no responde, la respuesta es 503 `SERVICIO_NO_DISPONIBLE`.
+
+    - `?formato` admite `json` (por defecto), `csv` o `pdf`. Con `csv` o `pdf` la respuesta es un archivo para
+      descargar. El CSV está separado por punto y coma, con coma decimal y en UTF-8 con BOM, para abrirse con Excel en
+      español.
+    - Rotación: cuenta solo los movimientos `SALIDA` del periodo. Entran todos los productos ACTIVOS, con 0 si no
+      tuvieron salidas.
+    - Valorización: cantidad en existencia por el precio registrado del producto.
+
+    ## Importación masiva (RF16)
+
+    El servicio lee el archivo, valida cada fila con las reglas del servicio dueño del dato, convierte la categoría,
+    el producto y la bodega en sus identificadores (llamadas a `ms-catalogo` y `ms-inventario`) y envía las filas
+    válidas a ese servicio (llamada 7). Las filas con error quedan en la importación con su número de fila.
+
+    | Tipo | Columnas (Tabla 13) | Servicio que recibe las filas |
+    | --- | --- | --- |
+    | PRODUCTOS | codigo, nombre, descripcion, categoria, unidad_medida, precio | ms-catalogo |
+    | PROVEEDORES | nit, razon_social, nombre_contacto, telefono, correo, direccion | ms-proveedores |
+    | STOCK_INICIAL | codigo_producto, codigo_bodega, cantidad, codigo_lote, fecha_vencimiento | ms-inventario |
+
+    - Formatos: CSV en UTF-8 separado por `,` o `;`, o Excel `.xlsx` (primera hoja).
+    - La fila 1 es el encabezado y debe traer todas las columnas del tipo; no distingue mayúsculas y las columnas de
+      más se ignoran. Las filas vacías se saltan.
+    - `numero_fila` es el número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila`
+      0 es un error de toda la importación.
+    - `categoria` es el nombre de la categoría (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la
+      fila se rechaza. `precio` y `cantidad` admiten coma decimal. `fecha_vencimiento` con el formato AAAA-MM-DD.
+    - Estados: `PROCESADA` (ninguna fila con error), `CON_ERRORES` (al menos una fila con error, aunque no se cree
+      ninguna) y `FALLIDA` (un servicio no respondió).
+
+servers:
+  - url: /
+    description: Este mismo servicio
+
+tags:
+  - name: Reportes
+  - name: Indicadores
+  - name: Importaciones
+  - name: Operación
+
+paths:
+  /reportes/existencias:
+    get:
+      tags: [Reportes]
+      summary: Existencias por producto y bodega
+      description: Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Ordenadas por código y bodega.
+      parameters:
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_categoria
+          in: query
+          description: Productos de esa categoría y de sus subcategorías.
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Existencias (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id_producto: { type: integer, example: 1 }
+                    codigo: { type: string, example: CAF-500 }
+                    nombre: { type: string, example: Café molido 500 g }
+                    id_categoria: { type: integer, example: 2 }
+                    id_bodega: { type: integer, example: 1 }
+                    bodega: { type: string, example: Bodega Centro }
+                    cantidad_disponible: { type: number, example: 12 }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/valorizacion:
+    get:
+      tags: [Reportes]
+      summary: Valorización del inventario
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Valor de cada producto (cantidad en existencia por su
+        precio) y `valor_total`. Sin `id_bodega`, la cantidad es la suma de las dos bodegas.
+      parameters:
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Valorización (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  productos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id_producto: { type: integer, example: 1 }
+                        codigo: { type: string, example: CAF-500 }
+                        nombre: { type: string, example: Café molido 500 g }
+                        cantidad: { type: number, example: 12.5 }
+                        precio: { type: number, example: 18500.5 }
+                        valor: { type: number, example: 231256.25 }
+                  valor_total: { type: number, example: 231256.25 }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/rotacion:
+    get:
+      tags: [Reportes]
+      summary: Productos con mayor y menor rotación
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF11). Ordena los productos ACTIVOS por sus salidas (`SALIDA`)
+        en el periodo; los que no tuvieron salidas cuentan con 0.
+      parameters:
+        - name: fecha_desde
+          in: query
+          required: true
+          schema: { type: string, format: date, example: '2026-11-01' }
+        - name: fecha_hasta
+          in: query
+          required: true
+          schema: { type: string, format: date, example: '2026-11-30' }
+        - name: limite
+          in: query
+          description: Cuántos productos lleva cada lista.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Las dos listas (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mayor_rotacion:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+                  menor_rotacion:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422':
+          description: Faltan las fechas, no son válidas o el rango no es válido (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /reportes/kardex:
+    get:
+      tags: [Reportes]
+      summary: Kardex filtrado
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF15). Los movimientos de `GET /movimientos` de ms-inventario con
+        sus mismos filtros, del más reciente al más antiguo, con el código y el nombre del producto y el nombre de la
+        bodega. Sin paginar.
+      parameters:
+        - name: id_producto
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_bodega
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: id_usuario
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: tipo
+          in: query
+          schema:
+            type: string
+            enum: [ENTRADA, SALIDA, AJUSTE, DEVOLUCION_CLIENTE, ENTRADA_COMPRA, DEVOLUCION_PROVEEDOR, TRASLADO_SALIDA,
+                   TRASLADO_ENTRADA, CARGA_INICIAL]
+        - name: fecha_desde
+          in: query
+          schema: { type: string, format: date }
+        - name: fecha_hasta
+          in: query
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Formato'
+      responses:
+        '200':
+          description: Movimientos (o el archivo CSV o PDF).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id_movimiento: { type: integer, example: 9 }
+                    fecha: { type: string, format: date-time, example: '2026-11-10T10:00:00Z' }
+                    tipo: { type: string, example: SALIDA }
+                    id_producto: { type: integer, example: 1 }
+                    codigo: { type: string, example: CAF-500 }
+                    nombre: { type: string, example: Café molido 500 g }
+                    id_bodega: { type: integer, example: 1 }
+                    bodega: { type: string, example: Bodega Centro }
+                    cantidad: { type: number, example: 4 }
+                    saldo_resultante: { type: number, example: 8 }
+                    id_usuario: { type: integer, example: 7 }
+                    documento_referencia: { type: string, nullable: true, example: FAC-1001 }
+                    observacion: { type: string, nullable: true }
+            text/csv: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /indicadores:
+    get:
+      tags: [Indicadores]
+      summary: Panel de indicadores
+      description: |
+        Roles en el Gateway ADMINISTRADOR y CONTADOR (RF14). Solo JSON. El periodo solo afecta a `mayor_rotacion`: sin
+        `fecha_hasta` termina hoy y sin `fecha_desde` empieza 30 días antes. Los demás indicadores son del momento.
+      parameters:
+        - name: fecha_desde
+          in: query
+          schema: { type: string, format: date }
+        - name: fecha_hasta
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Indicadores.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valor_total: { type: number, description: Valor de todo el inventario., example: 231756.25 }
+                  productos_bajo_umbral: { type: integer, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
+                  productos_agotados:
+                    type: integer
+                    description: Productos ACTIVOS cuya suma en las dos bodegas es 0, también los que no tienen saldo.
+                    example: 2
+                  proximos_a_vencer: { type: integer, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
+                  mayor_rotacion:
+                    type: array
+                    description: Los 5 productos con más salidas en el periodo.
+                    items: { $ref: '#/components/schemas/ProductoRotacion' }
+                  ordenes_pendientes: { type: integer, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+        '422': { $ref: '#/components/responses/DatosNoValidos' }
+        '503': { $ref: '#/components/responses/ServicioNoDisponible' }
+
+  /importaciones:
+    post:
+      tags: [Importaciones]
+      summary: Importar un archivo
+      description: |
+        Rol en el Gateway ADMINISTRADOR. Responde 201 también cuando hay filas con error o un servicio no respondió
+        (`estado` CON_ERRORES o FALLIDA): la importación queda guardada con sus errores. Solo un archivo que no se
+        puede usar (422) no se guarda.
+      parameters:
+        - $ref: '#/components/parameters/XUserId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tipo, archivo]
+              properties:
+                tipo: { $ref: '#/components/schemas/Tipo' }
+                archivo:
+                  type: string
+                  format: binary
+                  description: CSV o Excel (.xlsx).
+      responses:
+        '201':
+          description: Importación procesada, con sus errores.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportacionConErrores' }
+        '400':
+          description: Falta la cabecera `X-User-Id` o no es válida (`PETICION_MAL_FORMADA`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            Faltan `tipo` o `archivo`, el tipo no es válido, el formato no se admite, el archivo no se puede leer,
+            faltan columnas o no tiene filas (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  codigo: DATOS_NO_VALIDOS
+                  mensaje: Los datos enviados no son válidos.
+                  detalles:
+                    - { campo: archivo, mensaje: 'Faltan las columnas: unidad_medida, precio.' }
+    get:
+      tags: [Importaciones]
+      summary: Listar importaciones
+      description: Rol en el Gateway ADMINISTRADOR. Más recientes primero, sin los errores.
+      parameters:
+        - name: tipo
+          in: query
+          schema: { $ref: '#/components/schemas/Tipo' }
+        - $ref: '#/components/parameters/Pagina'
+        - $ref: '#/components/parameters/PorPagina'
+      responses:
+        '200':
+          description: Listado paginado.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos:
+                    type: array
+                    items: { $ref: '#/components/schemas/Importacion' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '422':
+          description: Filtros no válidos (`DATOS_NO_VALIDOS`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /importaciones/{id}:
+    get:
+      tags: [Importaciones]
+      summary: Consultar una importación
+      description: Rol en el Gateway ADMINISTRADOR. Incluye sus errores por fila, ordenados por número de fila.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: id_importacion. Un valor no numérico responde 404.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Importación con sus errores.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportacionConErrores' }
+        '404':
+          description: La importación no existe (`NO_EXISTE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { codigo: NO_EXISTE, mensaje: La importación no existe., detalles: [] }
+
+  /health:
+    get:
+      tags: [Operación]
+      summary: Estado del servicio
+      description: RNF10. Comprueba que la base de datos responde; no consulta a los demás servicios. No pasa por el Gateway.
+      responses:
+        '200':
+          description: El servicio puede atender peticiones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  servicio: { type: string, example: ms-reportes }
+        '503':
+          description: La base de datos no responde (`SERVICIO_NO_DISPONIBLE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    Formato:
+      name: formato
+      in: query
+      schema: { type: string, enum: [json, csv, pdf], default: json }
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      description: Usuario que hace la petición. La pone el API Gateway.
+      schema: { type: integer, minimum: 1 }
+    Pagina:
+      name: pagina
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PorPagina:
+      name: por_pagina
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    ProductoRotacion:
+      type: object
+      properties:
+        id_producto: { type: integer, example: 2 }
+        codigo: { type: string, example: AGU-001 }
+        nombre: { type: string, example: Agua 600 ml }
+        salidas: { type: number, description: Suma de las salidas del periodo., example: 30 }
+
+    Tipo:
+      type: string
+      enum: [PRODUCTOS, PROVEEDORES, STOCK_INICIAL]
+
+    Importacion:
+      type: object
+      properties:
+        id_importacion: { type: integer, example: 1 }
+        tipo: { $ref: '#/components/schemas/Tipo' }
+        nombre_archivo: { type: string, example: productos.csv }
+        estado: { type: string, enum: [PROCESADA, CON_ERRORES, FALLIDA], example: CON_ERRORES }
+        filas_totales: { type: integer, description: Filas con datos leídas del archivo., example: 5 }
+        filas_validas: { type: integer, description: Filas que el servicio destino creó., example: 3 }
+        filas_con_error: { type: integer, description: Filas con al menos un error., example: 2 }
+        id_usuario: { type: integer, description: Usuario del API Gateway que subió el archivo., example: 7 }
+        fecha: { type: string, format: date-time, example: '2026-11-14T23:01:04Z' }
+
+    ImportacionConErrores:
+      allOf:
+        - $ref: '#/components/schemas/Importacion'
+        - type: object
+          properties:
+            errores:
+              type: array
+              items:
+                type: object
+                properties:
+                  numero_fila:
+                    type: integer
+                    description: Fila del archivo (la primera de datos es la 2); 0 es un error de toda la importación.
+                    example: 3
+                  campo:
+                    type: string
+                    nullable: true
+                    description: Columna del archivo. Vacío si el error es de la fila completa o de toda la importación.
+                    example: precio
+                  mensaje: { type: string, example: El campo precio debe ser un número. }
+
+    Meta:
+      type: object
+      properties:
+        pagina: { type: integer, example: 1 }
+        por_pagina: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            codigo: { type: string }
+            mensaje: { type: string }
+            detalles:
+              type: array
+              items:
+                type: object
+                properties:
+                  campo: { type: string }
+                  mensaje: { type: string }
+
+  responses:
+    DatosNoValidos:
+      description: Datos no válidos (`DATOS_NO_VALIDOS`), con un detalle por cada error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServicioNoDisponible:
+      description: Un servicio del que depende el reporte no responde (`SERVICIO_NO_DISPONIBLE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { codigo: SERVICIO_NO_DISPONIBLE, mensaje: ms-inventario no responde. Intente de nuevo más tarde., detalles: [] }
