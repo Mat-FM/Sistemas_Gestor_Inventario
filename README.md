@@ -33,18 +33,25 @@ performance-tests/    Pruebas de rendimiento k6, una carpeta por integrante
 docs/                 Documentos de cada entrega y contratos de API
 bitacoras-ia/         Bitácoras de uso de IA de cada entrega
 .github/workflows/    Integración continua
-docker-compose.yml    Entorno local (por ahora, solo las bases de datos)
+docker-compose.yml    Entorno local: las siete bases de datos, los siete servicios y el cliente web
 ```
 
 ## Entorno local
 
 ```bash
-cp .env.example .env      # cambiar las contraseñas
-docker compose up -d      # levanta las siete bases de datos
+cp .env.example .env      # cambiar las contraseñas y completar los secretos (cada uno trae el comando que lo genera)
+docker compose up -d --build
 ```
+
+Levanta todo el sistema: cada servicio aplica sus migraciones en su propio contenedor antes de arrancar, y el del Gateway siembra al
+primer administrador con `ADMIN_EMAIL` y `ADMIN_PASSWORD`. Quedan publicados, solo en `127.0.0.1`, el **cliente web**
+(`WEB_PORT`, 8080 por defecto) y el **API Gateway** (`GATEWAY_PORT`, 8000; documentación en `/docs`); los microservicios se hablan
+por la red de Compose. Si algún puerto ya lo usa otro proyecto de su equipo, cámbielo en el `.env`.
 
 Puertos de las bases de datos en el equipo local: MySQL 3307 (gateway), 3308 (catálogo), 3309 (proveedores);
 PostgreSQL 5433 (inventario), 5434 (compras), 5435 (notificaciones), 5436 (reportes).
+
+Kubernetes (RNF04): los manifiestos están en [`k8s/`](k8s) con sus instrucciones.
 
 ## Convenciones
 
