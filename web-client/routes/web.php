@@ -7,6 +7,7 @@ use App\Http\Controllers\BodegaController;
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\ConteoController;
 use App\Http\Controllers\DevolucionController;
+use App\Http\Controllers\ImportacionController;
 use App\Http\Controllers\InicioController;
 use App\Http\Controllers\LoteController;
 use App\Http\Controllers\MovimientoController;
@@ -88,6 +89,12 @@ Route::middleware('sesion')->group(function (): void {
         Route::get('/conteos/nuevo', [ConteoController::class, 'crear'])->name('conteos.crear');
         Route::post('/conteos', [ConteoController::class, 'guardar'])->name('conteos.guardar');
         Route::post('/conteos/{id}/aprobacion', [ConteoController::class, 'aprobar'])->whereNumber('id')->name('conteos.aprobar');
+
+        // Importación masiva (RF16).
+        Route::get('/importaciones', [ImportacionController::class, 'index'])->name('importaciones.index');
+        Route::post('/importaciones', [ImportacionController::class, 'guardar'])->name('importaciones.guardar');
+        Route::get('/importaciones/plantilla/{tipo}', [ImportacionController::class, 'plantilla'])->name('importaciones.plantilla');
+        Route::get('/importaciones/{id}', [ImportacionController::class, 'show'])->whereNumber('id')->name('importaciones.show');
 
         // Crear y cambiar de estado las órdenes de compra: solo el administrador.
         Route::get('/compras/ordenes/nuevo', [OrdenCompraController::class, 'create'])->name('compras.ordenes.create');

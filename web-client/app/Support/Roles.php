@@ -47,6 +47,7 @@ final class Roles
         ['ruta' => 'umbrales.index', 'etiqueta' => 'Stock mínimo', 'icono' => 'exclamation-triangle', 'detalle' => 'Cuándo avisar que un producto escasea'],
         ['ruta' => 'usuarios.index', 'etiqueta' => 'Usuarios', 'icono' => 'people', 'detalle' => 'Quién entra al sistema y con qué rol'],
         ['ruta' => 'alertas.edit', 'etiqueta' => 'Alertas', 'icono' => 'bell', 'detalle' => 'Con cuánta anticipación avisar los vencimientos'],
+        ['ruta' => 'importaciones.index', 'etiqueta' => 'Importar datos', 'icono' => 'file-earmark-arrow-up', 'detalle' => 'Cargar productos, proveedores o stock inicial desde un archivo'],
     ];
 
     /**
