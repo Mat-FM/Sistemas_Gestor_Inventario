@@ -1,0 +1,294 @@
+# RNF09: solo el API Gateway y el cliente web reciben tráfico de fuera del clúster. Los microservicios confían en las cabeceras
+# X-User-* que pone el Gateway y no tienen autenticación propia: lo que impide que otro pod las falsifique es esta red cerrada.
+# Requiere un complemento de red que haga cumplir NetworkPolicy (Calico, Cilium...); sin él, estas reglas se aceptan pero no se aplican.
+#
+# 1) Todo lo que entra queda denegado por defecto.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: denegar-entrada-por-defecto
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+
+---
+# 2) Desde fuera, solo el cliente web y el Gateway, y solo desde el controlador de Ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ingress-a-web-client
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web-client
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx   # el espacio de nombres de su controlador de Ingress
+      ports:
+        - port: 8000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ingress-a-api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx   # el espacio de nombres de su controlador de Ingress
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [web-client]}
+      ports:
+        - port: 8000
+
+---
+# ms-inventario: solo lo llaman api-gateway, ms-compras, ms-notificaciones, ms-reportes (Tabla 2 de la Entrega 2 y el Gateway).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-inventario
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-inventario
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway, ms-compras, ms-notificaciones, ms-reportes]}
+      ports:
+        - port: 3000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-catalogo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-catalogo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway, ms-inventario, ms-reportes]}
+      ports:
+        - port: 8000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-proveedores
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-proveedores
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway, ms-catalogo, ms-reportes]}
+      ports:
+        - port: 8000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-compras
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-compras
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway, ms-reportes]}
+      ports:
+        - port: 3000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-notificaciones
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-notificaciones
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway, ms-inventario, ms-compras]}
+      ports:
+        - port: 5000
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-ms-reportes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ms-reportes
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [api-gateway]}
+      ports:
+        - port: 5000
+
+---
+# db-api-gateway: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-api-gateway).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-api-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-api-gateway
+      ports:
+        - port: 3306
+
+---
+# db-ms-catalogo: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-catalogo).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-catalogo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-catalogo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-catalogo
+      ports:
+        - port: 3306
+
+---
+# db-ms-proveedores: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-proveedores).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-proveedores
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-proveedores
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-proveedores
+      ports:
+        - port: 3306
+
+---
+# db-ms-inventario: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-inventario).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-inventario
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-inventario
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-inventario
+      ports:
+        - port: 5432
+
+---
+# db-ms-compras: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-compras).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-compras
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-compras
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-compras
+      ports:
+        - port: 5432
+
+---
+# db-ms-notificaciones: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-notificaciones).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-notificaciones
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-notificaciones
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-notificaciones
+      ports:
+        - port: 5432
+
+---
+# db-ms-reportes: solo la usan los pods de su servicio y su Job de migraciones (los que llevan la etiqueta db=db-ms-reportes).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-db-ms-reportes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-ms-reportes
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              db: db-ms-reportes
+      ports:
+        - port: 5432
