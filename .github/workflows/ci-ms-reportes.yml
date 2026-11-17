@@ -1,0 +1,47 @@
+name: CI ms-reportes
+
+# Pruebas de ms-reportes con cobertura mínima del 60 % (RNF20) y análisis de código con ruff (RNF13).
+# Corre en cada pull request que toque ms-reportes o este mismo archivo. Sigue el esquema de ci-ms-notificaciones.yml.
+on:
+  pull_request:
+    paths:
+      - 'services/ms-reportes/**'
+      - '.github/workflows/ci-ms-reportes.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/ms-reportes
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # Python 3.14, el mismo de la imagen Docker. Las pruebas usan SQLite en memoria y simulan a los demás servicios
+      # (tests/simulacion.py): no hace falta PostgreSQL ni otro servicio.
+      - name: Preparar Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: services/ms-reportes/requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+
+      # Análisis de código (RNF13): ruff con las reglas de errores reales (sintaxis y pyflakes); no impone estilo.
+      - name: Analizar el código con ruff
+        run: ruff check .
+
+      - name: Pruebas con cobertura mínima del 60 %
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=60
