@@ -20,7 +20,7 @@
 
     <div class="tarjeta">
         @if ($fallo)
-            @include('partials.no-disponible', ['texto' => 'No pudimos generar el kardex.'])
+            @include('partials.no-disponible', ['texto' => 'No pudimos generar el kardex. Si hay muchos movimientos, acota por producto, bodega o fechas y vuelve a intentar.'])
         @elseif (! count($filas))
             <div class="nada">No hay movimientos con ese filtro.</div>
         @else
