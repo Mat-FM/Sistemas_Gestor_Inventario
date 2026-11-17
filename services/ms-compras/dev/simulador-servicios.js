@@ -26,7 +26,7 @@ function crearSimulador() {
     });
     req.on('end', () => {
       const url = new URL(req.url, 'http://simulador');
-      let cuerpo = {};
+      let cuerpo;
       try {
         cuerpo = texto ? JSON.parse(texto) : {};
       } catch {
