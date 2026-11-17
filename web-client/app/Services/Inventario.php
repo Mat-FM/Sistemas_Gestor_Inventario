@@ -73,6 +73,36 @@ class Inventario
         return $this->listado('lotes', $filtros);
     }
 
+    /** @return array{datos: list<array<string, mixed>>, meta: array<string, mixed>} Los conteos, sin sus líneas. */
+    public function conteos(array $filtros = []): array
+    {
+        return $this->listado('conteos', $filtros);
+    }
+
+    /** @return array<string, mixed> Un conteo con sus líneas. */
+    public function conteo(int $id): array
+    {
+        return $this->gateway->get("conteos/$id");
+    }
+
+    /** @param  array<string, mixed>  $cuerpo */
+    public function programarConteo(array $cuerpo): array
+    {
+        return $this->gateway->enviar('POST', 'conteos', $cuerpo)->cuerpo;
+    }
+
+    /** @param  list<array{id_producto: int, cantidad_contada: int}>  $detalles */
+    public function registrarConteo(int $id, array $detalles): array
+    {
+        return $this->gateway->enviar('PUT', "conteos/$id/detalles", ['detalles' => $detalles])->cuerpo;
+    }
+
+    /** @return array<string, mixed> El conteo aprobado, con los movimientos de ajuste que generó. */
+    public function aprobarConteo(int $id, string $clave): array
+    {
+        return $this->gateway->enviar('POST', "conteos/$id/aprobacion", [], claveIdempotencia: $clave)->cuerpo;
+    }
+
     /** @param  array<string, mixed>  $cuerpo */
     public function registrarMovimiento(array $cuerpo, string $clave): RespuestaGateway
     {

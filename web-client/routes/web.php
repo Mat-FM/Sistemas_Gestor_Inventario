@@ -5,6 +5,7 @@ use App\Http\Controllers\AlertaController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BodegaController;
 use App\Http\Controllers\CategoriaController;
+use App\Http\Controllers\ConteoController;
 use App\Http\Controllers\DevolucionController;
 use App\Http\Controllers\InicioController;
 use App\Http\Controllers\LoteController;
@@ -53,6 +54,11 @@ Route::middleware('sesion')->group(function (): void {
         Route::post('/traslados', [TrasladoController::class, 'guardar'])->name('traslados.guardar');
         Route::post('/traslados/{id}/recepcion', [TrasladoController::class, 'recibir'])->whereNumber('id')->name('traslados.recibir');
 
+        // Conteos físicos: el operador registra lo contado en su bodega; programar y aprobar son del administrador.
+        Route::get('/conteos', [ConteoController::class, 'index'])->name('conteos.index');
+        Route::get('/conteos/{id}', [ConteoController::class, 'show'])->whereNumber('id')->name('conteos.show');
+        Route::put('/conteos/{id}/detalles', [ConteoController::class, 'registrar'])->whereNumber('id')->name('conteos.registrar');
+
         // Compras: el administrador y el operador (que recibe y devuelve en su bodega).
         Route::prefix('compras')->name('compras.')->group(function (): void {
             Route::get('/ordenes', [OrdenCompraController::class, 'index'])->name('ordenes.index');
@@ -78,6 +84,10 @@ Route::middleware('sesion')->group(function (): void {
         Route::get('/administrar', AdministrarController::class)->name('administrar');
         Route::get('/administrar/alertas', [AlertaController::class, 'edit'])->name('alertas.edit');
         Route::put('/administrar/alertas', [AlertaController::class, 'update'])->name('alertas.update');
+
+        Route::get('/conteos/nuevo', [ConteoController::class, 'crear'])->name('conteos.crear');
+        Route::post('/conteos', [ConteoController::class, 'guardar'])->name('conteos.guardar');
+        Route::post('/conteos/{id}/aprobacion', [ConteoController::class, 'aprobar'])->whereNumber('id')->name('conteos.aprobar');
 
         // Crear y cambiar de estado las órdenes de compra: solo el administrador.
         Route::get('/compras/ordenes/nuevo', [OrdenCompraController::class, 'create'])->name('compras.ordenes.create');

@@ -85,6 +85,11 @@ final class Roles
         ['ruta' => 'reportes.index', 'etiqueta' => 'Reportes y auditoría', 'icono' => 'graph-up', 'detalle' => 'Existencias, valorización, rotación y kardex, con descarga en CSV y PDF'],
     ];
 
+    /** Los conteos físicos: el operador los encuentra en «Stock» y el administrador dentro de «Más». */
+    public const CONTEOS = [
+        ['ruta' => 'conteos.index', 'etiqueta' => 'Conteos físicos', 'icono' => 'clipboard-check', 'detalle' => 'Contar lo que hay en la bodega y ajustar el inventario'],
+    ];
+
     /** Lo de «Compras» que el administrador encuentra dentro de «Más». */
     public const COMPRAS = [
         ['ruta' => 'compras.ordenes.index', 'etiqueta' => 'Órdenes de compra', 'icono' => 'cart3', 'detalle' => 'Pedir a proveedores y recibir la mercancía'],

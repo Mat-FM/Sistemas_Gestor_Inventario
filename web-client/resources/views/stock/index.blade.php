@@ -8,7 +8,12 @@
     @else
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h1 class="h4 mb-0">Stock</h1>
-            @if ($puedeOperar)<a class="btn btn-outline-primary btn-sm" href="{{ route('lotes.index') }}"><i class="bi bi-hourglass-split"></i> Lotes por vencer</a>@endif
+            @if ($puedeOperar)
+                <div class="d-flex flex-wrap gap-2 justify-content-end">
+                    <a class="btn btn-outline-primary btn-sm" href="{{ route('conteos.index') }}"><i class="bi bi-clipboard-check"></i> Conteos</a>
+                    <a class="btn btn-outline-primary btn-sm" href="{{ route('lotes.index') }}"><i class="bi bi-hourglass-split"></i> Lotes por vencer</a>
+                </div>
+            @endif
         </div>
         <form method="get" action="{{ route('stock') }}" role="search" class="mb-3">
             <div class="buscador mb-2">
