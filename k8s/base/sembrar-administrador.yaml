@@ -1,0 +1,60 @@
+# Crea al primer administrador. Se aplica A MANO y UNA sola vez, después de api-gateway-migrar (por eso no está en
+# kustomization.yaml). La contraseña es temporal: el administrador debe cambiarla en su primer inicio de sesión.
+#   kubectl -n gestor-inventario apply -f k8s/base/sembrar-administrador.yaml
+#   kubectl -n gestor-inventario wait --for=condition=complete job/api-gateway-sembrar --timeout=300s
+#   kubectl -n gestor-inventario delete job/api-gateway-sembrar secret/api-gateway-admin
+# Repetirla no duplica nada ni cambia a un administrador que ya existe, pero exige ADMIN_PASSWORD válido cada vez: por eso se borra.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-gateway-sembrar
+  namespace: gestor-inventario
+  labels:
+    app.kubernetes.io/name: api-gateway-sembrar
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway-sembrar
+        db: db-api-gateway
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sembrar
+          image: api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          command: ["php", "artisan", "migrate", "--seed", "--force"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: APP_KEY
+              valueFrom: {secretKeyRef: {name: api-gateway-app, key: APP_KEY}}
+            - name: DB_HOST
+              value: db-api-gateway
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_DATABASE
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: nombre}}
+            - name: DB_USERNAME
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: usuario}}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: clave}}
+            - name: ADMIN_EMAIL
+              valueFrom: {secretKeyRef: {name: api-gateway-admin, key: ADMIN_EMAIL}}
+            - name: ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: api-gateway-admin, key: ADMIN_PASSWORD}}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi

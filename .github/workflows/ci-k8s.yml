@@ -1,0 +1,34 @@
+name: CI k8s
+
+# Revisa los manifiestos de Kubernetes sin necesitar un clúster (RNF04): que kustomize los renderice y que cumplan lo que vigila
+# k8s/verificar.py (Services que apuntan a pods, Secret definidos, recursos para el HPA, solo el Gateway y el cliente web hacia
+# fuera). Corre en cada pull request que toque k8s/ o este mismo archivo.
+on:
+  pull_request:
+    paths:
+      - 'k8s/**'
+      - '.github/workflows/ci-k8s.yml'
+
+# El token solo necesita leer el código.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifiestos:
+    name: Revisar los manifiestos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # kubectl ya viene en el ejecutor y trae kustomize. PyYAML solo lo usa verificar.py.
+      - name: Preparar PyYAML
+        run: pip install pyyaml
+
+      - name: Renderizar y revisar
+        run: kubectl kustomize k8s | python3 k8s/verificar.py

@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-notificaciones
+  labels:
+    app.kubernetes.io/name: ms-notificaciones
+spec:
+  # Una sola copia: aplica sus migraciones al arrancar y su revisión diaria corre dentro del proceso (con dos copias correría dos veces).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ms-notificaciones
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ms-notificaciones
+        db: db-ms-notificaciones
+    spec:
+      # La imagen declara su USER por nombre y no por UID: con runAsNonRoot Kubernetes lo rechaza si no se fija un UID
+      # numérico. Se fija aquí; lo ideal es corregirlo en su Dockerfile con «USER 10001».
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ms-notificaciones
+          image: ms-notificaciones:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: DB_HOST
+              value: "db-ms-notificaciones"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-notificaciones
+                  key: nombre
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-notificaciones
+                  key: usuario
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-notificaciones
+                  key: clave
+            - name: MS_INVENTARIO_URL
+              value: "http://ms-inventario:3000"
+            - name: SMTP_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ms-notificaciones-smtp
+                  key: SMTP_HOST
+                  optional: true
+            - name: SMTP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ms-notificaciones-smtp
+                  key: SMTP_PORT
+                  optional: true
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ms-notificaciones-smtp
+                  key: SMTP_USER
+                  optional: true
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ms-notificaciones-smtp
+                  key: SMTP_PASSWORD
+                  optional: true
+            - name: MAIL_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: ms-notificaciones-smtp
+                  key: MAIL_FROM
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "500m"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

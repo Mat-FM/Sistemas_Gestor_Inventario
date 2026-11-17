@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-proveedores
+  labels:
+    app.kubernetes.io/name: ms-proveedores
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ms-proveedores
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ms-proveedores
+        db: db-ms-proveedores
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ms-proveedores
+          image: ms-proveedores:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ms-proveedores-app
+                  key: APP_KEY
+            - name: DB_HOST
+              value: "db-ms-proveedores"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-proveedores
+                  key: nombre
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-proveedores
+                  key: usuario
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-proveedores
+                  key: clave
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "500m"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

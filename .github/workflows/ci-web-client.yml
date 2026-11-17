@@ -1,0 +1,60 @@
+name: CI web-client
+
+# Pruebas del cliente web con cobertura mínima del 60 %, revisión de estilo con Pint y construcción de la imagen (RNF03, RNF13, RNF20).
+# Corre en cada pull request que toque el cliente web o este mismo archivo.
+on:
+  pull_request:
+    paths:
+      - 'web-client/**'
+      - '.github/workflows/ci-web-client.yml'
+
+# El token solo necesita leer el código.
+permissions:
+  contents: read
+
+# Una ejecución nueva sobre la misma rama cancela la anterior, que ya quedó obsoleta.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web-client
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # pcov mide la cobertura. El cliente web no usa base de datos: las pruebas sustituyen al Gateway con Http::fake().
+      - name: Preparar PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+          extensions: ctype, dom, fileinfo, filter, iconv, libxml, mbstring, openssl, session, tokenizer, xml, xmlwriter
+
+      - name: Instalar las dependencias
+        run: composer install --no-interaction --prefer-dist
+
+      # Análisis de estilo del código (RNF13). Pint ya es una dependencia de desarrollo: no se agrega ninguna herramienta nueva.
+      - name: Revisar el estilo con Pint
+        run: vendor/bin/pint --test
+
+      - name: Ejecutar las pruebas con cobertura mínima del 60 %
+        run: php artisan test --coverage --min=60
+
+  imagen:
+    name: Construir la imagen
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # Comprueba que el Dockerfile construye. No se publica ni se ejecuta (RNF03).
+      - name: Construir la imagen del cliente web
+        run: docker build -t web-client web-client
