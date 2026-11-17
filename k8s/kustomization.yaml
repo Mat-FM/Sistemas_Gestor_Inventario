@@ -1,0 +1,7 @@
+# Todo el sistema: kubectl apply -k k8s   (antes, los Secret: ver k8s/README.md)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base
+  - hpa
