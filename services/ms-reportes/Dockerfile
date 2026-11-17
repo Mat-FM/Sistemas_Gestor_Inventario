@@ -23,9 +23,10 @@ COPY migrations ./migrations
 COPY docs ./docs
 COPY openapi.yaml .
 
-# Se ejecuta con un usuario sin privilegios, no como root.
+# Se ejecuta con un usuario sin privilegios, no como root. Se indica por su UID y no por su nombre: con runAsNonRoot,
+# Kubernetes solo acepta un USER numérico.
 RUN useradd --create-home --uid 10001 servicio
-USER servicio
+USER 10001
 
 # FLASK_APP permite ejecutar `flask db upgrade` dentro del contenedor.
 ENV FLASK_APP=app \
