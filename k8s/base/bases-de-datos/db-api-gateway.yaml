@@ -1,0 +1,83 @@
+# Base de datos propia de api-gateway (RNF02): solo ella la usa y solo se llega desde su servicio (k8s/base/politicas-de-red.yaml).
+# Las credenciales vienen del Secret «db-api-gateway» (ver secretos.example.yaml). Datos en un volumen persistente de 1 GiB: para producción,
+# ajuste storageClassName y el tamaño.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-api-gateway
+  labels:
+    app.kubernetes.io/name: db-api-gateway
+spec:
+  serviceName: db-api-gateway
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: db-api-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-api-gateway
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          ports:
+            - name: bd
+              containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: nombre}}
+            - name: MYSQL_USER
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: usuario}}
+            - name: MYSQL_PASSWORD
+              valueFrom: {secretKeyRef: {name: db-api-gateway, key: clave}}
+            - name: MYSQL_RANDOM_ROOT_PASSWORD
+              value: "yes"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -u\"$MYSQL_USER\" -p\"$MYSQL_PASSWORD\" --silent"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -u\"$MYSQL_USER\" -p\"$MYSQL_PASSWORD\" --silent"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Service sin IP propia (headless): el StatefulSet se llama como en Docker Compose (db-api-gateway) y las aplicaciones lo usan en DB_HOST.
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-api-gateway
+  labels:
+    app.kubernetes.io/name: db-api-gateway
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: db-api-gateway
+  ports:
+    - name: bd
+      port: 3306
+      targetPort: bd
