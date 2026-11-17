@@ -1,6 +1,6 @@
 name: CI ms-notificaciones
 
-# Pruebas de ms-notificaciones con cobertura mínima del 60 % (RNF20).
+# Pruebas de ms-notificaciones con cobertura mínima del 60 % (RNF20) y análisis de código con ruff (RNF13).
 # Corre en cada pull request que toque ms-notificaciones o este mismo archivo.
 on:
   pull_request:
@@ -50,6 +50,10 @@ jobs:
 
       - name: Instalar dependencias
         run: pip install -r requirements-dev.txt
+
+      # Análisis de código (RNF13): ruff con las reglas de errores reales (sintaxis y pyflakes); no impone estilo.
+      - name: Analizar el código con ruff
+        run: ruff check .
 
       - name: Pruebas con cobertura
         env:
