@@ -16,12 +16,12 @@ Interfaz web del sistema para el personal de la distribuidora. Solo se comunica 
 | Movimientos | Administrador, operador (registrar y ver), contador (ver) | Registra **entradas, salidas, devoluciones de cliente y ajustes** (el ajuste exige sentido y motivo; el lote y su vencimiento son opcionales en las entradas) y muestra el historial con nombres y saldo (RF04, RF10, RF13). Una salida avisa de los lotes que ya vencieron |
 | Traslados | Administrador y operador | Envía y recibe mercancía entre bodegas en dos pasos (RF04) |
 | Lotes por vencer | Administrador y operador | Los lotes con existencia que vencen en los próximos 7 a 365 días, del que vence primero al último, con los días que faltan y los ya vencidos marcados (RF17). El operador ve solo su bodega |
+| Conteos físicos | Administrador y operador | El administrador **programa** un conteo de una bodega (todos los productos con existencia, hasta 1.000); el operador de esa bodega **registra lo contado** (puede guardar por partes y repetirlo) y el administrador lo **aprueba**: el inventario se ajusta a lo contado con un movimiento por cada diferencia (RF18). Las líneas sin contar no se tocan. Aprobar lleva clave de idempotencia |
 | Reportes y auditoría | Administrador y contador | **Existencias, valorización, rotación y kardex** en pantalla y para descargar en **CSV y PDF**, tal como los genera `ms-reportes` (RF11, RF15). El kardex filtra por producto, bodega, tipo, fechas y (el administrador) usuario y dibuja los 100 movimientos más recientes; el archivo trae todos |
 | Compras | Administrador y operador | **Órdenes de compra:** crear (administrador), enviar, anular y **recibir la mercancía total o parcialmente**, con lote y vencimiento (RF06). **Devoluciones a proveedor:** salen del inventario de la bodega (RF13). El operador abre por defecto las órdenes de SU bodega y recibe solo en ella |
 | Alertas | Todos | La campana del menú cuenta las alertas sin leer de tu rol; la pantalla las lista con nombres, permite marcarlas como leídas y cada usuario decide si las recibe por correo (RF09, RF17) |
-| Administrar (menú «Más») | Solo el administrador | **Productos** (crear, editar, dar de baja y buscar; RF01, RF12), **categorías** de dos niveles (RF02), **proveedores** y los productos que suministran (RF03), **bodegas** (RF05), **stock mínimo** por producto, **usuarios** con su rol y bodega, contraseña temporal y baja (RF07) y la **configuración de las alertas** (días de anticipación y hora de la revisión diaria) |
+| Administrar (menú «Más») | Solo el administrador | **Productos** (crear, editar, dar de baja y buscar; RF01, RF12), **categorías** de dos niveles (RF02), **proveedores** y los productos que suministran (RF03), **bodegas** (RF05), **stock mínimo** por producto, **usuarios** con su rol y bodega, contraseña temporal y baja (RF07) y la **configuración de las alertas** (días de anticipación y hora de la revisión diaria) y la **importación masiva** de productos, proveedores y stock inicial desde CSV o Excel, con plantillas y los errores fila por fila (RF16) |
 
-Todavía **no** hay pantallas para los conteos físicos (RF18) ni para las importaciones masivas (RF16): sus rutas ya existen en el Gateway y se irán añadiendo.
 
 ## Cómo funciona
 
@@ -96,7 +96,8 @@ Las pruebas sustituyen al Gateway con `Http::fake()` (no necesitan la pila ni el
 
 ## Pendiente
 
-- Pantallas de conteos físicos (RF18) e importaciones (RF16): `ms-reportes` ya importa stock inicial desde que se fusionó el PR #13.
+- Conteos: se cuenta siempre la bodega completa (hasta 1.000 productos con existencia); elegir solo algunos productos (`ids_producto`) todavía no tiene pantalla.
+- Importaciones: el Gateway espera 3 s a `ms-reportes`; un archivo grande puede seguir procesándose cuando la pantalla ya recibió el 503, y entonces se manda al historial para revisarlo antes de volver a subirlo.
 - Los reportes grandes pueden pasar de los 3 s que el Gateway espera a cada servicio y responder 503: la pantalla sugiere acotar el periodo o la bodega.
 - Editar una orden de compra todavía en estado «Creada» (hoy se crea, se envía o se anula).
 - Una salida con lote por elección del usuario (hoy sale primero el lote que vence antes, FEFO) y la devolución de un traslado atascado.
