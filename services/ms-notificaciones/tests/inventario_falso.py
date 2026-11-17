@@ -47,12 +47,12 @@ def crear(estado):
                 limite = consulta.get("vence_antes_de", "9999-12-31")
                 # Como en ms-inventario: el filtro es estricto, con existencia y del que vence primero al último.
                 lotes = [
-                    l
-                    for l in estado.lotes
-                    if l["fecha_vencimiento"] and l["fecha_vencimiento"] < limite
-                    and (consulta.get("con_existencia") != "true" or l.get("cantidad_disponible", 1) > 0)
+                    lote
+                    for lote in estado.lotes
+                    if lote["fecha_vencimiento"] and lote["fecha_vencimiento"] < limite
+                    and (consulta.get("con_existencia") != "true" or lote.get("cantidad_disponible", 1) > 0)
                 ]
-                lotes.sort(key=lambda l: (l["fecha_vencimiento"], l["id_lote"]))
+                lotes.sort(key=lambda lote: (lote["fecha_vencimiento"], lote["id_lote"]))
                 pagina, por_pagina = int(consulta.get("pagina", 1)), int(consulta.get("por_pagina", 20))
                 if por_pagina > 100:
                     return self._responder(
