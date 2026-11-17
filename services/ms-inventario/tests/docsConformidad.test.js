@@ -737,7 +737,6 @@ describe('conformidad: cobertura de los estados declarados', () => {
 // Se parte del escenario de éxito de la operación (los datos ya sembrados) y se cambia UNA cosa por petición.
 // ---------------------------------------------------------------------------------------------------------------------------
 const resolverEsquema = (esquema) => (esquema?.$ref ? documento.components.schemas[esquema.$ref.split('/').pop()] : esquema);
-const OPERACIONES_DE_ESCRITURA = () => Object.keys(PRINCIPALES).filter((clave) => !clave.startsWith('GET '));
 const CON_CUERPO = () => Object.keys(PRINCIPALES).filter((clave) => operacionesPorClave[clave].operacion.requestBody !== undefined);
 // Toda escritura pasa por el analizador de JSON, tenga o no un cuerpo útil: puede dar 400, 413 y 415, y el documento los declara en cada una.
 const ESCRITURAS = () => Object.keys(PRINCIPALES).filter((clave) => !clave.startsWith('GET '));
