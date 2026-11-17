@@ -1,7 +1,6 @@
 # Entorno local: una base de datos por componente (RNF02, RNF03).
-# Por ahora solo levanta las bases de datos. Los servicios se agregarán aquí
-# a medida que cada uno tenga su Dockerfile (la contenerización de los servicios
-# es de una entrega posterior).
+# Levanta las bases de datos y los servicios que ya tienen Dockerfile.
+# Los demás servicios se agregarán aquí a medida que cada uno tenga el suyo.
 #
 # Uso:
 #   cp .env.example .env     # y cambiar las contraseñas
@@ -66,6 +65,11 @@ services:
       - "127.0.0.1:${INVENTARIO_DB_PORT:-5433}:5432"
     volumes:
       - db-ms-inventario:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${INVENTARIO_DB_USER:-inventario} -d ${INVENTARIO_DB_NAME:-inventario_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-compras:
     <<: *postgres
@@ -77,6 +81,11 @@ services:
       - "127.0.0.1:${COMPRAS_DB_PORT:-5434}:5432"
     volumes:
       - db-ms-compras:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${COMPRAS_DB_USER:-compras} -d ${COMPRAS_DB_NAME:-compras_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-notificaciones:
     <<: *postgres
@@ -88,6 +97,11 @@ services:
       - "127.0.0.1:${NOTIFICACIONES_DB_PORT:-5435}:5432"
     volumes:
       - db-ms-notificaciones:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICACIONES_DB_USER:-notificaciones} -d ${NOTIFICACIONES_DB_NAME:-notificaciones_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-reportes:
     <<: *postgres
@@ -99,6 +113,81 @@ services:
       - "127.0.0.1:${REPORTES_DB_PORT:-5436}:5432"
     volumes:
       - db-ms-reportes:/var/lib/postgresql/data
+
+  # ---------- Microservicios ----------
+  # ms-inventario no migra al arrancar: este contenedor aplica las migraciones una sola vez y termina,
+  # y ms-inventario espera a que acabe bien (con varias copias, una sola migración para todas).
+  ms-inventario-migraciones:
+    build: ./services/ms-inventario
+    command: ["node_modules/.bin/knex", "migrate:latest"]
+    restart: "no"
+    environment: &inventario-db
+      DB_HOST: db-ms-inventario
+      DB_PORT: "5432"
+      DB_NAME: ${INVENTARIO_DB_NAME:-inventario_db}
+      DB_USER: ${INVENTARIO_DB_USER:-inventario}
+      DB_PASSWORD: ${INVENTARIO_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-inventario:
+        condition: service_healthy
+
+  ms-inventario:
+    build: ./services/ms-inventario
+    restart: unless-stopped
+    environment:
+      <<: *inventario-db
+      # Direcciones reales de los otros servicios en la red de Compose (las mismas del clúster, RNF14).
+      # Mientras ms-catalogo no esté levantado, los movimientos, umbrales y traslados nuevos responden 503.
+      MS_CATALOGO_URL: ${INVENTARIO_CATALOGO_URL:-http://ms-catalogo:8000}
+      MS_NOTIFICACIONES_URL: ${INVENTARIO_NOTIFICACIONES_URL:-http://ms-notificaciones:5000}
+    ports:
+      - "127.0.0.1:${INVENTARIO_PORT:-3001}:3000"
+    depends_on:
+      ms-inventario-migraciones:
+        condition: service_completed_successfully
+
+  ms-compras:
+    build: ./services/ms-compras
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-ms-compras
+      DB_PORT: "5432"
+      DB_NAME: ${COMPRAS_DB_NAME:-compras_db}
+      DB_USER: ${COMPRAS_DB_USER:-compras}
+      DB_PASSWORD: ${COMPRAS_DB_PASSWORD:-change_me}
+      # Direcciones reales de los otros servicios en la red de Compose (las mismas del clúster, RNF14).
+      # Mientras ms-inventario no esté levantado, las recepciones y devoluciones responden 503.
+      MS_INVENTARIO_URL: ${COMPRAS_INVENTARIO_URL:-http://ms-inventario:3000}
+      MS_NOTIFICACIONES_URL: ${COMPRAS_NOTIFICACIONES_URL:-http://ms-notificaciones:5000}
+    ports:
+      - "127.0.0.1:${COMPRAS_PORT:-3002}:3000"
+    depends_on:
+      db-ms-compras:
+        condition: service_healthy
+
+  ms-notificaciones:
+    build: ./services/ms-notificaciones
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-ms-notificaciones
+      DB_PORT: "5432"
+      DB_NAME: ${NOTIFICACIONES_DB_NAME:-notificaciones_db}
+      DB_USER: ${NOTIFICACIONES_DB_USER:-notificaciones}
+      DB_PASSWORD: ${NOTIFICACIONES_DB_PASSWORD:-change_me}
+      # Dirección real de ms-inventario en la red de Compose (la misma del clúster, RNF14).
+      # Mientras ms-inventario no esté levantado, la revisión diaria solo registra el fallo.
+      MS_INVENTARIO_URL: ${NOTIFICACIONES_INVENTARIO_URL:-http://ms-inventario:3000}
+      # Servidor de correo externo; sin SMTP_HOST las alertas solo se ven en la interfaz.
+      SMTP_HOST: ${NOTIFICACIONES_SMTP_HOST:-}
+      SMTP_PORT: ${NOTIFICACIONES_SMTP_PORT:-587}
+      SMTP_USER: ${NOTIFICACIONES_SMTP_USER:-}
+      SMTP_PASSWORD: ${NOTIFICACIONES_SMTP_PASSWORD:-}
+      MAIL_FROM: ${NOTIFICACIONES_MAIL_FROM:-}
+    ports:
+      - "127.0.0.1:${NOTIFICACIONES_PORT:-5001}:5000"
+    depends_on:
+      db-ms-notificaciones:
+        condition: service_healthy
 
 volumes:
   db-api-gateway:

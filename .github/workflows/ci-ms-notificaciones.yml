@@ -1,0 +1,57 @@
+name: CI ms-notificaciones
+
+# Pruebas de ms-notificaciones con cobertura mínima del 60 % (RNF20).
+# Corre en cada pull request que toque ms-notificaciones o este mismo archivo.
+on:
+  pull_request:
+    paths:
+      - 'services/ms-notificaciones/**'
+      - '.github/workflows/ci-ms-notificaciones.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/ms-notificaciones
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: notificaciones_test
+          POSTGRES_USER: notificaciones
+          POSTGRES_PASSWORD: change_me
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U notificaciones"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/ms-notificaciones/requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+
+      - name: Pruebas con cobertura
+        env:
+          DB_PORT: '5432'
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=60
