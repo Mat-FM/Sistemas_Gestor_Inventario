@@ -1,0 +1,22 @@
+# api-gateway: de 1 a 4 copias cuando el uso del procesador supera el 70 % de lo que pide cada copia (RNF05, criterio de verificación de la Entrega 1).
+# Necesita el servidor de métricas (metrics-server) del clúster y que el Deployment declare resources.requests.cpu (lo declara).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,36 @@
+# RNF09: el API Gateway y el cliente web son lo único que se publica fuera del clúster; los demás servicios son ClusterIP y sus
+# NetworkPolicy no aceptan tráfico de fuera. Cambie los dos dominios y, si usa HTTPS (lo normal), descomente tls y ponga
+# SESSION_SECURE_COOKIE=true en web-client-config. Requiere un controlador de Ingress (aquí, ingress-nginx).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gestor-inventario
+  annotations:
+    # Tamaño máximo de una carga (importaciones CSV/Excel): ajústelo si sus archivos son mayores.
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts: [inventario.ejemplo.com, api.inventario.ejemplo.com]
+  #     secretName: gestor-inventario-tls
+  rules:
+    - host: inventario.ejemplo.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-client
+                port:
+                  number: 8000
+    - host: api.inventario.ejemplo.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8000

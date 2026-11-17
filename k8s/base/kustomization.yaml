@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gestor-inventario
+
+# Para usar las imágenes de su registro sin tocar los Deployments:
+#   images:
+#     - name: api-gateway
+#       newName: registro.ejemplo.com/gestor/api-gateway
+#       newTag: "1.0.0"
+# (repetir para cada una de las ocho imágenes)
+
+resources:
+  - namespace.yaml
+  - configuracion.yaml
+  - bases-de-datos/db-api-gateway.yaml
+  - bases-de-datos/db-ms-catalogo.yaml
+  - bases-de-datos/db-ms-proveedores.yaml
+  - bases-de-datos/db-ms-inventario.yaml
+  - bases-de-datos/db-ms-compras.yaml
+  - bases-de-datos/db-ms-notificaciones.yaml
+  - bases-de-datos/db-ms-reportes.yaml
+  - api-gateway/deployment.yaml
+  - api-gateway/service.yaml
+  - api-gateway/migracion.yaml
+  - ms-catalogo/deployment.yaml
+  - ms-catalogo/service.yaml
+  - ms-catalogo/migracion.yaml
+  - ms-proveedores/deployment.yaml
+  - ms-proveedores/service.yaml
+  - ms-proveedores/migracion.yaml
+  - ms-inventario/deployment.yaml
+  - ms-inventario/service.yaml
+  - ms-inventario/migracion.yaml
+  - ms-compras/deployment.yaml
+  - ms-compras/service.yaml
+  - ms-notificaciones/deployment.yaml
+  - ms-notificaciones/service.yaml
+  - ms-reportes/deployment.yaml
+  - ms-reportes/service.yaml
+  - ms-reportes/migracion.yaml
+  - web-client/deployment.yaml
+  - web-client/service.yaml
+  - ingress.yaml
+  - politicas-de-red.yaml

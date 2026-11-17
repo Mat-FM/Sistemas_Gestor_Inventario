@@ -1,0 +1,21 @@
+# Valores que cambian según el entorno y no son secretos (RNF14). Los secretos van en Secret (ver secretos.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+data:
+  # IP o CIDR (separados por comas) de los pods que ponen X-Forwarded-For delante del Gateway: el controlador de Ingress y los pods
+  # del cliente web. Sin ellos, el Gateway ve siempre la misma IP y su límite de inicios de sesión por IP se vuelve global (RNF19).
+  # Nunca «*»: el Gateway lo rechaza. Ejemplo: "10.244.0.0/16". Vacío: no confía en ninguno.
+  TRUSTED_PROXIES: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-client-config
+data:
+  # "true" cuando el Ingress sirve HTTPS (lo normal): la cookie de sesión solo viaja cifrada. Con HTTP simple debe ser "false"
+  # o el navegador no la enviará y nadie podrá iniciar sesión.
+  SESSION_SECURE_COOKIE: "false"
+  # IP o CIDR del controlador de Ingress, para que la IP real del usuario llegue al Gateway. Nunca «*».
+  TRUSTED_PROXIES: ""

@@ -1,0 +1,102 @@
+/* El Montañero · cliente web. Bootstrap 5 con una paleta cálida y objetivos táctiles de al menos 44 px (pantallas desde 360 px). */
+:root {
+  --bs-primary: #0f766e;
+  --bs-primary-rgb: 15, 118, 110;
+  --bs-link-color: #0f766e;
+  --bs-link-color-rgb: 15, 118, 110;
+  --bs-link-hover-color: #0b5f59;
+  --bs-body-bg: #f4f6f8;
+  --bs-body-color: #1f2933;
+  --bs-border-radius: .75rem;
+  --bs-border-radius-lg: 1rem;
+  --em-suave: #52606d;
+  --em-borde: #d9dee3;
+  --em-alerta-fondo: #fff4e5;
+  --em-alerta-borde: #f5b461;
+  --em-info-fondo: #e8f1fd;
+  --em-info-borde: #8bb8f0;
+  --em-lateral: 15rem;
+}
+body { font-size: 1rem; min-height: 100vh; }
+.btn-primary { --bs-btn-bg: #0f766e; --bs-btn-border-color: #0f766e; --bs-btn-hover-bg: #0b5f59; --bs-btn-hover-border-color: #0b5f59; --bs-btn-active-bg: #094b46; --bs-btn-active-border-color: #094b46; --bs-btn-disabled-bg: #0f766e; --bs-btn-disabled-border-color: #0f766e; }
+.btn-outline-primary { --bs-btn-color: #0f766e; --bs-btn-border-color: #0f766e; --bs-btn-hover-bg: #0f766e; --bs-btn-hover-border-color: #0f766e; --bs-btn-active-bg: #0b5f59; --bs-btn-active-border-color: #0b5f59; }
+.btn, .form-control, .form-select { min-height: 2.75rem; }
+.btn-lg { min-height: 3.25rem; }
+.text-suave { color: var(--em-suave) !important; }
+
+/* Estructura: menú inferior en celular, barra lateral desde md */
+.contenedor { padding: 1rem 1rem 6rem; max-width: 64rem; margin: 0 auto; }
+.barra-superior { background: #0f766e; color: #fff; position: sticky; top: 0; z-index: 1020; }
+.barra-superior .btn { color: #fff; }
+.menu-inferior { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1030; display: flex; background: #fff; border-top: 1px solid var(--em-borde); padding-bottom: env(safe-area-inset-bottom); }
+.menu-inferior a { flex: 1; min-height: 3.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: .65rem; color: var(--em-suave); text-decoration: none; gap: .1rem; white-space: nowrap; min-width: 0; letter-spacing: -.01em; }
+.menu-inferior a i { font-size: 1.35rem; line-height: 1; }
+.menu-inferior a.activo { color: #0f766e; font-weight: 600; }
+.lateral { position: fixed; top: 0; bottom: 0; left: 0; width: var(--em-lateral); background: #fff; border-right: 1px solid var(--em-borde); padding: 1.25rem 1rem; flex-direction: column; z-index: 1030; }
+.lateral .enlace { display: flex; align-items: center; gap: .75rem; min-height: 2.75rem; padding: .5rem .75rem; border-radius: .75rem; color: #1f2933; text-decoration: none; }
+.lateral .enlace:hover { background: #eef2f5; }
+.lateral .enlace.activo { background: #e0f2f1; color: #0f766e; font-weight: 600; }
+@media (min-width: 768px) {
+  body.con-menu { padding-left: var(--em-lateral); }
+  .contenedor { padding-bottom: 2rem; }
+}
+
+/* Tarjetas y bloques */
+.tarjeta { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.07); margin-bottom: 1rem; }
+.tarjeta h2, .tarjeta h3 { font-size: 1.05rem; margin-bottom: .6rem; }
+.aviso-urgente { background: var(--em-alerta-fondo); border: 1px solid var(--em-alerta-borde); border-radius: 1rem; padding: 1rem; margin-bottom: 1rem; }
+.aviso-info { background: var(--em-info-fondo); border: 1px solid var(--em-info-borde); border-radius: 1rem; padding: 1rem; margin-bottom: 1rem; }
+.fila-dato { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem 0; border-bottom: 1px solid #eef0f2; align-items: center; }
+.fila-dato:last-child { border-bottom: 0; }
+.cifra { font-size: 1.9rem; font-weight: 700; line-height: 1.1; }
+.nada { color: var(--em-suave); text-align: center; padding: 1.25rem .5rem; }
+
+/* Acciones grandes */
+.tareas { display: grid; grid-template-columns: repeat(2, 1fr); gap: .75rem; margin-bottom: 1rem; }
+@media (min-width: 768px) { .tareas { grid-template-columns: repeat(4, 1fr); } }
+.tarea { background: #fff; border-radius: 1rem; padding: 1rem .5rem; text-align: center; font-weight: 600; color: #1f2933; text-decoration: none; box-shadow: 0 1px 3px rgba(0,0,0,.12); display: block; min-height: 5.5rem; }
+.tarea i { display: block; font-size: 1.8rem; color: #0f766e; margin-bottom: .2rem; }
+.tarea:hover { background: #f0faf9; color: #0f766e; }
+
+/* Buscador grande */
+.buscador { position: relative; }
+.buscador i { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--em-suave); pointer-events: none; }
+.buscador .form-control { padding-left: 2.75rem; border-radius: 2rem; min-height: 3.25rem; }
+
+/* Cantidades y estados */
+.cant { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.cant.baja { color: #b42318; }
+.cant.cero { color: #b42318; }
+.cant.suma { color: #067647; }
+.cant.resta { color: #b42318; }
+.etiqueta { display: inline-block; font-size: .75rem; font-weight: 600; padding: .15rem .55rem; border-radius: 1rem; background: #e4e7eb; color: #3e4c59; white-space: nowrap; }
+.etiqueta.ok { background: #d1fadf; color: #067647; }
+.etiqueta.alerta { background: #fef0c7; color: #93370d; }
+.etiqueta.mal { background: #fee4e2; color: #b42318; }
+.etiqueta.info { background: #dbeafe; color: #1d4ed8; }
+.pestanas .nav-link { min-height: 2.75rem; display: flex; align-items: center; }
+.invalid-feedback { display: block; }
+
+/* Inicio de sesión */
+.acceso { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.acceso .tarjeta { width: 100%; max-width: 26rem; padding: 1.5rem; }
+.marca { font-weight: 700; letter-spacing: .01em; }
+
+/* Filas con acciones: en celular las acciones van debajo del texto para que el nombre no se parta en tres líneas */
+.fila-acciones { flex-wrap: wrap; }
+.fila-acciones > .acciones { width: 100%; }
+@media (min-width: 576px) { .fila-acciones > .acciones { width: auto; flex-shrink: 0; } }
+.min-w-0 { min-width: 0; }
+
+/* Campana de alertas */
+.campana { position: relative; display: inline-flex; align-items: center; }
+.campana .globo { position: absolute; top: -.35rem; right: -.55rem; min-width: 1.15rem; height: 1.15rem; padding: 0 .3rem; border-radius: .6rem; background: #b42318; color: #fff; font-size: .65rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; border: 2px solid #fff; }
+.barra-superior .campana .globo { border-color: #0f766e; }
+
+/* Indicadores del inicio */
+.indicadores { display: grid; grid-template-columns: repeat(2, 1fr); gap: .75rem; margin-bottom: 1rem; }
+@media (min-width: 768px) { .indicadores { grid-template-columns: repeat(4, 1fr); } }
+.indicador { background: #fff; border-radius: 1rem; padding: .85rem; box-shadow: 0 1px 2px rgba(0,0,0,.07); text-decoration: none; color: inherit; display: block; }
+.indicador .cifra { font-size: 1.25rem; white-space: nowrap; }
+.indicador .peq { color: var(--em-suave); font-size: .8rem; }
+a.indicador:hover { background: #f0faf9; }

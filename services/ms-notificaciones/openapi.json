@@ -1,0 +1,714 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ms-notificaciones — Distribuidora El Montañero",
+    "version": "1.0.0",
+    "description": "Alertas en la interfaz y por correo; revisión diaria de vencimientos y de productos bajo el umbral (RF09, RF17).\n\nLas rutas son **internas**: el API Gateway las publica con el prefijo `/api` (por ejemplo `GET /api/notificaciones`), valida el token y los roles, y agrega las cabeceras `X-User-Id`, `X-User-Rol`, `X-User-Bodega` y `X-Request-Id` (Entrega 2, sección 2.2). Cada usuario ve las notificaciones dirigidas a su rol.\n\n`POST /internas/notificaciones` no la publica el Gateway: la llaman ms-inventario y ms-compras dentro del clúster."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Servicio directo (sin Gateway)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Notificaciones"
+    },
+    {
+      "name": "Preferencias"
+    },
+    {
+      "name": "Configuración de alertas"
+    },
+    {
+      "name": "Internas"
+    },
+    {
+      "name": "Sistema"
+    }
+  ],
+  "components": {
+    "parameters": {
+      "UserId": {
+        "name": "X-User-Id",
+        "in": "header",
+        "required": true,
+        "description": "Usuario verificado por el Gateway.",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "UserRol": {
+        "name": "X-User-Rol",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "ADMINISTRADOR",
+            "OPERADOR_BODEGA",
+            "VENDEDOR",
+            "CONTADOR"
+          ]
+        }
+      },
+      "RequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "description": "Identificador de la petición; si no llega se genera uno y se devuelve en la respuesta.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Pagina": {
+        "name": "pagina",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        }
+      },
+      "PorPagina": {
+        "name": "por_pagina",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "codigo": {
+                "type": "string",
+                "example": "DATOS_INVALIDOS"
+              },
+              "mensaje": {
+                "type": "string"
+              },
+              "detalles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "campo": {
+                      "type": "string"
+                    },
+                    "mensaje": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Notificacion": {
+        "type": "object",
+        "properties": {
+          "id_notificacion": {
+            "type": "integer",
+            "example": 12
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "STOCK_BAJO",
+              "VENCIMIENTO",
+              "ORDEN_RECIBIDA"
+            ]
+          },
+          "mensaje": {
+            "type": "string",
+            "example": "La orden OC-0007 se recibió completa."
+          },
+          "id_producto": {
+            "type": "integer",
+            "nullable": true,
+            "description": "ref. a ms-catalogo"
+          },
+          "id_bodega": {
+            "type": "integer",
+            "nullable": true,
+            "description": "ref. a ms-inventario"
+          },
+          "rol_destinatario": {
+            "type": "string",
+            "enum": [
+              "ADMINISTRADOR",
+              "OPERADOR_BODEGA",
+              "VENDEDOR",
+              "CONTADOR"
+            ]
+          },
+          "leida": {
+            "type": "boolean"
+          },
+          "correo_enviado": {
+            "type": "boolean"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ListaNotificaciones": {
+        "type": "object",
+        "properties": {
+          "datos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notificacion"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "pagina": {
+                "type": "integer"
+              },
+              "por_pagina": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "Preferencia": {
+        "type": "object",
+        "properties": {
+          "id_usuario": {
+            "type": "integer"
+          },
+          "rol": {
+            "type": "string",
+            "enum": [
+              "ADMINISTRADOR",
+              "OPERADOR_BODEGA",
+              "VENDEDOR",
+              "CONTADOR"
+            ]
+          },
+          "correo": {
+            "type": "string",
+            "format": "email",
+            "nullable": true
+          },
+          "recibir_correo": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PreferenciaEntrada": {
+        "type": "object",
+        "required": [
+          "recibir_correo"
+        ],
+        "properties": {
+          "correo": {
+            "type": "string",
+            "format": "email",
+            "nullable": true,
+            "description": "Si no se envía se conserva el actual; con null se borra."
+          },
+          "recibir_correo": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Configuracion": {
+        "type": "object",
+        "required": [
+          "dias_anticipacion_vencimiento",
+          "hora_revision_diaria"
+        ],
+        "properties": {
+          "dias_anticipacion_vencimiento": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "example": 30
+          },
+          "hora_revision_diaria": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "example": "06:00"
+          }
+        }
+      },
+      "AvisoEntrada": {
+        "type": "object",
+        "required": [
+          "tipo",
+          "mensaje"
+        ],
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "STOCK_BAJO",
+              "VENCIMIENTO",
+              "ORDEN_RECIBIDA"
+            ]
+          },
+          "mensaje": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "id_producto": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "id_bodega": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "rol_destinatario": {
+            "type": "string",
+            "enum": [
+              "ADMINISTRADOR",
+              "OPERADOR_BODEGA",
+              "VENDEDOR",
+              "CONTADOR"
+            ],
+            "default": "ADMINISTRADOR"
+          }
+        }
+      }
+    },
+    "responses": {
+      "NoAutenticado": {
+        "description": "Faltan las cabeceras X-User-Id y X-User-Rol (NO_AUTENTICADO).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "DatosInvalidos": {
+        "description": "Datos no válidos (DATOS_INVALIDOS); `detalles` indica cada campo.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/notificaciones": {
+      "get": {
+        "tags": [
+          "Notificaciones"
+        ],
+        "summary": "Notificaciones del rol del usuario (RF09, RF17)",
+        "description": "Del más reciente al más antiguo. Solo devuelve las dirigidas al rol de `X-User-Rol`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "name": "leida",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "tipo",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "STOCK_BAJO",
+                "VENCIMIENTO",
+                "ORDEN_RECIBIDA"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Pagina"
+          },
+          {
+            "$ref": "#/components/parameters/PorPagina"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Listado paginado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListaNotificaciones"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutenticado"
+          },
+          "422": {
+            "$ref": "#/components/responses/DatosInvalidos"
+          }
+        }
+      }
+    },
+    "/notificaciones/{id}/leida": {
+      "post": {
+        "tags": [
+          "Notificaciones"
+        ],
+        "summary": "Marca una notificación como leída",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notificación marcada como leída",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notificacion"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutenticado"
+          },
+          "404": {
+            "description": "No existe o no está dirigida al rol del usuario",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/preferencias/mia": {
+      "get": {
+        "tags": [
+          "Preferencias"
+        ],
+        "summary": "Preferencia de correo del usuario",
+        "description": "Si el usuario aún no la ha guardado, `recibir_correo` es falso.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Preferencia",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferencia"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutenticado"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Preferencias"
+        ],
+        "summary": "Guarda la preferencia de correo del usuario",
+        "description": "Guarda también el rol de `X-User-Rol`, que se usa para saber a quién enviar cada alerta.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferenciaEntrada"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preferencia guardada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferencia"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutenticado"
+          },
+          "422": {
+            "description": "Falta el correo para recibir_correo = true, o el correo no es válido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/configuracion-alertas": {
+      "get": {
+        "tags": [
+          "Configuración de alertas"
+        ],
+        "summary": "Días de anticipación y hora de la revisión diaria (solo ADM)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuración",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Configuracion"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Configuración de alertas"
+        ],
+        "summary": "Cambia la configuración y reprograma la revisión diaria (RF17, solo ADM)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          },
+          {
+            "$ref": "#/components/parameters/UserRol"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Configuracion"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuración guardada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Configuracion"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/DatosInvalidos"
+          }
+        }
+      }
+    },
+    "/internas/notificaciones": {
+      "post": {
+        "tags": [
+          "Internas"
+        ],
+        "summary": "Recibe un aviso de ms-inventario o ms-compras",
+        "description": "Llamadas 3 y 4 de la Tabla 2. Si ya existe una alerta sin leer del mismo tipo y producto para el rol, no se crea otra y la respuesta trae `duplicada: true`. Al crearla se envía por correo a los usuarios del rol que activaron `recibir_correo`; si el envío falla, la alerta sigue visible en la interfaz.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvisoEntrada"
+              },
+              "example": {
+                "tipo": "ORDEN_RECIBIDA",
+                "mensaje": "La orden OC-0007 se recibió completa.",
+                "id_bodega": 1,
+                "rol_destinatario": "ADMINISTRADOR"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Aceptada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "aceptada": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "duplicada": {
+                      "type": "boolean"
+                    },
+                    "notificacion": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Notificacion"
+                        }
+                      ],
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "El cuerpo no es un JSON válido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/DatosInvalidos"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Sistema"
+        ],
+        "summary": "Estado del servicio, de la base de datos y del cortacircuito (RNF10)",
+        "responses": {
+          "200": {
+            "description": "Servicio activo",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "estado": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "servicio": {
+                      "type": "string"
+                    },
+                    "base_de_datos": {
+                      "type": "string"
+                    },
+                    "cortacircuitos": {
+                      "type": "object",
+                      "properties": {
+                        "ms-inventario": {
+                          "type": "string",
+                          "enum": [
+                            "CERRADO",
+                            "ABIERTO"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Sin conexión a la base de datos"
+          }
+        }
+      }
+    }
+  }
+}

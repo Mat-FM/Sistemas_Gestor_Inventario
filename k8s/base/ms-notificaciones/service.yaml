@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ms-notificaciones
+  labels:
+    app.kubernetes.io/name: ms-notificaciones
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ms-notificaciones
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

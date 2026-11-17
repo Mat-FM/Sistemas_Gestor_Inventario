@@ -1,6 +1,7 @@
 """Base de las llamadas a los demás servicios. Aplica RNF18, igual que ms-catalogo con ms-proveedores:
 
-- Cada intento espera como máximo CALL_TIMEOUT_SECONDS (3 s).
+- Cada intento espera como máximo CALL_TIMEOUT_SECONDS (3 s), salvo la carga inicial de ms-inventario, que tiene un
+  plazo proporcional a sus filas (ver app/clients/inventario.py).
 - Solo las operaciones que no se duplican al repetirse se reintentan (las consultas y la carga inicial de
   ms-inventario, que lleva Idempotency-Key), hasta 3 veces, con esperas de 0,2, 0,4 y 0,8 s, ante un fallo de
   conexión o un error 5xx.
@@ -14,7 +15,7 @@ import logging
 import time
 
 import requests
-from flask import current_app, g, has_request_context
+from flask import current_app, g, has_request_context, request
 
 from app.errores import ApiError
 from app.registro import CABECERA
@@ -63,11 +64,15 @@ class ClienteServicio:
                 raise ServicioNoDisponible(self.servicio)
             pagina += 1
 
-    def post(self, ruta: str, cuerpo: dict, cabeceras: dict | None = None, reintentar: bool = False):
-        """Envío: solo se reintenta si el destino no lo duplica (reintentar=True). Devuelve el JSON de una respuesta 200."""
-        return self._json(self._llamar("POST", ruta, reintentar=reintentar, json=cuerpo, headers=cabeceras or {}))
+    def post(self, ruta: str, cuerpo: dict, cabeceras: dict | None = None, reintentar: bool = False,
+             espera: float | None = None):
+        """Envío: solo se reintenta si el destino no lo duplica (reintentar=True). Devuelve el JSON de una respuesta 200.
+        `espera` cambia el tiempo máximo de cada intento solo para esta llamada (por defecto CALL_TIMEOUT_SECONDS)."""
+        return self._json(self._llamar("POST", ruta, reintentar=reintentar, json=cuerpo, headers=cabeceras or {},
+                                       espera=espera))
 
-    def _llamar(self, metodo: str, ruta: str, reintentar: bool, headers: dict | None = None, **opciones):
+    def _llamar(self, metodo: str, ruta: str, reintentar: bool, headers: dict | None = None,
+                espera: float | None = None, **opciones):
         estado = _cortacircuitos.setdefault(self.servicio, {"fallos": 0, "abierto_hasta": 0.0})
         if time.monotonic() < estado["abierto_hasta"]:
             raise ServicioNoDisponible(self.servicio)
@@ -77,15 +82,20 @@ class ClienteServicio:
         # El mismo identificador de la petición, para seguirla en los registros de los dos servicios (RNF10).
         if has_request_context() and "request_id" in g:
             cabeceras[CABECERA] = g.request_id
+        # La identidad que puso el Gateway se reenvía tal cual: ms-inventario la exige en toda escritura (X-User-Id con su rol).
+        if has_request_context():
+            for nombre in ("X-User-Id", "X-User-Rol"):
+                if request.headers.get(nombre):
+                    cabeceras[nombre] = request.headers[nombre]
 
+        espera = espera or current_app.config["CALL_TIMEOUT_SECONDS"]
         intentos = 1 + len(ESPERAS_REINTENTO) if reintentar else 1
         respuesta = None
         for intento in range(intentos):
             if intento > 0:
                 time.sleep(ESPERAS_REINTENTO[intento - 1])
             try:
-                respuesta = requests.request(metodo, url, headers=cabeceras,
-                                             timeout=current_app.config["CALL_TIMEOUT_SECONDS"], **opciones)
+                respuesta = requests.request(metodo, url, headers=cabeceras, timeout=espera, **opciones)
             except requests.RequestException:
                 respuesta = None
             # Un 4xx no se reintenta: repetir la misma petición daría el mismo resultado.

@@ -1,0 +1,32 @@
+# Lo que NO entra en la imagen. Los patrones sin «**/» solo valen en la raíz del contexto, así que public/vendor (Bootstrap) sí entra.
+
+# Secretos y entorno: la configuración llega por variables de entorno (RNF14).
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Se instala dentro de la imagen, sin los paquetes de desarrollo.
+vendor
+node_modules
+
+# bootstrap/cache: Composer lo regenera al construir (sin los paquetes de desarrollo). Se excluyen los archivos y no la carpeta.
+bootstrap/cache/*.php
+# storage: lo que el equipo acumula (registros, vistas compiladas, caché). El Dockerfile crea las carpetas vacías.
+storage/framework
+storage/logs
+storage/app
+
+tests
+phpunit.xml
+.editorconfig
+.gitattributes
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+
+# No excluir, porque la imagen los lee en ejecución: app/, bootstrap/, config/, public/ (con su .htaccess, public/css, public/js y
+# public/vendor), resources/views, routes/, artisan, composer.json y composer.lock.
+.phpunit.cache
+.phpunit.result.cache

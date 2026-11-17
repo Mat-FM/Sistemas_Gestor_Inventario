@@ -77,7 +77,9 @@ La Entrega 2 no define estos detalles; se acordaron al implementar el servicio.
 | `numero_fila` | El número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila` 0 es un error de toda la importación |
 | Errores | Uno por fila y campo. Las filas que rechaza el servicio destino quedan con `campo` vacío y su `motivo` como mensaje |
 | Estados | `PROCESADA`: ninguna fila con error. `CON_ERRORES`: al menos una, aunque no se cree ninguna. `FALLIDA`: un servicio no respondió; se guarda igual y se responde 201 |
-| Contadores | `filas_totales`: filas con datos. `filas_validas`: las que el servicio destino creó. `filas_con_error`: filas con al menos un error |
+| Contadores | `filas_totales`: filas con datos. `filas_validas`: las que el servicio destino creó (en una `FALLIDA`, solo las de los bloques que alcanzó a confirmar). `filas_con_error`: filas con al menos un error |
+| Bloques | Las filas válidas se envían en bloques de **1 000 como máximo** en los tres tipos (es el límite de la carga inicial de ms-inventario); el número de fila de cada rechazo se traduce al del archivo |
+| Archivo repetido | La `Idempotency-Key` de la carga inicial se deriva del contenido de cada bloque (SHA-256): si se vuelve a subir un archivo que ya se aplicó, ms-inventario lo reconoce como repetición y **no vuelve a sumar los saldos**. ms-inventario reconoce la repetición por clave y usuario: si otro usuario sube el mismo archivo, sí se suma. Para cargar otra vez las mismas cantidades hay que cambiar el archivo |
 | Usuario | `X-User-Id` es obligatorio (400 si falta): la ruta solo la usa el administrador a través del Gateway |
 | Respuesta | `POST` devuelve también los `errores`, igual que el detalle, para que el cliente web los muestre sin otra petición |
 | Archivo inutilizable | 422 sin guardar nada: formato no soportado, archivo dañado o vacío, CSV que no está en UTF-8 o faltan columnas |
@@ -91,16 +93,20 @@ La Entrega 2 no define estos detalles; se acordaron al implementar el servicio.
 | Hace (espera) | ms-compras | `GET /ordenes-compra` |
 | Hace (espera) | ms-catalogo, ms-proveedores, ms-inventario | `POST /internas/productos/lote`, `/internas/proveedores/lote`, `/internas/saldos/carga-inicial` (carga masiva) |
 
-Los listados paginados (`/productos`, `/saldos`, `/movimientos`, `/lotes`) se piden completos, de 100 en 100. Todas
-las llamadas reenvían el `X-Request-Id` de la petición.
+Los listados paginados (`/productos`, `/saldos`, `/movimientos`, `/lotes`, `/bodegas`) se piden completos, de 100 en
+100. Todas
+las llamadas reenvían el `X-Request-Id` de la petición y, si vienen, `X-User-Id` y `X-User-Rol`: `ms-inventario` los exige
+en la carga inicial de saldos.
 
 ### Resiliencia (RNF18)
 
 Toda la comunicación está en `app/clients/` y pasa por `app/clients/base.py`:
 
-- **Tiempo de espera:** `CALL_TIMEOUT_SECONDS` (3 s) por intento.
+- **Tiempo de espera:** `CALL_TIMEOUT_SECONDS` (3 s) por intento. La carga inicial de ms-inventario aplica cada fila en
+  su propia transacción (unos 5 s por cada 1 000 filas), así que su plazo es `CALL_TIMEOUT_SECONDS` más 10 ms por fila
+  del bloque (1 000 filas: 13 s).
 - **Reintentos:** solo las operaciones que no se duplican al repetirse: las consultas (`GET`) y la carga inicial de
-  ms-inventario, que lleva `Idempotency-Key` (una por importación). Ante un fallo de conexión o un 5xx se reintenta
+  ms-inventario, que lleva `Idempotency-Key` (derivada del contenido de cada bloque). Ante un fallo de conexión o un 5xx se reintenta
   hasta 3 veces, con esperas de 0,2, 0,4 y 0,8 s; un 4xx no se reintenta. Las cargas masivas de ms-catalogo y
   ms-proveedores **no** se reintentan: repetirlas rechazaría como duplicadas las filas ya creadas.
 - **Cortacircuitos:** uno por servicio. Tras 5 llamadas fallidas seguidas, durante 30 s no se le llama y se falla de
@@ -116,9 +122,8 @@ Toda la comunicación está en `app/clients/` y pasa por `app/clients/base.py`:
   importación, el resultado queda guardado y se puede consultar después en `GET /importaciones`.
 - **Contratos de ms-inventario y ms-compras.** Al implementar este servicio, esos dos servicios aún no existían. Los
   reportes usan las rutas y los filtros de las Tablas 9 y 10 y los nombres de los atributos de las Figuras 5 y 6 (por
-  ejemplo `cantidad_disponible`, `saldo_resultante`, `codigo` de la bodega). `GET /bodegas` se acepta como lista simple
-  o paginada. Cuando esos servicios estén listos hay que probar los reportes contra ellos y ajustar
-  `app/services/reporte_service.py` y `app/clients/` si algún nombre cambia.
+  ejemplo `cantidad_disponible`, `saldo_resultante`, `codigo` de la bodega). La integración con ms-inventario a través
+  del Gateway ya se probó (issue #10); con ms-compras queda pendiente probarla cuando esté fusionado.
 
 ## Estructura (RNF13)
 
@@ -164,7 +169,7 @@ Si cambia un modelo, la migración se genera con `flask db migrate -m "descripci
 
 ## Docker (RNF03)
 
-La imagen sirve la aplicación con **gunicorn** sobre `python:3.14-slim`, con un usuario sin privilegios. No lleva el
+La imagen sirve la aplicación con **gunicorn** sobre `python:3.14-slim`, con un usuario sin privilegios (`USER 10001`, numérico para que Kubernetes lo acepte con `runAsNonRoot`). No lleva el
 `.env`, las pruebas ni el entorno virtual (`.dockerignore`): toda la configuración llega por variables de entorno.
 Incluye las migraciones y los archivos de `/docs`. Tiene un `HEALTHCHECK` que consulta `/health`.
 

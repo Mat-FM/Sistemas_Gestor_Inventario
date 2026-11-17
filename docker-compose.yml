@@ -1,17 +1,27 @@
-# Entorno local: una base de datos por componente (RNF02, RNF03).
-# Por ahora solo levanta las bases de datos. Los servicios se agregarán aquí
-# a medida que cada uno tenga su Dockerfile (la contenerización de los servicios
-# es de una entrega posterior).
+# Entorno local: todo el sistema en contenedores, una base de datos por componente (RNF02, RNF03).
+#
+# Solo dos servicios se publican en el equipo, y solo en 127.0.0.1: el API Gateway y el cliente web (RNF09: el Gateway es la
+# única entrada al sistema). Los microservicios se hablan entre sí por la red de Compose, con los mismos nombres que tendrán
+# en Kubernetes. ms-inventario, ms-compras y ms-notificaciones publican además su puerto, solo en 127.0.0.1, para depurarlos.
 #
 # Uso:
-#   cp .env.example .env     # y cambiar las contraseñas
-#   docker compose up -d
+#   cp .env.example .env     # cambiar las contraseñas y completar los secretos (cada uno trae el comando que lo genera)
+#   docker compose up -d --build
+#   -> cliente web en http://127.0.0.1:${WEB_PORT}, Gateway en http://127.0.0.1:${GATEWAY_PORT} (/docs)
+# Las migraciones de cada servicio corren en su propio contenedor (xxx-migraciones), una sola vez y antes de arrancarlo; el de
+# api-gateway también siembra al primer administrador con ADMIN_EMAIL y ADMIN_PASSWORD (contraseña temporal: se cambia al entrar).
 
 name: gestor-inventario
 
 x-mysql: &mysql
   image: mysql:8.4
   restart: unless-stopped
+  # Los servicios que migran esperan a que la base acepte conexiones.
+  healthcheck:
+    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
 
 x-postgres: &postgres
   image: postgres:16
@@ -66,6 +76,11 @@ services:
       - "127.0.0.1:${INVENTARIO_DB_PORT:-5433}:5432"
     volumes:
       - db-ms-inventario:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${INVENTARIO_DB_USER:-inventario} -d ${INVENTARIO_DB_NAME:-inventario_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-compras:
     <<: *postgres
@@ -77,6 +92,11 @@ services:
       - "127.0.0.1:${COMPRAS_DB_PORT:-5434}:5432"
     volumes:
       - db-ms-compras:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${COMPRAS_DB_USER:-compras} -d ${COMPRAS_DB_NAME:-compras_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-notificaciones:
     <<: *postgres
@@ -88,6 +108,11 @@ services:
       - "127.0.0.1:${NOTIFICACIONES_DB_PORT:-5435}:5432"
     volumes:
       - db-ms-notificaciones:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICACIONES_DB_USER:-notificaciones} -d ${NOTIFICACIONES_DB_NAME:-notificaciones_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   db-ms-reportes:
     <<: *postgres
@@ -99,6 +124,215 @@ services:
       - "127.0.0.1:${REPORTES_DB_PORT:-5436}:5432"
     volumes:
       - db-ms-reportes:/var/lib/postgresql/data
+
+  # ---------- Microservicios ----------
+  # ms-inventario no migra al arrancar: este contenedor aplica las migraciones una sola vez y termina,
+  # y ms-inventario espera a que acabe bien (con varias copias, una sola migración para todas).
+  ms-inventario-migraciones:
+    build: ./services/ms-inventario
+    command: ["node_modules/.bin/knex", "migrate:latest"]
+    restart: "no"
+    environment: &inventario-db
+      DB_HOST: db-ms-inventario
+      DB_PORT: "5432"
+      DB_NAME: ${INVENTARIO_DB_NAME:-inventario_db}
+      DB_USER: ${INVENTARIO_DB_USER:-inventario}
+      DB_PASSWORD: ${INVENTARIO_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-inventario:
+        condition: service_healthy
+
+  ms-inventario:
+    build: ./services/ms-inventario
+    restart: unless-stopped
+    environment:
+      <<: *inventario-db
+      # Direcciones reales de los otros servicios en la red de Compose (las mismas del clúster, RNF14).
+      # Mientras ms-catalogo no esté levantado, los movimientos, umbrales y traslados nuevos responden 503.
+      MS_CATALOGO_URL: ${INVENTARIO_CATALOGO_URL:-http://ms-catalogo:8000}
+      MS_NOTIFICACIONES_URL: ${INVENTARIO_NOTIFICACIONES_URL:-http://ms-notificaciones:5000}
+    ports:
+      - "127.0.0.1:${INVENTARIO_PORT:-3001}:3000"
+    depends_on:
+      ms-inventario-migraciones:
+        condition: service_completed_successfully
+
+  ms-compras:
+    build: ./services/ms-compras
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-ms-compras
+      DB_PORT: "5432"
+      DB_NAME: ${COMPRAS_DB_NAME:-compras_db}
+      DB_USER: ${COMPRAS_DB_USER:-compras}
+      DB_PASSWORD: ${COMPRAS_DB_PASSWORD:-change_me}
+      # Direcciones reales de los otros servicios en la red de Compose (las mismas del clúster, RNF14).
+      # Mientras ms-inventario no esté levantado, las recepciones y devoluciones responden 503.
+      MS_INVENTARIO_URL: ${COMPRAS_INVENTARIO_URL:-http://ms-inventario:3000}
+      MS_NOTIFICACIONES_URL: ${COMPRAS_NOTIFICACIONES_URL:-http://ms-notificaciones:5000}
+    ports:
+      - "127.0.0.1:${COMPRAS_PORT:-3002}:3000"
+    depends_on:
+      db-ms-compras:
+        condition: service_healthy
+
+  ms-notificaciones:
+    build: ./services/ms-notificaciones
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-ms-notificaciones
+      DB_PORT: "5432"
+      DB_NAME: ${NOTIFICACIONES_DB_NAME:-notificaciones_db}
+      DB_USER: ${NOTIFICACIONES_DB_USER:-notificaciones}
+      DB_PASSWORD: ${NOTIFICACIONES_DB_PASSWORD:-change_me}
+      # Dirección real de ms-inventario en la red de Compose (la misma del clúster, RNF14).
+      # Mientras ms-inventario no esté levantado, la revisión diaria solo registra el fallo.
+      MS_INVENTARIO_URL: ${NOTIFICACIONES_INVENTARIO_URL:-http://ms-inventario:3000}
+      # Servidor de correo externo; sin SMTP_HOST las alertas solo se ven en la interfaz.
+      SMTP_HOST: ${NOTIFICACIONES_SMTP_HOST:-}
+      SMTP_PORT: ${NOTIFICACIONES_SMTP_PORT:-587}
+      SMTP_USER: ${NOTIFICACIONES_SMTP_USER:-}
+      SMTP_PASSWORD: ${NOTIFICACIONES_SMTP_PASSWORD:-}
+      MAIL_FROM: ${NOTIFICACIONES_MAIL_FROM:-}
+    ports:
+      - "127.0.0.1:${NOTIFICACIONES_PORT:-5001}:5000"
+    depends_on:
+      db-ms-notificaciones:
+        condition: service_healthy
+
+  # ---------- API Gateway y servicios Laravel ----------
+  # Cada servicio migra en su propio contenedor, una sola vez, y espera a que acabe bien (con varias copias, una sola migración).
+  api-gateway-migraciones:
+    build: ./api-gateway
+    command: ["php", "artisan", "migrate", "--seed", "--force"]
+    restart: "no"
+    environment: &gateway-db
+      APP_KEY: ${GATEWAY_APP_KEY:?Falta GATEWAY_APP_KEY en .env (ver .env.example)}
+      DB_HOST: db-api-gateway
+      DB_PORT: "3306"
+      DB_DATABASE: ${GATEWAY_DB_NAME:-gateway_db}
+      DB_USERNAME: ${GATEWAY_DB_USER:-gateway}
+      DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-change_me}
+      # Solo este contenedor siembra al primer administrador; las copias que atienden tráfico no llevan estas variables.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Falta ADMIN_EMAIL en .env (ver .env.example)}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Falta ADMIN_PASSWORD en .env (ver .env.example)}
+    depends_on:
+      db-api-gateway:
+        condition: service_healthy
+
+  api-gateway:
+    build: ./api-gateway
+    restart: unless-stopped
+    environment:
+      APP_KEY: ${GATEWAY_APP_KEY:?Falta GATEWAY_APP_KEY en .env (ver .env.example)}
+      JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET en .env (ver .env.example)}
+      DB_HOST: db-api-gateway
+      DB_PORT: "3306"
+      DB_DATABASE: ${GATEWAY_DB_NAME:-gateway_db}
+      DB_USERNAME: ${GATEWAY_DB_USER:-gateway}
+      DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-change_me}
+      # Las direcciones de los servicios son las de la imagen (los nombres de esta red y del clúster: RNF14). Con el cliente web
+      # detrás, TRUSTED_PROXIES debe tener la IP o el CIDR de su red para que el límite de inicios de sesión cuente por usuario.
+      TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
+    depends_on:
+      api-gateway-migraciones:
+        condition: service_completed_successfully
+
+  ms-catalogo-migraciones:
+    build: ./services/ms-catalogo
+    command: ["php", "artisan", "migrate", "--force"]
+    restart: "no"
+    environment: &catalogo-db
+      APP_KEY: ${CATALOGO_APP_KEY:?Falta CATALOGO_APP_KEY en .env (ver .env.example)}
+      DB_HOST: db-ms-catalogo
+      DB_PORT: "3306"
+      DB_DATABASE: ${CATALOGO_DB_NAME:-catalogo_db}
+      DB_USERNAME: ${CATALOGO_DB_USER:-catalogo}
+      DB_PASSWORD: ${CATALOGO_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-catalogo:
+        condition: service_healthy
+
+  ms-catalogo:
+    build: ./services/ms-catalogo
+    restart: unless-stopped
+    environment:
+      <<: *catalogo-db
+      MS_PROVEEDORES_URL: ${CATALOGO_PROVEEDORES_URL:-http://ms-proveedores:8000}
+    depends_on:
+      ms-catalogo-migraciones:
+        condition: service_completed_successfully
+
+  ms-proveedores-migraciones:
+    build: ./services/ms-proveedores
+    command: ["php", "artisan", "migrate", "--force"]
+    restart: "no"
+    environment: &proveedores-db
+      APP_KEY: ${PROVEEDORES_APP_KEY:?Falta PROVEEDORES_APP_KEY en .env (ver .env.example)}
+      DB_HOST: db-ms-proveedores
+      DB_PORT: "3306"
+      DB_DATABASE: ${PROVEEDORES_DB_NAME:-proveedores_db}
+      DB_USERNAME: ${PROVEEDORES_DB_USER:-proveedores}
+      DB_PASSWORD: ${PROVEEDORES_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-proveedores:
+        condition: service_healthy
+
+  ms-proveedores:
+    build: ./services/ms-proveedores
+    restart: unless-stopped
+    environment:
+      <<: *proveedores-db
+    depends_on:
+      ms-proveedores-migraciones:
+        condition: service_completed_successfully
+
+  # ---------- ms-reportes (Flask) ----------
+  ms-reportes-migraciones:
+    build: ./services/ms-reportes
+    command: ["flask", "db", "upgrade"]
+    restart: "no"
+    environment: &reportes-db
+      DB_HOST: db-ms-reportes
+      DB_PORT: "5432"
+      DB_NAME: ${REPORTES_DB_NAME:-reportes_db}
+      DB_USER: ${REPORTES_DB_USER:-reportes}
+      DB_PASSWORD: ${REPORTES_DB_PASSWORD:-change_me}
+    depends_on:
+      db-ms-reportes:
+        condition: service_healthy
+
+  ms-reportes:
+    build: ./services/ms-reportes
+    restart: unless-stopped
+    environment:
+      <<: *reportes-db
+      # Direcciones reales de los demás servicios en la red de Compose (las mismas del clúster, RNF14).
+      MS_CATALOGO_URL: ${REPORTES_CATALOGO_URL:-http://ms-catalogo:8000}
+      MS_PROVEEDORES_URL: ${REPORTES_PROVEEDORES_URL:-http://ms-proveedores:8000}
+      MS_INVENTARIO_URL: ${REPORTES_INVENTARIO_URL:-http://ms-inventario:3000}
+      MS_COMPRAS_URL: ${REPORTES_COMPRAS_URL:-http://ms-compras:3000}
+    depends_on:
+      ms-reportes-migraciones:
+        condition: service_completed_successfully
+
+  # ---------- Cliente web ----------
+  # Solo habla con el API Gateway (RNF21). Todas sus copias deben llevar la misma WEB_APP_KEY (la sesión viaja cifrada en una cookie).
+  web-client:
+    build: ./web-client
+    restart: unless-stopped
+    environment:
+      APP_KEY: ${WEB_APP_KEY:?Falta WEB_APP_KEY en .env (ver .env.example)}
+      API_GATEWAY_URL: ${WEB_API_GATEWAY_URL:-http://api-gateway:8000}
+      # HTTPS lo pone el Ingress en el clúster; en local es HTTP.
+      SESSION_SECURE_COOKIE: ${WEB_SESSION_SECURE_COOKIE:-false}
+      TRUSTED_PROXIES: ${WEB_TRUSTED_PROXIES:-}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8000"
+    depends_on:
+      - api-gateway
 
 volumes:
   db-api-gateway:

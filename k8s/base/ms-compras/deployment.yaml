@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-compras
+  labels:
+    app.kubernetes.io/name: ms-compras
+spec:
+  # Una sola copia: aplica sus migraciones al arrancar y dos copias lo harían a la vez.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ms-compras
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ms-compras
+        db: db-ms-compras
+    spec:
+      # La imagen declara su USER por nombre y no por UID: con runAsNonRoot Kubernetes lo rechaza si no se fija un UID
+      # numérico. Se fija aquí; lo ideal es corregirlo en su Dockerfile con «USER 1000».
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ms-compras
+          image: ms-compras:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: DB_HOST
+              value: "db-ms-compras"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-compras
+                  key: nombre
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-compras
+                  key: usuario
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-compras
+                  key: clave
+            - name: MS_INVENTARIO_URL
+              value: "http://ms-inventario:3000"
+            - name: MS_NOTIFICACIONES_URL
+              value: "http://ms-notificaciones:5000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "500m"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

@@ -1,0 +1,57 @@
+name: CI ms-compras
+
+# Pruebas de ms-compras con cobertura mínima del 60 % (RNF20).
+# Corre en cada pull request que toque ms-compras o este mismo archivo.
+on:
+  pull_request:
+    paths:
+      - 'services/ms-compras/**'
+      - '.github/workflows/ci-ms-compras.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/ms-compras
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: compras_test
+          POSTGRES_USER: compras
+          POSTGRES_PASSWORD: change_me
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U compras"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/ms-compras/package-lock.json
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Pruebas con cobertura
+        env:
+          DB_PORT: '5432'
+        run: npm run test:cobertura

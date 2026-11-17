@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-client
+  labels:
+    app.kubernetes.io/name: web-client
+spec:
+  # Sin estado: la sesión viaja cifrada en una cookie, así que se pueden poner más copias (todas con la misma APP_KEY).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web-client
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: web-client
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web-client
+          image: web-client:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: web-client-app
+                  key: APP_KEY
+            - name: SESSION_SECURE_COOKIE
+              valueFrom:
+                configMapKeyRef:
+                  name: web-client-config
+                  key: SESSION_SECURE_COOKIE
+            - name: TRUSTED_PROXIES
+              valueFrom:
+                configMapKeyRef:
+                  name: web-client-config
+                  key: TRUSTED_PROXIES
+            - name: API_GATEWAY_URL
+              value: "http://api-gateway:8000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
