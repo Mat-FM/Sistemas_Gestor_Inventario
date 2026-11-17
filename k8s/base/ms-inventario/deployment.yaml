@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-inventario
+  labels:
+    app.kubernetes.io/name: ms-inventario
+spec:
+  # 1 a 4 copias según el procesador (k8s/hpa, RNF05): el HPA manda sobre este valor.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ms-inventario
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ms-inventario
+        db: db-ms-inventario
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ms-inventario
+          image: ms-inventario:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: DB_HOST
+              value: "db-ms-inventario"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-inventario
+                  key: nombre
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-inventario
+                  key: usuario
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-inventario
+                  key: clave
+            - name: MS_CATALOGO_URL
+              value: "http://ms-catalogo:8000"
+            - name: MS_NOTIFICACIONES_URL
+              value: "http://ms-notificaciones:5000"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

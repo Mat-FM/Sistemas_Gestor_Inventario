@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ms-inventario
+  labels:
+    app.kubernetes.io/name: ms-inventario
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ms-inventario
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

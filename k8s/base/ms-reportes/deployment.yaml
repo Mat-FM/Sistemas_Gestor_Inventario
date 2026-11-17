@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-reportes
+  labels:
+    app.kubernetes.io/name: ms-reportes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ms-reportes
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ms-reportes
+        db: db-ms-reportes
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ms-reportes
+          image: ms-reportes:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: DB_HOST
+              value: "db-ms-reportes"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-reportes
+                  key: nombre
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-reportes
+                  key: usuario
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-ms-reportes
+                  key: clave
+            - name: MS_CATALOGO_URL
+              value: "http://ms-catalogo:8000"
+            - name: MS_PROVEEDORES_URL
+              value: "http://ms-proveedores:8000"
+            - name: MS_INVENTARIO_URL
+              value: "http://ms-inventario:3000"
+            - name: MS_COMPRAS_URL
+              value: "http://ms-compras:3000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "500m"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
