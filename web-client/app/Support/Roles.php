@@ -47,6 +47,7 @@ final class Roles
         ['ruta' => 'umbrales.index', 'etiqueta' => 'Stock mínimo', 'icono' => 'exclamation-triangle', 'detalle' => 'Cuándo avisar que un producto escasea'],
         ['ruta' => 'usuarios.index', 'etiqueta' => 'Usuarios', 'icono' => 'people', 'detalle' => 'Quién entra al sistema y con qué rol'],
         ['ruta' => 'alertas.edit', 'etiqueta' => 'Alertas', 'icono' => 'bell', 'detalle' => 'Con cuánta anticipación avisar los vencimientos'],
+        ['ruta' => 'importaciones.index', 'etiqueta' => 'Importar datos', 'icono' => 'file-earmark-arrow-up', 'detalle' => 'Cargar productos, proveedores o stock inicial desde un archivo'],
     ];
 
     /**
@@ -83,6 +84,11 @@ final class Roles
     /** Reportes y auditoría, dentro de «Más» para el administrador. */
     public const REPORTES = [
         ['ruta' => 'reportes.index', 'etiqueta' => 'Reportes y auditoría', 'icono' => 'graph-up', 'detalle' => 'Existencias, valorización, rotación y kardex, con descarga en CSV y PDF'],
+    ];
+
+    /** Los conteos físicos: el operador los encuentra en «Stock» y el administrador dentro de «Más». */
+    public const CONTEOS = [
+        ['ruta' => 'conteos.index', 'etiqueta' => 'Conteos físicos', 'icono' => 'clipboard-check', 'detalle' => 'Contar lo que hay en la bodega y ajustar el inventario'],
     ];
 
     /** Lo de «Compras» que el administrador encuentra dentro de «Más». */

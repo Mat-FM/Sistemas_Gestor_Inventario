@@ -11,6 +11,6 @@ class AdministrarController extends Controller
 {
     public function __invoke(Sesion $sesion): View
     {
-        return view('administrar', ['compras' => [...Roles::COMPRAS, ...Roles::REPORTES], 'secciones' => Roles::administracion($sesion->rol())]);
+        return view('administrar', ['compras' => [...Roles::COMPRAS, ...Roles::CONTEOS, ...Roles::REPORTES], 'secciones' => Roles::administracion($sesion->rol())]);
     }
 }

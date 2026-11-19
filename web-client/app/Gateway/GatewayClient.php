@@ -58,6 +58,23 @@ class GatewayClient
     }
 
     /**
+     * Sube un archivo como multipart/form-data junto con sus campos de texto (las importaciones masivas). Un fallo se
+     * convierte en GatewayException igual que en las demás llamadas.
+     *
+     * @param  array<string, scalar>  $campos
+     */
+    public function subir(string $ruta, array $campos, string $campoArchivo, string $contenido, string $nombre): RespuestaGateway
+    {
+        try {
+            $respuesta = $this->base(true, false)->attach($campoArchivo, $contenido, $nombre)->post(ltrim($ruta, '/'), $campos);
+        } catch (ConnectionException) {
+            throw $this->sinConexion();
+        }
+
+        return $this->resolver($respuesta);
+    }
+
+    /**
      * Un archivo (CSV o PDF de los reportes): el cuerpo crudo y las dos cabeceras que el Gateway deja pasar. Un fallo se
      * convierte en GatewayException igual que en las demás llamadas.
      *
@@ -122,13 +139,14 @@ class GatewayClient
         return $resultado;
     }
 
-    private function base(bool $conToken): PendingRequest
+    private function base(bool $conToken, bool $json = true): PendingRequest
     {
         $peticion = Http::baseUrl(config('gateway.url').'/api')
             ->timeout(config('gateway.timeout'))
             ->acceptJson()
-            ->asJson()
             ->withoutRedirecting();
+        // Un archivo va como multipart/form-data: un Content-Type fijo de JSON le quitaría el límite (boundary).
+        $peticion = $json ? $peticion->asJson() : $peticion;
 
         $token = $conToken ? $this->sesion->token() : null;
         $peticion = $this->conOrigen($peticion);

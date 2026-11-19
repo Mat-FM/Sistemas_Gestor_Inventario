@@ -10,7 +10,8 @@
     "dev": "node --env-file=.env --watch src/server.js",
     "simulador": "node dev/simulador-servicios.js",
     "test": "jest --runInBand",
-    "test:cobertura": "jest --runInBand --coverage"
+    "test:cobertura": "jest --runInBand --coverage",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=20"
@@ -22,6 +23,9 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.15.0",
+    "globals": "17.14.0",
     "jest": "^29.7.0",
     "supertest": "^7.0.0"
   },

@@ -49,7 +49,9 @@ function filasDeTabla(texto, primeraCelda) {
 }
 
 /** Quita los separadores de miles («1 000», «60 000», «102 400», con espacio o con espacio fino) para comparar con números. */
-const sinMiles = (texto) => texto.replace(/(\d)[   ](?=\d{3}(?!\d))/g, '$1');
+// Los separadores de miles del README pueden ser un espacio normal, uno que no se parte (U+00A0) o uno fino (U+202F): se escriben
+// con su código para que el espacio especial no quede escondido en el archivo.
+const sinMiles = (texto) => texto.replace(/(\d)[ \u00a0\u202f](?=\d{3}(?!\d))/g, '$1');
 
 describe('la tabla de rutas', () => {
   const operaciones = () => rutasDeclaradas({}).map(({ metodo, ruta }) => `${metodo.toUpperCase()} ${ruta.replace(/:(\w+)/g, '{$1}')}`);

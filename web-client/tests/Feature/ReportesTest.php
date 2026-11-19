@@ -89,6 +89,14 @@ class ReportesTest extends TestCase
         $this->assertFalse($this->seEnvio('GET', 'usuarios'));
     }
 
+    public function test_si_el_kardex_tarda_demasiado_se_sugiere_acotarlo(): void
+    {
+        $this->gatewayDeReportes(['GET reportes/kardex' => self::error(503, 'SERVICIO_NO_DISPONIBLE')]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/reportes/kardex')->assertOk()
+            ->assertSee('No pudimos generar el kardex')->assertSee('acota por producto, bodega o fechas');
+    }
+
     public function test_el_kardex_rechaza_un_rango_de_fechas_al_reves_sin_llamar_al_servicio(): void
     {
         $this->gatewayDeReportes();
