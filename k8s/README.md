@@ -2,9 +2,25 @@
 
 Manifiestos del sistema completo con **kustomize** (`kubectl kustomize` ya viene con `kubectl`; no hace falta instalar nada más).
 
-> **Estado:** estos manifiestos se revisaron de forma **estática** (`kubectl kustomize` y `k8s/verificar.py`, que corre en la CI) y las
-> imágenes se construyeron y probaron con Docker Compose, pero **no se desplegaron todavía en ningún clúster**: en el equipo de
-> desarrollo no había uno. Las primeras pruebas reales (arranque, migraciones, Ingress, NetworkPolicy y HPA) están pendientes.
+> **Estado:** además de la revisión estática (`kubectl kustomize` y `k8s/verificar.py`, que corre en la CI), los manifiestos **se
+> desplegaron y probaron en un clúster local de kind** con `k8s/probar-en-kind.sh`: arranque sin reinicios, migraciones, Ingress,
+> NetworkPolicy (las bases solo las alcanza su servicio, RNF02), autoescalado del Gateway y de `ms-inventario` de 1 a 4 copias bajo carga
+> (RNF05), persistencia de las bases al reiniciar sus Pods y las 53 pruebas de funcionamiento de `smoke-tests/`. Esas pruebas
+> encontraron y corrigieron dos defectos: el contenedor que espera a la base de las migraciones corría como root y `runAsNonRoot` lo
+> rechazaba, y `ms-compras` y `ms-notificaciones` se reiniciaban al arrancar antes que su base. **No se probó** en un clúster real
+> (nube, varios nodos) ni con HTTPS.
+
+## Probarlo en un clúster local
+
+```bash
+brew install kind                 # una vez; también hace falta kubectl y Docker
+./k8s/probar-en-kind.sh           # construye, despliega, prueba y borra el clúster (unos 15 minutos)
+./k8s/probar-en-kind.sh --conservar --sin-carga   # lo deja arriba y omite la prueba de autoescalado
+```
+
+Crea un clúster `gi-prueba` (contexto `kind-gi-prueba`, Ingress solo en `127.0.0.1:18180`), instala `ingress-nginx` y `metrics-server`
+(con `--kubelet-insecure-tls`, porque kind firma los kubelet con su propia CA), genera los Secret con valores al azar y usa una capa de
+kustomize temporal que fija `TRUSTED_PROXIES`. No modifica el repositorio ni toca otros clústeres.
 
 ## Qué hay
 
@@ -70,13 +86,19 @@ k8s/
 
 ## Decisiones que conviene conocer
 
+- **El controlador de Ingress.** Los manifiestos usan `ingressClassName: nginx`. El proyecto `ingress-nginx` fue **archivado en marzo de 2026**
+  y ya no recibe correcciones: sirve para la entrega y las pruebas, pero para producción conviene migrar a otro controlador compatible con
+  la API de Ingress (o a Gateway API).
 - **RNF09, solo el Gateway y el cliente web salen del clúster.** El Ingress solo los enruta a ellos y todos los demás Service son
   `ClusterIP`. Como los microservicios confían en las cabeceras `X-User-*` y no tienen autenticación propia, lo que hace cierto el
   RNF09 son las **NetworkPolicy**: todo entrante queda denegado y solo se abre lo que llama la Tabla 2. Requieren un complemento de red que las
-  haga cumplir (Calico, Cilium...); sin él se aceptan pero no se aplican.
+  haga cumplir (Calico, Cilium...); sin él se aceptan pero no se aplican. El de kind (kindnet) sí las aplica y se comprobó: un Pod sin
+  permiso no llega a ningún servicio ni base, el Gateway llega a `ms-inventario` pero no a su base, y `ms-inventario` sí llega a la suya.
 - **RNF05, escalado.** Solo el Gateway y `ms-inventario` tienen HPA (1 a 4 copias, 70 % de procesador). Necesita `metrics-server` y que cada
   Deployment declare `resources.requests.cpu`, lo que ya hacen. `ms-compras` y `ms-notificaciones` quedan en **una copia**: aplican sus
   migraciones al arrancar y `ms-notificaciones` programa su revisión diaria dentro del proceso (con dos copias correría dos veces).
+- **Esperar a la base.** Los Pods de migración y los de `ms-compras` y `ms-notificaciones` (que migran al arrancar) llevan un contenedor
+  de inicio que espera a su base. Corre con un UID numérico: con `runAsNonRoot`, busybox (que es root por defecto) sería rechazado.
 - **Migraciones fuera del arranque.** Los demás servicios migran con una Job por despliegue, no al arrancar: con varias copias
   arrancando a la vez correrían a la vez. Los Deployments no esperan a las Job: hasta que terminen, el servicio responde pero sus rutas
   con base de datos fallan.
