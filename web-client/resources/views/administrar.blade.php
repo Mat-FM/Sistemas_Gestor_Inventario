@@ -4,7 +4,7 @@
 
 @section('contenido')
     <h1 class="h4 mb-3">Más</h1>
-    <h2 class="h6 text-suave text-uppercase mb-2">Compras</h2>
+    <h2 class="h6 text-suave text-uppercase mb-2">Operación</h2>
     <div class="row g-3 mb-4">
         @foreach ($compras as $seccion)
             <div class="col-12 col-md-6">

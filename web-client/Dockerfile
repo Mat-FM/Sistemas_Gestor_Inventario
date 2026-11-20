@@ -12,8 +12,8 @@
 FROM php:8.4-apache
 
 # unzip lo usa Composer para instalar. El php.ini-production deja el modo de producción de PHP (errores sin mostrar al cliente).
-# Sus límites de carga (upload_max_filesize de 2 MB y post_max_size de 8 MB) se dejan como están: la importación masiva todavía
-# no tiene pantalla aquí y el Gateway no fija otro tamaño.
+# Sus límites de carga (upload_max_filesize de 2 MB y post_max_size de 8 MB) se dejan como están: la importación masiva
+# valida archivos de hasta 2 MB (unas 20 000 filas), que es lo mismo que acepta el Gateway; ms-reportes no fija otro tamaño.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/* \

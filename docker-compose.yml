@@ -124,6 +124,11 @@ services:
       - "127.0.0.1:${REPORTES_DB_PORT:-5436}:5432"
     volumes:
       - db-ms-reportes:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${REPORTES_DB_USER:-reportes} -d ${REPORTES_DB_NAME:-reportes_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # ---------- Microservicios ----------
   # ms-inventario no migra al arrancar: este contenedor aplica las migraciones una sola vez y termina,

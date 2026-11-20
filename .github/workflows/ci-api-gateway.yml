@@ -1,6 +1,6 @@
 name: CI api-gateway
 
-# Pruebas unitarias del API Gateway con cobertura mínima del 60 % (RNF20).
+# Pruebas unitarias del API Gateway con cobertura mínima del 60 % (RNF20) y revisión de estilo con Pint (RNF13).
 # Corre en cada pull request que toque el Gateway o este mismo archivo.
 on:
   pull_request:
@@ -48,3 +48,7 @@ jobs:
 
       - name: Ejecutar las pruebas con cobertura mínima del 60 %
         run: php artisan test --coverage --min=60
+
+      # Análisis de estilo del código (RNF13). Pint ya es una dependencia de desarrollo: no se agrega ninguna herramienta nueva.
+      - name: Revisar el estilo con Pint
+        run: vendor/bin/pint --test

@@ -7,6 +7,13 @@ use App\Gateway\GatewayClient;
 /** Acceso a ms-reportes a través del Gateway. */
 class Reportes
 {
+    /** Lo que se puede importar y las columnas que cada archivo debe traer (Tabla 13 de la Entrega 2). */
+    public const IMPORTABLES = [
+        'PRODUCTOS' => ['nombre' => 'Productos', 'columnas' => ['codigo', 'nombre', 'descripcion', 'categoria', 'unidad_medida', 'precio']],
+        'PROVEEDORES' => ['nombre' => 'Proveedores', 'columnas' => ['nit', 'razon_social', 'nombre_contacto', 'telefono', 'correo', 'direccion']],
+        'STOCK_INICIAL' => ['nombre' => 'Stock inicial', 'columnas' => ['codigo_producto', 'codigo_bodega', 'cantidad', 'codigo_lote', 'fecha_vencimiento']],
+    ];
+
     public function __construct(private readonly GatewayClient $gateway) {}
 
     /** @return array{productos: list<array<string, mixed>>, valor_total: int|float} */
@@ -71,5 +78,25 @@ class Reportes
     public function archivo(string $reporte, array $filtros, string $formato): array
     {
         return $this->gateway->descargar("reportes/$reporte", $filtros + ['formato' => $formato]);
+    }
+
+    /** @return array{datos: list<array<string, mixed>>, meta: array<string, mixed>} Las importaciones, de la más reciente a la más antigua. */
+    public function importaciones(array $filtros = []): array
+    {
+        $respuesta = $this->gateway->get('importaciones', $filtros + ['por_pagina' => 20]) ?? [];
+
+        return ['datos' => $respuesta['datos'] ?? [], 'meta' => $respuesta['meta'] ?? ['pagina' => 1, 'por_pagina' => 20, 'total' => 0]];
+    }
+
+    /** @return array<string, mixed> Una importación con sus errores por fila. */
+    public function importacion(int $id): array
+    {
+        return $this->gateway->get("importaciones/$id");
+    }
+
+    /** @return array<string, mixed> La importación ya procesada, con sus errores. */
+    public function importar(string $tipo, string $contenido, string $nombreArchivo): array
+    {
+        return $this->gateway->subir('importaciones', ['tipo' => $tipo], 'archivo', $contenido, $nombreArchivo)->cuerpo;
     }
 }

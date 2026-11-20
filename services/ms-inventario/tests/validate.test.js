@@ -40,6 +40,8 @@ describe('entero (valores de un cuerpo JSON)', () => {
     ['booleano', true],
     ['arreglo', [5]],
     ['objeto', { valor: 5 }],
+    // Más allá de Number.MAX_SAFE_INTEGER: el literal pierde precisión a propósito, justo lo que la validación debe rechazar.
+    // eslint-disable-next-line no-loss-of-precision
     ['entero no seguro', 9007199254740993],
     ['más que el INTEGER de PostgreSQL', 2147483648],
   ])('rechaza %s con 422 DATOS_NO_VALIDOS y el nombre del campo', (_descripcion, valor) => {

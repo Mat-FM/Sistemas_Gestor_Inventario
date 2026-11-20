@@ -1,6 +1,6 @@
 name: CI ms-compras
 
-# Pruebas de ms-compras con cobertura mínima del 60 % (RNF20).
+# Pruebas de ms-compras con cobertura mínima del 60 % (RNF20) y análisis de código con ESLint (RNF13).
 # Corre en cada pull request que toque ms-compras o este mismo archivo.
 on:
   pull_request:
@@ -50,6 +50,10 @@ jobs:
 
       - name: Instalar dependencias
         run: npm ci
+
+      # Análisis de código (RNF13): ESLint con las reglas recomendadas, que detectan errores reales y no imponen estilo.
+      - name: Analizar el código con ESLint
+        run: npm run lint
 
       - name: Pruebas con cobertura
         env:

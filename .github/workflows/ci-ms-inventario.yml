@@ -1,6 +1,6 @@
 name: CI ms-inventario
 
-# Pruebas de ms-inventario con cobertura mínima del 60 % (RNF20).
+# Pruebas de ms-inventario con cobertura mínima del 60 % (RNF20) y análisis de código con ESLint (RNF13).
 # Corre en cada pull request que toque el servicio o este mismo archivo. Sigue el esquema de ci-ms-catalogo.yml, con una
 # diferencia: las pruebas de este servicio usan PostgreSQL de verdad (el motor de stock bloquea saldos con SELECT ... FOR UPDATE
 # y hay pruebas de concurrencia que SQLite no podría reproducir), así que el job levanta un servicio postgres:16, el mismo
@@ -66,6 +66,10 @@ jobs:
 
       - name: Instalar las dependencias
         run: npm ci
+
+      # Análisis de código (RNF13): ESLint con las reglas recomendadas, que detectan errores reales y no imponen estilo.
+      - name: Analizar el código con ESLint
+        run: npm run lint
 
       # En la CI no hay .env (no se versiona): todo el entorno que necesitan el servicio y las pruebas va aquí, con los
       # mismos nombres que .env.example. tests/ci.test.js comprueba que no falte ninguno. npm test no lleva --coverage, así que el

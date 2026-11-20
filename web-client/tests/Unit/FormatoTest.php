@@ -72,7 +72,7 @@ class FormatoTest extends TestCase
         $this->assertSame($rutas(Roles::CONTADOR), array_column(Roles::menuMovil(Roles::CONTADOR), 'ruta'));
         $this->assertSame($rutas(Roles::OPERADOR), array_column(Roles::menuMovil(Roles::OPERADOR), 'ruta'));
         $this->assertSame([], Roles::administracion(Roles::OPERADOR));
-        $this->assertCount(7, Roles::administracion(Roles::ADMINISTRADOR));
+        $this->assertCount(8, Roles::administracion(Roles::ADMINISTRADOR));
         $this->assertSame('Buscar', Roles::menu(Roles::VENDEDOR)[0]['etiqueta']);
     }
 }

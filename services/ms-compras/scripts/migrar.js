@@ -34,7 +34,7 @@ async function migrar({ silencioso = false } = {}) {
         if (!silencioso) console.log(`Migración aplicada: ${archivo}`);
       } catch (error) {
         await cliente.query('ROLLBACK');
-        throw new Error(`Falló la migración ${archivo}: ${error.message}`);
+        throw new Error(`Falló la migración ${archivo}: ${error.message}`, { cause: error });
       }
     }
     if (!silencioso && pendientes.length === 0) console.log('No hay migraciones pendientes.');
