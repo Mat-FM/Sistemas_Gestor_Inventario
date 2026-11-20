@@ -26,6 +26,8 @@ spec:
           image: busybox:1.36
           command: ["sh", "-c", "until nc -z db-ms-reportes 5432; do echo esperando db-ms-reportes; sleep 2; done"]
           securityContext:
+            # busybox corre como root por defecto y el Pod exige runAsNonRoot: sin un UID numérico el kubelet lo rechaza.
+            runAsUser: 65534
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]

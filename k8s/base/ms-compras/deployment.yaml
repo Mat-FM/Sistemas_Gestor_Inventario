@@ -23,6 +23,23 @@ spec:
         runAsUser: 1000
         seccompProfile:
           type: RuntimeDefault
+      # Este servicio aplica sus migraciones al arrancar: sin esperar a su base de datos, la primera vez se cae y reinicia varias veces
+      # hasta que el Pod de la base responde. El contenedor usa el UID numérico del Pod (runAsNonRoot).
+      initContainers:
+        - name: esperar-base-de-datos
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z db-ms-compras 5432; do echo esperando db-ms-compras; sleep 2; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
       containers:
         - name: ms-compras
           image: ms-compras:latest

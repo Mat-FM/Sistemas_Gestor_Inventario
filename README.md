@@ -29,7 +29,8 @@ api-gateway/          API Gateway (incluye usuarios y roles)
 services/             Los seis microservicios
 web-client/           Cliente web (solo se comunica con el Gateway)
 k8s/                  Archivos de configuración de Kubernetes
-performance-tests/    Pruebas de rendimiento k6, una carpeta por integrante
+performance-tests/    Pruebas de rendimiento (Locust), una carpeta por integrante
+smoke-tests/          Pruebas de funcionamiento de todo el sistema en contenedores (53 pruebas)
 docs/                 Documentos de cada entrega y contratos de API
 bitacoras-ia/         Bitácoras de uso de IA de cada entrega
 .github/workflows/    Integración continua
@@ -51,7 +52,11 @@ por la red de Compose. Si algún puerto ya lo usa otro proyecto de su equipo, c�
 Puertos de las bases de datos en el equipo local: MySQL 3307 (gateway), 3308 (catálogo), 3309 (proveedores);
 PostgreSQL 5433 (inventario), 5434 (compras), 5435 (notificaciones), 5436 (reportes).
 
-Kubernetes (RNF04): los manifiestos están en [`k8s/`](k8s) con sus instrucciones.
+Kubernetes (RNF04): los manifiestos están en [`k8s/`](k8s) con sus instrucciones; `k8s/probar-en-kind.sh` los despliega y prueba en un
+clúster local.
+
+Pruebas de funcionamiento: `./smoke-tests/ejecutar.sh` levanta todo con Docker Compose en un proyecto aparte, corre las 53 pruebas de
+[`smoke-tests/`](smoke-tests) y lo borra.
 
 ## Convenciones
 
@@ -60,4 +65,4 @@ Kubernetes (RNF04): los manifiestos están en [`k8s/`](k8s) con sus instruccione
 - Commits con Conventional Commits (`feat:`, `fix:`, `docs:`).
 - Cada servicio publica su especificación OpenAPI en `/docs` y expone `/health`.
 - La configuración que cambia según el entorno va en variables de entorno, nunca en el código.
-- Cada integrante mantiene sus pruebas de rendimiento en `performance-tests/<nombre>/`.
+- Cada integrante mantiene sus pruebas de rendimiento (Locust) en `performance-tests/<nombre>/`.
