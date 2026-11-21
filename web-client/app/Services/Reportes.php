@@ -30,19 +30,23 @@ class Reportes
     /**
      * El panel de indicadores (RF14). Lo calcula ms-reportes con datos de inventario, catálogo y compras.
      *
-     * @return array{valor_total: int|float, productos_bajo_umbral: int, productos_agotados: int, proximos_a_vencer: int, mayor_rotacion: list<array<string, mixed>>, ordenes_pendientes: int}
+     * @return array{valor_total: int|float|null, productos_bajo_umbral: int|null, productos_agotados: int|null, proximos_a_vencer: int|null, mayor_rotacion: list<array<string, mixed>>, ordenes_pendientes: int|null, no_disponibles: list<string>}
      */
     public function indicadores(): array
     {
         $respuesta = $this->gateway->get('indicadores') ?? [];
+        // Si un servicio no respondió, ms-reportes devuelve null en los indicadores que lo necesitan (y los lista en
+        // `no_disponibles`): se conserva el null para mostrar «—» y no un 0 que parecería verdad.
+        $entero = static fn (string $campo): ?int => isset($respuesta[$campo]) ? (int) $respuesta[$campo] : null;
 
         return [
-            'valor_total' => $respuesta['valor_total'] ?? 0,
-            'productos_bajo_umbral' => (int) ($respuesta['productos_bajo_umbral'] ?? 0),
-            'productos_agotados' => (int) ($respuesta['productos_agotados'] ?? 0),
-            'proximos_a_vencer' => (int) ($respuesta['proximos_a_vencer'] ?? 0),
+            'valor_total' => $respuesta['valor_total'] ?? null,
+            'productos_bajo_umbral' => $entero('productos_bajo_umbral'),
+            'productos_agotados' => $entero('productos_agotados'),
+            'proximos_a_vencer' => $entero('proximos_a_vencer'),
             'mayor_rotacion' => $respuesta['mayor_rotacion'] ?? [],
-            'ordenes_pendientes' => (int) ($respuesta['ordenes_pendientes'] ?? 0),
+            'ordenes_pendientes' => $entero('ordenes_pendientes'),
+            'no_disponibles' => $respuesta['no_disponibles'] ?? [],
         ];
     }
 

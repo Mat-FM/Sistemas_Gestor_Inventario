@@ -85,6 +85,19 @@ class InicioTest extends TestCase
         $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()->assertSee('No pudimos calcular los indicadores')->assertSee('Entra mercancía');
     }
 
+    public function test_si_un_servicio_cae_el_panel_muestra_lo_que_si_tiene_y_no_un_cero(): void
+    {
+        $this->fingirGateway([
+            'GET saldos/bajo-umbral' => Http::response([]), 'GET traslados' => self::listado([], 0), 'GET movimientos' => self::listado([]), 'GET bodegas' => self::bodegas(),
+            'GET indicadores' => Http::response(['valor_total' => 6561842.5, 'productos_bajo_umbral' => 2, 'productos_agotados' => 2, 'proximos_a_vencer' => 1,
+                'mayor_rotacion' => [], 'ordenes_pendientes' => null, 'no_disponibles' => ['ordenes_pendientes']]),
+        ]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()
+            ->assertSee('$ 6.561.843')->assertSee('Productos agotados')->assertSee('—')->assertSee('No disponible por ahora', false)
+            ->assertSee('Algunos datos no están disponibles por ahora');
+    }
+
     public function test_el_contador_ve_los_indicadores_y_lo_que_mas_sale_pero_sin_enlace_a_compras(): void
     {
         $this->fingirGateway([
