@@ -40,12 +40,13 @@ def veredicto(escenario, total):
     return "dentro del umbral" if cumple else "fuera del umbral"
 
 
-def main(rapido):
+def main(rapido, duracion=None):
     lineas = [
         "# Resultados de las pruebas de rendimiento — Luis Saraza",
         "",
         f"Generado el {datetime.now():%Y-%m-%d %H:%M} · modo `{os.environ.get('PERF_MODO', 'directo')}`"
-        + (" · **corrida rápida de comprobación (10 usuarios, 30 s): no es un resultado válido**" if rapido else ""),
+        + (" · **corrida rápida de comprobación (10 usuarios, 30 s): no es un resultado válido**" if rapido else "")
+        + (f" · **resultados preliminares: los usuarios de cada escenario, {duracion} por prueba**" if duracion else ""),
         "",
         "Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia (escritura, integración, contención,",
         "estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas.",
@@ -70,11 +71,11 @@ def main(rapido):
         detalle.append(f"\n### {e['id']} — {e['descripcion']}\n")
         detalle.append("| Operación | Peticiones | Errores | p95 (ms) |\n|---|---|---|---|")
         for f in filas:
-            detalle.append(f"| `{f['Type']} {f['Name']}` | {numero(f, 'Request Count'):.0f} | {numero(f, 'Failure Count'):.0f} | {numero(f, '95%'):.0f} |")
+            detalle.append(f"| `{f['Name']}` | {numero(f, 'Request Count'):.0f} | {numero(f, 'Failure Count'):.0f} | {numero(f, '95%'):.0f} |")
     lineas += ["", "## Detalle por operación"] + detalle + [""]
     (AQUI / "RESULTADOS.md").write_text("\n".join(lineas), encoding="utf-8")
     print("\n".join(lineas[:9 + len(ESCENARIOS)]))
 
 
 if __name__ == "__main__":
-    main("--rapido" in sys.argv)
+    main("--rapido" in sys.argv, next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--duracion=")), None))
