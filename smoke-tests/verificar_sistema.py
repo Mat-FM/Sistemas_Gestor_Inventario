@@ -130,6 +130,19 @@ def esperar(condicion, segundos=15, cada=0.5):
     return None
 
 
+def esperar_estable(condicion, veces=8, segundos=90, cada=1):
+    """Espera a que la condición se cumpla `veces` seguidas. Con varias copias o procesos de un servicio (gunicorn tiene 2), cada
+    uno lleva su propio cortacircuitos: un solo acierto puede ser del que ya cerró, y el otro seguir abierto hasta 30 s."""
+    fin = time.time() + segundos
+    seguidas = 0
+    while time.time() < fin:
+        seguidas = seguidas + 1 if condicion() else 0
+        if seguidas >= veces:
+            return True
+        time.sleep(cada)
+    return False
+
+
 def compose(*argumentos):
     comando = ARGS.compose.split() + list(argumentos)
     return subprocess.run(comando, capture_output=True, text=True, timeout=120)
@@ -805,9 +818,14 @@ def caidas():
         r = llamar(metodo, ruta, token, cuerpo, clave() if metodo == "POST" else None, reintentar=False)
         return r, time.time() - ini
 
-    for servicio in ("ms-notificaciones", "ms-reportes", "ms-proveedores", "ms-catalogo", "ms-compras", "ms-inventario"):
-        def comprobar(servicio=servicio):
-            parar(servicio)
+    # Cae el servicio o cae solo su base de datos: para el resto del sistema es lo mismo (el dueño responde 503, nunca 500).
+    # La base de ms-reportes y la del Gateway tienen su propia prueba más abajo (ms-reportes no usa su base para los reportes).
+    casos = [(s, s) for s in ("ms-notificaciones", "ms-reportes", "ms-proveedores", "ms-catalogo", "ms-compras", "ms-inventario")]
+    if not ARGS.k8s:  # en Kubernetes las bases son StatefulSet: esta variante solo está escrita para Docker Compose
+        casos += [(s, "db-" + s) for s in ("ms-notificaciones", "ms-proveedores", "ms-catalogo", "ms-compras", "ms-inventario")]
+    for servicio, contenedor in casos:
+        def comprobar(servicio=servicio, contenedor=contenedor):
+            parar(contenedor)
             try:
                 time.sleep(2)
                 fallas = []
@@ -831,11 +849,44 @@ def caidas():
                     estado, cuerpo_html = pagina(ruta)
                     exigir(estado == 200 and marca in cuerpo_html, f"la pantalla {ruta} dio {estado} con {servicio} caído")
             finally:
-                arrancar(servicio)
-            exigir(esperar(lambda: sonda(listo[servicio])[0].estado == 200, 90, 3), f"{servicio} no se recuperó en 90 s")
+                arrancar(contenedor)
+            # También los reportes, varias veces seguidas: su cortacircuitos (uno por proceso) tarda hasta 30 s en volver a llamar al servicio
+            # que cayó, y la prueba siguiente los usa.
+            exigir(esperar_estable(lambda: sonda(listo[servicio])[0].estado == 200 and sonda("reporte de existencias")[0].estado == 200),
+                   f"{servicio} no se recuperó en 90 s")
             return "lo demás siguió funcionando y volvió a la normalidad"
 
-        prueba(f"Con {servicio} caído, lo que no depende de él sigue funcionando y lo que sí responde 503", solo_con_docker=True)(comprobar)
+        titulo = (f"Con {servicio} caído, lo que no depende de él sigue funcionando y lo que sí responde 503" if contenedor == servicio
+                  else f"Con la base de datos de {servicio} caída, el servicio responde 503 (no 500) y lo que no depende de él sigue funcionando")
+        prueba(titulo, solo_con_docker=True)(comprobar)
+
+    if not ARGS.k8s:
+        @prueba("Con la base de datos de ms-reportes caída, solo fallan las importaciones: los reportes y el panel siguen", solo_con_docker=True)
+        def _():
+            parar("db-ms-reportes")
+            try:
+                time.sleep(2)
+                r = llamar("GET", "/api/importaciones", token, reintentar=False)
+                exigir(r.estado == 503 and r.datos["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE", f"importaciones con su base caída: {r.estado} {r.texto[:80]}")
+                for nombre in ("reporte de existencias", "panel de indicadores"):
+                    exigir(sonda(nombre)[0].estado == 200, f"«{nombre}» dejó de funcionar con la base de ms-reportes caída")
+            finally:
+                arrancar("db-ms-reportes")
+            exigir(esperar(lambda: llamar("GET", "/api/importaciones", token, reintentar=False).estado == 200, 90, 3), "las importaciones no se recuperaron en 90 s")
+
+        @prueba("Con la base de datos del Gateway caída, todo responde 503 (no 500), /health sigue vivo y vuelve al volver la base", solo_con_docker=True)
+        def _():
+            parar("db-api-gateway")
+            try:
+                time.sleep(2)
+                for metodo, ruta, con_token, cuerpo in (("POST", "/api/auth/login", False, {"correo": "nadie@prueba.test", "contrasena": "x"}),
+                                                        ("GET", "/api/productos?por_pagina=1", True, None), ("GET", "/api/usuarios", True, None)):
+                    r = llamar(metodo, ruta, token if con_token else None, cuerpo, reintentar=False)
+                    exigir(r.estado == 503 and r.datos["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE", f"{metodo} {ruta} con la base del Gateway caída dio {r.estado} {r.texto[:80]}")
+                exigir(llamar("GET", "/health", reintentar=False).estado == 200, "/health del Gateway no debe depender de su base")
+            finally:
+                arrancar("db-api-gateway")
+            exigir(esperar(lambda: sonda("usuarios (solo Gateway)")[0].estado == 200, 90, 3), "el Gateway no se recuperó en 90 s")
 
     @prueba("Con ms-reportes caído, el inicio sigue mostrando alertas de stock y accesos (solo faltan los indicadores)", solo_con_docker=True)
     def _():
