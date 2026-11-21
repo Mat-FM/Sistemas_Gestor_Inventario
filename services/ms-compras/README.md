@@ -53,7 +53,9 @@ RECIBIDA_PARCIAL y RECIBIDA se asignan solos con cada recepción.
 
 `X-User-Id`, `X-User-Rol`, `X-User-Bodega` (operador de bodega) y `X-Request-Id`. Las operaciones que
 escriben exigen `X-User-Id` y `X-User-Rol` (401 si faltan). El operador de bodega solo recibe y devuelve en su
-bodega (403 `BODEGA_AJENA`). Los roles por ruta ya los comprueba el Gateway.
+bodega (403 `BODEGA_AJENA`). Los roles por ruta los comprueba el Gateway y el servicio **los repite** (`src/routes/permisos.js`, defensa en
+profundidad): un rol que no corresponde es 403 `SIN_PERMISO`. Solo se exime `GET /ordenes-compra`, que ms-reportes lee con la identidad del
+contador para el panel de indicadores.
 
 ## Estructura interna (RNF13)
 
