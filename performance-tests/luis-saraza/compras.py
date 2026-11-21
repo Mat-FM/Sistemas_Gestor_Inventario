@@ -25,6 +25,7 @@ def _recibir(id_orden, id_detalle, cantidad, lote=None):
 def _datos_de_consulta():
     """Órdenes en todos los estados, algunas con recepciones y una devolución, para que las consultas lean datos reales.
     Las recepciones necesitan ms-inventario y ms-catalogo: si no responden, se sigue sin ellas."""
+    corrida = uuid.uuid4().hex[:8]  # lotes nuevos en cada corrida: uno repetido con otra fecha responde 409
     ids = []
     con_recepciones = []
     for i in range(ORDENES_DE_PRUEBA):
@@ -36,7 +37,7 @@ def _datos_de_consulta():
         if i % 4 == 1:
             continue  # queda ENVIADA
         try:
-            _recibir(orden["id_orden"], orden["detalles"][0]["id_detalle"], 10 if i % 4 == 3 else 4, lote=f"PERF-{i}")
+            _recibir(orden["id_orden"], orden["detalles"][0]["id_detalle"], 10 if i % 4 == 3 else 4, lote=f"PERF-{corrida}-{i}")
             con_recepciones.append(orden["id_orden"])
         except RuntimeError as error:
             print(f"[preparación] sin recepciones: {error}")

@@ -45,7 +45,8 @@ TIEMPO_PREPARACION_S = 10
 _ids_usuario = itertools.count(1000)
 _cuentas = itertools.cycle(range(len(CUENTAS))) if CUENTAS else None
 _tokens = {}
-_candado = gevent.lock.Semaphore()
+# Reentrante: una_vez() lo toma y la preparación vuelve a tomarlo al iniciar sesión (modo gateway).
+_candado = gevent.lock.RLock()
 _preparado = {}
 
 
