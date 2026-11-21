@@ -26,7 +26,7 @@ pruebas).
 ## Rutas
 
 Las rutas no llevan el prefijo `/api`: el Gateway lo quita al reenviar (`GET /api/importaciones` llega como
-`GET /importaciones`). El servicio no revisa roles: el Gateway ya lo hizo. La documentación completa, con esquemas y
+`GET /importaciones`). Los roles los comprueba el Gateway y el servicio los repite (`app/permisos.py`, defensa en profundidad): un rol que no corresponde es 403 `SIN_PERMISO`. La documentación completa, con esquemas y
 ejemplos, está en `GET /docs`.
 
 | Método | Ruta | Respuesta | Errores |
