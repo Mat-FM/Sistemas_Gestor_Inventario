@@ -6,6 +6,7 @@ from flask import g, request
 
 from . import logger
 from .errores import ApiError
+from .permisos import PERMISOS
 
 ROLES = ("ADMINISTRADOR", "OPERADOR_BODEGA", "VENDEDOR", "CONTADOR")
 
@@ -38,6 +39,18 @@ def _antes():
     )
 
 
+def exigir_rol():
+    """Defensa de roles (RNF07, RNF09): 403 SIN_PERMISO si el rol no figura en app/permisos.py para la ruta. Sin usuario es una
+    llamada interna y pasa; una ruta sin regla (health, docs) también."""
+    usuario = g.get("usuario")
+    if not usuario or not usuario["rol"] or request.url_rule is None:
+        return None
+    roles = PERMISOS.get(f"{request.method} {request.url_rule.rule}")
+    if roles is not None and usuario["rol"] not in roles:
+        raise ApiError(403, "SIN_PERMISO", "Su rol no puede realizar esta operación.")
+    return None
+
+
 def _despues(respuesta):
     respuesta.headers["X-Request-Id"] = g.get("request_id", "")
     logger.info(
@@ -54,6 +67,7 @@ def _despues(respuesta):
 
 def registrar(app):
     app.before_request(_antes)
+    app.before_request(exigir_rol)
     app.after_request(_despues)
 
 

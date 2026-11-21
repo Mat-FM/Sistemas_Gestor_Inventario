@@ -42,7 +42,9 @@ termina**: las rutas del servicio siguen funcionando.
 ### Cabeceras que llegan del Gateway
 
 `X-User-Id`, `X-User-Rol` y `X-Request-Id`. Las rutas públicas exigen `X-User-Id` y `X-User-Rol` (401 si faltan):
-cada usuario ve y marca solo las notificaciones dirigidas a su rol. Los roles por ruta ya los comprueba el Gateway.
+cada usuario ve y marca solo las notificaciones dirigidas a su rol. Los roles por ruta los comprueba el Gateway y el servicio **los repite**
+(`app/permisos.py`, defensa en profundidad): un rol que no corresponde es 403 `SIN_PERMISO`; el aviso interno es de ADMINISTRADOR y OPERADOR_BODEGA,
+que son quienes registran movimientos y recepciones.
 
 ### Correo
 
