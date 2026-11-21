@@ -72,7 +72,7 @@ La Entrega 2 no define estos detalles; se acordaron al implementar el servicio.
 | --- | --- |
 | Archivo | Campos `tipo` y `archivo` del formulario. CSV en UTF-8 separado por `,` o `;`, o Excel `.xlsx` (primera hoja) |
 | Columnas | La fila 1 es el encabezado y debe traer todas las columnas de la Tabla 13; no distingue mayúsculas y las columnas de más se ignoran. Las filas vacías se saltan |
-| Validación | Cada fila se valida con las reglas del servicio destino (obligatorios, largos, números, correo, fecha `AAAA-MM-DD`), para señalar el campo exacto. `precio` y `cantidad` admiten coma decimal |
+| Validación | Cada fila se valida con las reglas del servicio destino (obligatorios, largos, números, correo, fecha `AAAA-MM-DD`), para señalar el campo exacto. `precio` y `cantidad` admiten coma decimal y separador de miles (`2500,5`, `2.500,50`, `2,500.50`) |
 | Conversión | `categoria` por nombre exacto (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la fila se rechaza. `codigo_producto` y `codigo_bodega` por código. Solo se convierten las filas sin errores de formato |
 | `numero_fila` | El número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila` 0 es un error de toda la importación |
 | Errores | Uno por fila y campo. Las filas que rechaza el servicio destino quedan con `campo` vacío y su `motivo` como mensaje |

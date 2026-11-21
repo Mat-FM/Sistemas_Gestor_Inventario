@@ -50,7 +50,7 @@ info:
     - `numero_fila` es el número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila`
       0 es un error de toda la importación.
     - `categoria` es el nombre de la categoría (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la
-      fila se rechaza. `precio` y `cantidad` admiten coma decimal. `fecha_vencimiento` con el formato AAAA-MM-DD.
+      fila se rechaza. `precio` y `cantidad` admiten coma decimal y separador de miles (`2500,5`, `2.500,50` o `2,500.50`). `fecha_vencimiento` con el formato AAAA-MM-DD.
     - Estados: `PROCESADA` (ninguna fila con error), `CON_ERRORES` (al menos una fila con error, aunque no se cree
       ninguna) y `FALLIDA` (un servicio no respondió).
 
