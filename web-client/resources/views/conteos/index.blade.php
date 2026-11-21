@@ -16,7 +16,7 @@
 
         <ul class="nav nav-pills pestanas mb-3">
             @foreach (['todos' => 'Todos', 'PROGRAMADO' => 'Por contar', 'EN_REVISION' => 'En revisión', 'APROBADO' => 'Aprobados'] as $codigo => $nombre)
-                <li class="nav-item"><a class="nav-link {{ $estado === $codigo ? 'active' : '' }}" style="{{ $estado === $codigo ? 'background:#0f766e' : '' }}"
+                <li class="nav-item"><a class="nav-link {{ $estado === $codigo ? 'active' : '' }}"
                     href="{{ route('conteos.index', ['estado' => $codigo]) }}">{{ $nombre }}</a></li>
             @endforeach
         </ul>

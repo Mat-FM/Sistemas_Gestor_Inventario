@@ -7,7 +7,7 @@
 
     <ul class="nav nav-pills pestanas mb-2">
         @foreach (['sin_leer' => 'Sin leer', 'todas' => 'Todas'] as $codigo => $nombre)
-            <li class="nav-item"><a class="nav-link {{ $pestana === $codigo ? 'active' : '' }}" style="{{ $pestana === $codigo ? 'background:#0f766e' : '' }}"
+            <li class="nav-item"><a class="nav-link {{ $pestana === $codigo ? 'active' : '' }}"
                 href="{{ route('notificaciones.index', array_filter(['ver' => $codigo === 'todas' ? 'todas' : null, 'tipo' => $tipo])) }}">{{ $nombre }}</a></li>
         @endforeach
         <li class="nav-item ms-auto"><a class="nav-link" href="{{ route('preferencias.edit') }}"><i class="bi bi-envelope"></i> Por correo</a></li>

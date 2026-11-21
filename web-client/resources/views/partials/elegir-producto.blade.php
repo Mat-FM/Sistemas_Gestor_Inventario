@@ -10,7 +10,9 @@
 @if ($fallo)
     <div class="tarjeta">@include('partials.no-disponible', ['texto' => 'No pudimos buscar productos. Intenta de nuevo.'])</div>
 @elseif ($busqueda !== '' && ! count($resultados))
-    <div class="tarjeta nada">No encontramos «{{ $busqueda }}». Prueba con otra parte del nombre o con el código.</div>
+    <div class="tarjeta nada"><i class="bi bi-search"></i><div>No encontramos «{{ $busqueda }}». Prueba con otra parte del nombre o con el código.</div></div>
+@elseif ($busqueda === '')
+    <div class="nada"><i class="bi bi-upc-scan"></i><div>Escribe el nombre o el código del producto para empezar.</div></div>
 @elseif (count($resultados))
     <div class="tarjeta">
         @foreach ($resultados as $r)

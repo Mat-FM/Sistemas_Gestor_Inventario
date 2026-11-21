@@ -4,6 +4,7 @@
     $menuMovil = \App\Support\Roles::menuMovil($sesion->rol());
     $rutaActual = request()->route()?->getName();
     $administracion = \App\Support\Roles::administracion($sesion->rol());
+    $iniciales = mb_strtoupper(collect(preg_split('/\s+/', trim($sesion->nombre())))->filter()->take(2)->map(fn ($p) => mb_substr($p, 0, 1))->implode(''));
     $prefijosDeAdministracion = array_map(fn ($seccion) => explode('.', $seccion['ruta'])[0].'.', $administracion);
     $activo = function (string $ruta) use ($rutaActual, $prefijosDeAdministracion) {
         if ($ruta === 'administrar') {
@@ -21,7 +22,7 @@
 @section('cuerpo')
     {{-- Barra lateral (computador y tableta) --}}
     <aside class="lateral d-none d-md-flex">
-        <a class="marca fs-5 text-primary mb-4 px-2 text-decoration-none" href="{{ route('inicio') }}"><i class="bi bi-box-seam"></i> El Montañero</a>
+        <a class="marca" href="{{ route('inicio') }}" aria-label="El Montañero, inicio">@include('partials.marca')</a>
         <nav class="d-flex flex-column gap-1 overflow-auto">
             @foreach ($menu as $entrada)
                 @continue($entrada['ruta'] === 'administrar')
@@ -33,7 +34,7 @@
                 <span class="campana"><i class="bi bi-bell"></i>@if ($alertasSinLeer)<span class="globo">{{ $alertasSinLeer > 99 ? '99+' : $alertasSinLeer }}</span>@endif</span> Alertas
             </a>
             @if (count($administracion))
-                <div class="text-suave small fw-semibold text-uppercase px-3 pt-3 pb-1">Administración</div>
+                <div class="seccion">Administración</div>
                 @foreach ($administracion as $seccion)
                     <a class="enlace {{ $activo($seccion['ruta']) ? 'activo' : '' }}" href="{{ route($seccion['ruta']) }}">
                         <i class="bi bi-{{ $seccion['icono'] }}"></i> {{ $seccion['etiqueta'] }}
@@ -41,28 +42,33 @@
                 @endforeach
             @endif
         </nav>
-        <div class="mt-auto border-top pt-3">
-            <div class="fw-semibold">{{ $sesion->nombre() }}</div>
-            <div class="text-suave small mb-2">{{ \App\Support\Roles::nombre($sesion->rol()) }}</div>
-            <a class="enlace" href="{{ route('preferencias.edit') }}"><i class="bi bi-envelope"></i> Alertas por correo</a>
-            <a class="enlace" href="{{ route('contrasena.editar') }}"><i class="bi bi-key"></i> Cambiar contraseña</a>
-            <form method="post" action="{{ route('salir') }}">@csrf
-                <button class="enlace border-0 bg-transparent w-100 text-start"><i class="bi bi-box-arrow-right"></i> Salir</button>
-            </form>
+        <div class="cuenta">
+            <div class="quien">
+                <span class="avatar" aria-hidden="true">{{ $iniciales }}</span>
+                <div class="min-w-0"><div class="fw-semibold text-white text-truncate">{{ $sesion->nombre() }}</div>
+                    <div class="small" style="color:#e0a032">{{ \App\Support\Roles::nombre($sesion->rol()) }}</div></div>
+            </div>
+            <div class="cuenta-acciones">
+                <a class="enlace" href="{{ route('preferencias.edit') }}" title="Alertas por correo" aria-label="Alertas por correo"><i class="bi bi-envelope"></i></a>
+                <a class="enlace" href="{{ route('contrasena.editar') }}" title="Cambiar contraseña" aria-label="Cambiar contraseña"><i class="bi bi-key"></i></a>
+                <form method="post" action="{{ route('salir') }}" class="flex-fill d-flex">@csrf
+                    <button class="enlace border-0 w-100" title="Salir" aria-label="Salir"><i class="bi bi-box-arrow-right"></i></button>
+                </form>
+            </div>
         </div>
     </aside>
 
     {{-- Barra superior (celular) --}}
     <header class="barra-superior d-md-none">
         <div class="d-flex align-items-center justify-content-between px-3" style="min-height:3.25rem">
-            <a class="marca text-white text-decoration-none" href="{{ route('inicio') }}"><i class="bi bi-box-seam"></i> El Montañero</a>
+            <a class="marca text-white text-decoration-none d-flex align-items-center gap-2" href="{{ route('inicio') }}" aria-label="El Montañero, inicio"><img class="marca-signo" style="width:2rem;height:2rem;border-radius:.55rem" src="{{ asset('img/marca.svg') }}" alt=""><span class="fs-5">El Montañero</span></a>
             <div class="d-flex align-items-center gap-2">
             <a class="btn btn-sm campana" href="{{ route('notificaciones.index') }}" aria-label="Alertas{{ $alertasSinLeer ? ' ('.$alertasSinLeer.' sin leer)' : '' }}">
                 <i class="bi bi-bell fs-5"></i>@if ($alertasSinLeer)<span class="globo">{{ $alertasSinLeer > 99 ? '99+' : $alertasSinLeer }}</span>@endif
             </a>
             <div class="dropdown">
                 <button class="btn btn-sm d-flex align-items-center gap-2" data-bs-toggle="dropdown" aria-label="Mi cuenta">
-                    <span class="small">{{ \Illuminate\Support\Str::before($sesion->nombre(), ' ') }}</span><i class="bi bi-person-circle fs-5"></i>
+                    <span class="avatar" style="width:2rem;height:2rem;font-size:.78rem" aria-hidden="true">{{ $iniciales }}</span><span class="visually-hidden">{{ $sesion->nombre() }}</span>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
                     <li class="dropdown-item-text small text-suave">{{ \App\Support\Roles::nombre($sesion->rol()) }}</li>
@@ -76,6 +82,20 @@
     </header>
 
     <main class="contenedor">
+        {{-- Escritorio: buscar un producto y ver las alertas desde cualquier pantalla (la tecla «/» enfoca el cuadro) --}}
+        <div class="barra-escritorio d-none d-md-flex">
+            {{-- En «Stock» la propia pantalla ya trae su búsqueda: no se repite --}}
+            @if (! request()->routeIs('stock'))
+                <form class="buscar-global" method="get" action="{{ route('stock') }}" role="search">
+                    <i class="bi bi-search"></i>
+                    <input class="form-control" type="search" name="q" id="buscar-global" placeholder="Buscar un producto por nombre o código" aria-label="Buscar producto" autocomplete="off">
+                    <kbd aria-hidden="true">/</kbd>
+                </form>
+            @endif
+            <a class="btn btn-outline-primary ms-auto campana-escritorio" href="{{ route('notificaciones.index') }}" aria-label="Alertas{{ $alertasSinLeer ? ' ('.$alertasSinLeer.' sin leer)' : '' }}">
+                <span class="campana"><i class="bi bi-bell"></i>@if ($alertasSinLeer)<span class="globo" style="border-color:var(--papel-claro)">{{ $alertasSinLeer > 99 ? '99+' : $alertasSinLeer }}</span>@endif</span>
+            </a>
+        </div>
         @include('partials.mensajes')
         @yield('contenido')
     </main>

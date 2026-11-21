@@ -82,3 +82,12 @@ document.addEventListener('change', function (evento) {
   var elegido = producto.options[producto.selectedIndex];
   if (precio && precio.value === '' && elegido && elegido.dataset.precio) { precio.value = elegido.dataset.precio; }
 });
+
+// En el computador, «/» lleva el cursor a la búsqueda de productos (salvo que ya se esté escribiendo en otro campo).
+document.addEventListener('keydown', function (evento) {
+  if (evento.key !== '/' || evento.ctrlKey || evento.metaKey || evento.altKey) { return; }
+  var destino = evento.target;
+  if (destino && (/^(input|textarea|select)$/i.test(destino.tagName) || destino.isContentEditable)) { return; }
+  var cuadro = document.getElementById('buscar-global');
+  if (cuadro && cuadro.offsetParent !== null) { evento.preventDefault(); cuadro.focus(); cuadro.select(); }
+});

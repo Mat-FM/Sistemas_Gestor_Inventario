@@ -98,6 +98,17 @@ class InicioTest extends TestCase
             ->assertSee('Algunos datos no están disponibles por ahora');
     }
 
+    public function test_en_computador_cualquier_pantalla_trae_la_busqueda_de_producto_salvo_stock_que_ya_tiene_la_suya(): void
+    {
+        $this->fingirGateway([
+            'GET saldos/bajo-umbral' => Http::response([]), 'GET traslados' => self::listado([], 0), 'GET movimientos' => self::listado([]), 'GET bodegas' => self::bodegas(),
+            'GET indicadores' => Http::response($this->indicadores()), 'GET saldos' => self::listado([]),
+        ]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()->assertSee('id="buscar-global"', false)->assertSee('panel-inicio', false);
+        $this->conSesion('ADMINISTRADOR')->get('/stock')->assertOk()->assertDontSee('id="buscar-global"', false);
+    }
+
     public function test_el_contador_ve_los_indicadores_y_lo_que_mas_sale_pero_sin_enlace_a_compras(): void
     {
         $this->fingirGateway([
