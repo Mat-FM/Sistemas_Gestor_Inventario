@@ -1,4 +1,6 @@
 """/health, /docs, X-Request-Id, formato de errores y migraciones."""
+import pytest
+
 from app import db
 from app.migrar import migrar
 
@@ -73,3 +75,50 @@ def test_migrar_dos_veces_no_falla_ni_repite_migraciones():
     with db.conexion() as con:
         assert con.execute("SELECT count(*) AS n FROM migracion").fetchone()["n"] == 1
         assert con.execute("SELECT count(*) AS n FROM configuracion").fetchone()["n"] == 1
+
+
+def _falla_con(error, monkeypatch):
+    from app.services import configuracion
+
+    def falla():
+        raise error
+
+    monkeypatch.setattr(configuracion, "obtener", falla)
+
+
+def test_con_la_base_inalcanzable_responde_503_sin_detalles_internos(cliente, monkeypatch):
+    """Un fallo real de conexión (un PostgreSQL que nadie escucha), no uno inventado: responde 503 (RNF18) y no 500."""
+    import psycopg
+
+    with pytest.raises(psycopg.OperationalError) as caida:
+        psycopg.connect(host="127.0.0.1", port=1, user="nadie", password="clave-secreta-123", connect_timeout=1)
+    _falla_con(caida.value, monkeypatch)
+
+    res = cliente.get("/configuracion-alertas", headers={"X-User-Id": "1", "X-User-Rol": "ADMINISTRADOR"})
+
+    assert res.status_code == 503
+    assert res.json == {"error": {"codigo": "SERVICIO_NO_DISPONIBLE", "mensaje": "El servicio no está disponible.", "detalles": []}}
+    assert "clave-secreta-123" not in res.get_data(as_text=True)
+
+
+def test_sin_conexion_libre_en_el_pool_responde_503(cliente, monkeypatch):
+    from psycopg_pool import PoolTimeout
+
+    _falla_con(PoolTimeout("couldn't get a connection after 5.00 sec"), monkeypatch)
+
+    res = cliente.get("/configuracion-alertas", headers={"X-User-Id": "1", "X-User-Rol": "ADMINISTRADOR"})
+
+    assert res.status_code == 503
+    assert res.json["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE"
+
+
+def test_un_fallo_de_la_base_que_no_es_de_conexion_sigue_siendo_500(cliente, monkeypatch):
+    import psycopg
+
+    _falla_con(psycopg.errors.UndefinedColumn("column x no existe clave-secreta-123"), monkeypatch)
+
+    res = cliente.get("/configuracion-alertas", headers={"X-User-Id": "1", "X-User-Rol": "ADMINISTRADOR"})
+
+    assert res.status_code == 500
+    assert res.json["error"]["codigo"] == "ERROR_INTERNO"
+    assert "clave-secreta-123" not in res.get_data(as_text=True)
