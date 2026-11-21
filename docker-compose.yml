@@ -22,6 +22,9 @@ x-mysql: &mysql
     interval: 5s
     timeout: 3s
     retries: 20
+    # La primera vez MySQL crea su directorio de datos, y en un equipo cargado tarda más de los 100 s de los reintentos: durante este
+    # margen los fallos no cuentan (con la base lista, queda sana al primer acierto).
+    start_period: 150s
 
 x-postgres: &postgres
   image: postgres:16
