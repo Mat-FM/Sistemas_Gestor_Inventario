@@ -131,7 +131,7 @@ def test_indicadores_con_los_valores_por_defecto(client, datos):
     indicadores = respuesta.get_json()
     assert indicadores | {"mayor_rotacion": None} == {
         "valor_total": 231756.25, "productos_bajo_umbral": 1, "productos_agotados": 2, "proximos_a_vencer": 2,
-        "mayor_rotacion": None, "ordenes_pendientes": 3}
+        "mayor_rotacion": None, "ordenes_pendientes": 3, "no_disponibles": []}
     assert [p["codigo"] for p in indicadores["mayor_rotacion"]] == ["AGU-001", "CAF-500", "GAS-001"]
 
     hoy = date.today()
@@ -144,15 +144,59 @@ def test_indicadores_con_un_periodo_invertido(client):
     assert client.get("/indicadores?fecha_desde=2026-12-01&fecha_hasta=2026-11-01").status_code == 422
 
 
-def test_un_servicio_caido_responde_503(client, datos):
+def test_los_reportes_con_un_servicio_caido_responden_503(client, datos):
+    datos.responder("/saldos", requests.ConnectionError("rechazada"))
+
+    respuesta = client.get("/reportes/existencias")
+
+    assert respuesta.status_code == 503
+    assert respuesta.get_json()["error"] == {
+        "codigo": "SERVICIO_NO_DISPONIBLE", "mensaje": "ms-inventario no responde. Intente de nuevo más tarde.",
+        "detalles": []}
+
+
+def test_los_indicadores_sin_ms_compras_siguen_con_lo_demas(client, datos):
     datos.responder("/ordenes-compra", requests.ConnectionError("rechazada"))
 
     respuesta = client.get("/indicadores")
 
+    assert respuesta.status_code == 200
+    indicadores = respuesta.get_json()
+    assert indicadores["ordenes_pendientes"] is None
+    assert indicadores["no_disponibles"] == ["ordenes_pendientes"]
+    assert (indicadores["valor_total"], indicadores["productos_agotados"], indicadores["productos_bajo_umbral"]) == (231756.25, 2, 1)
+    assert len(indicadores["mayor_rotacion"]) == 3
+
+
+def test_los_indicadores_sin_ms_catalogo_pierden_solo_los_que_lo_necesitan(client, datos):
+    datos.responder("/productos", requests.ConnectionError("rechazada"))
+
+    indicadores = client.get("/indicadores").get_json()
+
+    assert indicadores["no_disponibles"] == ["valor_total", "productos_agotados", "mayor_rotacion"]
+    assert (indicadores["productos_bajo_umbral"], indicadores["proximos_a_vencer"], indicadores["ordenes_pendientes"]) == (1, 2, 3)
+
+
+def test_los_indicadores_sin_ms_inventario_conservan_las_ordenes(client, datos):
+    for ruta in ("/saldos", "/saldos/bajo-umbral", "/lotes", "/movimientos"):
+        datos.responder(ruta, requests.ConnectionError("rechazada"))
+
+    indicadores = client.get("/indicadores").get_json()
+
+    assert indicadores["ordenes_pendientes"] == 3
+    assert indicadores["no_disponibles"] == ["valor_total", "productos_bajo_umbral", "productos_agotados", "proximos_a_vencer", "mayor_rotacion"]
+    # Un servicio que ya falló en la petición no se vuelve a llamar: el Gateway espera 3 s por toda la respuesta.
+    assert datos.llamadas_a("/saldos/bajo-umbral") == [] and datos.llamadas_a("/lotes") == []
+
+
+def test_los_indicadores_responden_503_solo_si_no_hay_ninguno(client, datos):
+    for ruta in ("/productos", "/saldos", "/saldos/bajo-umbral", "/lotes", "/movimientos", "/ordenes-compra"):
+        datos.responder(ruta, requests.ConnectionError("rechazada"))
+
+    respuesta = client.get("/indicadores")
+
     assert respuesta.status_code == 503
-    assert respuesta.get_json()["error"] == {
-        "codigo": "SERVICIO_NO_DISPONIBLE", "mensaje": "ms-compras no responde. Intente de nuevo más tarde.",
-        "detalles": []}
+    assert respuesta.get_json()["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE"
 
 
 # ---------- Exportación ----------

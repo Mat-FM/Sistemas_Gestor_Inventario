@@ -35,7 +35,7 @@ ejemplos, está en `GET /docs`.
 | `GET` | `/reportes/valorizacion?id_bodega&formato` | 200 `{productos, valor_total}` | 422; 503 |
 | `GET` | `/reportes/rotacion?fecha_desde&fecha_hasta&limite&formato` | 200 `{mayor_rotacion, menor_rotacion}` | 422 fechas faltantes o rango no válido; 503 |
 | `GET` | `/reportes/kardex?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&formato` | 200 movimientos | 422; 503 |
-| `GET` | `/indicadores?fecha_desde&fecha_hasta` | 200 `{valor_total, productos_bajo_umbral, productos_agotados, proximos_a_vencer, mayor_rotacion, ordenes_pendientes}` | 422; 503 |
+| `GET` | `/indicadores?fecha_desde&fecha_hasta` | 200 `{valor_total, productos_bajo_umbral, productos_agotados, proximos_a_vencer, mayor_rotacion, ordenes_pendientes, no_disponibles}` | 422; 503 |
 | `POST` | `/importaciones` (multipart: `tipo`, `archivo`; cabecera `X-User-Id`) | 201 importación con sus errores | 400 sin `X-User-Id`; 422 formato no soportado, faltan columnas o archivo vacío |
 | `GET` | `/importaciones?tipo&pagina&por_pagina` | 200 listado paginado, más recientes primero | 422 |
 | `GET` | `/importaciones/{id}` | 200 importación con sus errores por fila | 404 |
@@ -111,7 +111,8 @@ Toda la comunicación está en `app/clients/` y pasa por `app/clients/base.py`:
   ms-proveedores **no** se reintentan: repetirlas rechazaría como duplicadas las filas ya creadas.
 - **Cortacircuitos:** uno por servicio. Tras 5 llamadas fallidas seguidas, durante 30 s no se le llama y se falla de
   inmediato; después se vuelve a probar.
-- Si un servicio no responde, los reportes responden 503 `SERVICIO_NO_DISPONIBLE` y la importación se guarda como
+- **Excepción, el panel de indicadores (RNF18):** si un servicio no responde, solo se pierden los indicadores que lo necesitan (salen en `null` y se listan en `no_disponibles`); responde 503 únicamente cuando no se puede calcular ninguno.
+- Si un servicio no responde, los demás reportes responden 503 `SERVICIO_NO_DISPONIBLE` y la importación se guarda como
   `FALLIDA`. Una respuesta con otra forma (por ejemplo sin `datos` o sin `creados`) se trata igual.
 
 **Notas:**

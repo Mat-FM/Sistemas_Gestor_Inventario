@@ -248,6 +248,9 @@ paths:
       description: |
         Roles en el Gateway ADMINISTRADOR y CONTADOR (RF14). Solo JSON. El periodo solo afecta a `mayor_rotacion`: sin
         `fecha_hasta` termina hoy y sin `fecha_desde` empieza 30 días antes. Los demás indicadores son del momento.
+
+        Si un servicio no responde, solo se pierden los indicadores que lo necesitan: salen en `null` y sus nombres en
+        `no_disponibles`. Responde 503 únicamente cuando no se puede calcular ninguno.
       parameters:
         - name: fecha_desde
           in: query
@@ -263,18 +266,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  valor_total: { type: number, description: Valor de todo el inventario., example: 231756.25 }
-                  productos_bajo_umbral: { type: integer, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
+                  valor_total: { type: number, nullable: true, description: Valor de todo el inventario., example: 231756.25 }
+                  productos_bajo_umbral: { type: integer, nullable: true, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
                   productos_agotados:
                     type: integer
+                    nullable: true
                     description: Productos ACTIVOS cuya suma en las dos bodegas es 0, también los que no tienen saldo.
                     example: 2
-                  proximos_a_vencer: { type: integer, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
+                  proximos_a_vencer: { type: integer, nullable: true, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
                   mayor_rotacion:
                     type: array
+                    nullable: true
                     description: Los 5 productos con más salidas en el periodo.
                     items: { $ref: '#/components/schemas/ProductoRotacion' }
-                  ordenes_pendientes: { type: integer, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+                  ordenes_pendientes: { type: integer, nullable: true, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+                  no_disponibles:
+                    type: array
+                    description: Indicadores que no se pudieron calcular porque un servicio no respondió (salen en null).
+                    items: { type: string }
+                    example: [ordenes_pendientes]
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '503': { $ref: '#/components/responses/ServicioNoDisponible' }
 
