@@ -202,6 +202,7 @@ cortacircuitos.
 | `SERVICE_NAME` | Nombre del servicio en los registros y en `/health` (`ms-reportes`) |
 | `PORT` | Puerto en el que escucha gunicorn en la imagen Docker (5000). `flask run` no lo lee: en local se indica con `--port` |
 | `GUNICORN_WORKERS` | Procesos de gunicorn en la imagen Docker (2) |
+| `GUNICORN_THREADS` | Hilos de cada proceso (8). Un reporte espera casi todo el tiempo a ms-catalogo, ms-inventario y ms-compras, así que con procesos síncronos solo se atendían 2 a la vez |
 | `LOG_LEVEL` | Nivel mínimo de los registros (`INFO`) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Conexión a PostgreSQL |
 | `MS_CATALOGO_URL`, `MS_PROVEEDORES_URL`, `MS_INVENTARIO_URL`, `MS_COMPRAS_URL` | Direcciones de los demás servicios. En el clúster, `http://<servicio>:<puerto>` |
