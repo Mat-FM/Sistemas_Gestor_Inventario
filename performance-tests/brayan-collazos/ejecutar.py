@@ -7,6 +7,7 @@ Uso (dentro del contenedor de Locust, ver README):
 
 Cada prueba deja en results/ sus CSV y un informe HTML de Locust; resumen.py arma RESULTADOS.md con todas.
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,11 @@ def correr(escenario, rapido):
     ]
     print(f"\n=== {escenario['id']} {escenario['clase']}: {usuarios} usuarios, {tasa}/s, {duracion}", flush=True)
     # Locust sale con 1 si hubo peticiones fallidas: eso no detiene las demás pruebas, lo dice el resumen.
-    return subprocess.run(comando, cwd=AQUI).returncode
+    codigo = subprocess.run(comando, cwd=AQUI).returncode
+    # Cómo llegaron las peticiones: las del Gateway van siempre por el Gateway; las de ms-inventario, según PERF_MODO.
+    via = "gateway" if escenario["archivo"] == "gateway.py" else os.environ.get("PERF_MODO", "directo").strip().lower()
+    (RESULTADOS / f"{escenario['id']}.via").write_text(via, encoding="utf-8")
+    return codigo
 
 
 def main(argumentos):
