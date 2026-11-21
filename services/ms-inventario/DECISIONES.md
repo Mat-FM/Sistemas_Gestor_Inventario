@@ -292,6 +292,16 @@ usan UTC y la API devuelve instantes ISO 8601 en UTC. Limitación conocida: un m
 día UTC siguiente. La comparación usa límites UTC explícitos y no depende del huso de la sesión de PostgreSQL. `fecha_desde`
 posterior a `fecha_hasta` es 422 (RF15).
 
+## D35. Con la base de datos inalcanzable el servicio responde 503, no 500
+
+Si PostgreSQL no acepta conexiones, el nombre de su contenedor ya no resuelve, cortó la conexión o el pool no consigue una a tiempo
+(`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, `ECONNRESET`, `ETIMEDOUT`, los códigos `57P01`/`57P02`/`57P03`, `53300` y los de la clase `08`,
+`KnexTimeoutError`, «Connection terminated» o «timeout exceeded when trying to connect»), el manejador de errores responde 503
+`SERVICIO_NO_DISPONIBLE` genérico y registra «Error de disponibilidad» con su `request_id`. Antes respondía 500, y para el cliente un 500 es
+un fallo del código que reintentar no arregla, mientras que un 503 se reintenta (RNF18). Un error de SQL (columna que no existe,
+violación de unicidad) sigue siendo 500: eso sí es un defecto. `/health` sigue sin consultar la base (D17). Lo comprobó la sonda
+«apagar cada base de datos» sobre la pila completa (2026-11-21), que también halló lo mismo en los demás servicios.
+
 ## D30. Las migraciones aplicadas son inmutables
 
 Todo cambio de esquema va en una migración nueva con su propio `down`, nunca editando una ya aplicada: las bases de los demás

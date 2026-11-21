@@ -72,7 +72,7 @@ registro de peticiones. `/health` no consulta la base de datos, para que una ca�
 
 Formato común (Entrega 2, sección 4.1): errores `{"error": {"codigo", "mensaje", "detalles"}}` con los códigos
 `PETICION_MAL_FORMADA` 400, `NO_AUTENTICADO` 401, `SIN_PERMISO` 403, `NO_EXISTE` 404, `CONFLICTO` 409,
-`DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 y `ERROR_INTERNO` 500 (sin traza ni mensaje), más los propios de este
+`DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 (también si PostgreSQL no se puede alcanzar, D35) y `ERROR_INTERNO` 500 (sin traza ni mensaje), más los propios de este
 servicio (`STOCK_INSUFICIENTE`, `CODIGO_DUPLICADO`, `BODEGA_INACTIVA`, `TRASLADO_YA_RECIBIDO`, `CONTEO_ESTADO_INVALIDO`, todos
 409); listados `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}` con `?pagina=1&por_pagina=20` (máximo 100);
 instantes en ISO 8601 UTC y fechas de un día como `AAAA-MM-DD`.
