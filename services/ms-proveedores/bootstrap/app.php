@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\ApiException;
+use App\Http\Middleware\ExigirRol;
 use App\Http\Middleware\RegistrarPeticion;
 use Illuminate\Database\LostConnectionDetector;
 use Illuminate\Database\QueryException;
@@ -26,6 +27,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // Registro de cada petición de la API (RNF10). /health y /docs quedan fuera, para que
         // las comprobaciones de Kubernetes no llenen los registros.
         $middleware->api(prepend: [RegistrarPeticion::class]);
+        // Después de las rutas resueltas y antes del controlador: el rol de cada ruta está en config/permisos.php.
+        $middleware->api(append: [ExigirRol::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Todas las respuestas de error son JSON con la forma común, pida lo que pida el cliente.

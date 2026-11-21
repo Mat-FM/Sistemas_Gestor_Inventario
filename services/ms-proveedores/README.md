@@ -14,8 +14,9 @@ Proveedores y su relación con los productos que suministran.
 - `ProveedorProducto` guarda solo `id_producto`, una referencia a ms-catalogo **sin clave foránea** (RNF02). Al
   asociar un producto no se consulta a ms-catalogo; el cliente web lo toma del catálogo.
 - Las asociaciones con productos sí se borran (borrado real), porque no tienen historia.
-- El servicio **no revisa roles**: el Gateway ya lo hizo antes de reenviar la petición, y el servicio solo es accesible
-  dentro del clúster.
+- **Los roles** los comprueba el Gateway antes de reenviar la petición y el servicio **los repite** (`config/permisos.php`, la Tabla 8; defensa en
+  profundidad, RNF07 y RNF09): un rol que no corresponde a la ruta es 403 `SIN_PERMISO`. Una petición sin `X-User-Rol` es una llamada interna
+  de otro servicio y no se restringe. `tests/Feature/PermisosRolesTest.php` compara la tabla con la matriz del Gateway.
 
 ## Rutas
 
