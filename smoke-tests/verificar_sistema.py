@@ -130,7 +130,7 @@ def esperar(condicion, segundos=15, cada=0.5):
     return None
 
 
-def esperar_estable(condicion, veces=8, segundos=90, cada=1):
+def esperar_estable(condicion, veces=8, segundos=90, cada=2):
     """Espera a que la condición se cumpla `veces` seguidas. Con varias copias o procesos de un servicio (gunicorn tiene 2), cada
     uno lleva su propio cortacircuitos: un solo acierto puede ser del que ya cerró, y el otro seguir abierto hasta 30 s."""
     fin = time.time() + segundos
@@ -814,8 +814,12 @@ def caidas():
 
     def sonda(nombre):
         _, metodo, ruta, cuerpo, deps = [x for x in sondas if x[0] == nombre][0]
-        ini = time.time()
-        r = llamar(metodo, ruta, token, cuerpo, clave() if metodo == "POST" else None, reintentar=False)
+        for _ in range(3):
+            ini = time.time()
+            r = llamar(metodo, ruta, token, cuerpo, clave() if metodo == "POST" else None, reintentar=False)
+            if r.estado != 429:  # el cupo de 100 por minuto se gasta con las esperas de recuperación: se espera y se repite, sin contar la espera
+                break
+            time.sleep(min(int(r.cabeceras.get("retry-after", 5)), 60) + 1)
         return r, time.time() - ini
 
     # Cae el servicio o cae solo su base de datos: para el resto del sistema es lo mismo (el dueño responde 503, nunca 500).
