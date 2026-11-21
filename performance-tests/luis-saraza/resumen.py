@@ -40,12 +40,13 @@ def veredicto(escenario, total):
     return "dentro del umbral" if cumple else "fuera del umbral"
 
 
-def main(rapido):
+def main(rapido, duracion=None):
     lineas = [
         "# Resultados de las pruebas de rendimiento — Luis Saraza",
         "",
         f"Generado el {datetime.now():%Y-%m-%d %H:%M} · modo `{os.environ.get('PERF_MODO', 'directo')}`"
-        + (" · **corrida rápida de comprobación (10 usuarios, 30 s): no es un resultado válido**" if rapido else ""),
+        + (" · **corrida rápida de comprobación (10 usuarios, 30 s): no es un resultado válido**" if rapido else "")
+        + (f" · **resultados preliminares: los usuarios de cada escenario, {duracion} por prueba**" if duracion else ""),
         "",
         "Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia (escritura, integración, contención,",
         "estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas.",
@@ -77,4 +78,4 @@ def main(rapido):
 
 
 if __name__ == "__main__":
-    main("--rapido" in sys.argv)
+    main("--rapido" in sys.argv, next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--duracion=")), None))

@@ -4,7 +4,8 @@
 > interacciones y reflexión final. Se redactó a partir del historial del repositorio (commits y pull requests) y de las sesiones de
 > trabajo de Brayan con Claude Code. **Cada fila es un hecho verificable en el repositorio; el nivel de intervención y la reflexión son un
 > juicio de quien usó la herramienta**, así que están propuestos y Brayan debe confirmarlos o cambiarlos con sus palabras antes de entregar.
-> Las filas de Luis y de Mateo no se pueden escribir desde aquí: cada uno debe registrar las suyas (hay una plantilla al final).
+> Las filas de Luis (sección 2.1) se redactaron a partir de sus commits y de su sesión de trabajo con Claude Code del 21/11; Luis debe
+> confirmarlas. Las de Mateo debe registrarlas él (hay una plantilla al final).
 
 ## 1. Datos de la bitácora
 
@@ -33,6 +34,22 @@ Herramienta en todas las filas: **Claude (Claude Code)**. Los resultados citan l
 | 19/11 | **Pruebas de funcionamiento de punta a punta** (`smoke-tests/`): 53 pruebas sobre todo el sistema en contenedores. | Analizar qué falta para completar el proyecto y probar que todos los microservicios funcionan. | Medio | Pasan 53 de 53. La prueba real encontró un defecto que ninguna prueba unitaria veía: la base de `ms-reportes` no tenía `healthcheck` y el compose completo no arrancaba. Aprendizaje: las primeras corridas fallaron por supuestos erróneos del propio guion (códigos de error, filtros), no del sistema; hay que distinguir un fallo del sistema de un fallo de la prueba. |
 | 19/11 | **Kubernetes en un clúster local (kind)**: despliegue, Ingress, NetworkPolicy, autoescalado y persistencia. | Aprobar la instalación de kind y probar el despliegue real. | Medio | Al desplegar de verdad aparecieron dos defectos de los manifiestos: el contenedor de espera de las migraciones corría como root y Kubernetes lo rechazaba, y compras y notificaciones se reiniciaban al arrancar antes que su base. Ya corregidos. Comprobado: las 53 pruebas pasan en Kubernetes, las NetworkPolicy aíslan las bases (RNF02), el Gateway y ms-inventario escalan de 1 a 4 copias (RNF05) y los datos sobreviven al reinicio de una base. |
 
+## 2.1 Registro de interacciones — Luis Alejandro Saraza Marín
+
+Herramienta en todas las filas: **Claude (Claude Code)**. Cada fila cita lo que se puede comprobar en el repositorio; el nivel de
+intervención es una propuesta que Luis debe confirmar o cambiar.
+
+| Fecha | Tarea / actividad apoyada | Prompt utilizado (resumen) | Nivel de intervención humana (propuesto) | Resultado / aprendizaje |
+|---|---|---|---|---|
+| 12/11 – 15/11 | **ms-compras** en Express y PostgreSQL: órdenes de compra con número consecutivo, recepción total o parcial, devoluciones a proveedor, idempotencia y cortacircuito hacia ms-inventario y ms-notificaciones (PR #12). | Implementar ms-compras según la Tabla 10 y los contratos de la Entrega 2 (RF06, RF13, RNF17, RNF18),con pruebas y un simulador de los otros servicios para desarrollar sin ellos. | Medio | 40 pruebas en 5 archivos (órdenes, recepciones simultáneas y con fallos, devoluciones, cortacircuito, /health y /docs), Dockerfile y CI con cobertura mínima del 60 %. Aprendizaje: el simulador permitió avanzar sin ms-inventario, pero no reemplaza probar contra el servicio real  |
+| 16/11 | **ms-notificaciones** en Flask y PostgreSQL: las seis rutas de la Tabla 11, alertas sin duplicar, preferencia de correo, configuración de alertas, revisión diaria de vencimientos y stock bajo, y envío por correo (PR #12). | Implementar ms-notificaciones según la Tabla 11 (RF09, RF17), con el mismo esquema de ms-compras: configuración por entorno, registros JSON, errores comunes y pruebas. | Medio | 61 pruebas, entre ellas la revisión diaria con ms-inventario caído y los fallos del correo; un índice único evita duplicar alertas sin leer cuando llegan avisos a la vez. Dockerfile con Gunicorn y CI con cobertura mínima del 60 %. |
+| 15/11 – 16/11 | **docker-compose.yml**: se agregaron ms-compras, ms-notificaciones y ms-inventario conectados entre sí, con un contenedor que aplica las migraciones de ms-inventario antes de arrancarlo. | Agregar al compose los servicios que ya tenían Dockerfile, con las direcciones reales de la red (RNF14) y sin migrar al arrancar cuando hay varias copias. | Medio | Los tres servicios arrancaron conectados y se usaron para las pruebas de integración y de rendimiento. Aprendizaje: con varias copias de un servicio, las migraciones van en un paso aparte que termina antes de arrancarlas. |
+| 16/11 | **Correcciones de ms-compras y ms-notificaciones** tras probarlos contra los servicios reales (PR #12). | Corregir lo que falló contra ms-inventario real y probar los casos de concurrencia que las pruebas no cubrían. | Alto | Un lote siempre viaja con su fecha de vencimiento; las alertas incluyen el último día de anticipación (`vence_antes_de` es estricto); la recepción usa una sola conexión para no agotar el pool con 25 recepciones simultáneas; la anulación toma el mismo candado que la recepción; pool lleno responde 503 y orden ocupada 409. Aprendizaje: los simuladores deben comportarse como el servicio real, o esconden errores. |
+| 16/11 | **15 pruebas de rendimiento con Locust** de ms-compras (C01–C09) y ms-notificaciones (N01–N06) (RNF06, RNF11). | Definir 15 pruebas de carga, escritura, integración, contención, estrés y pico frente a RNF06, en modo directo y por el Gateway. | Medio | Quedaron el código, el ejecutor y el resumen frente a RNF06 en `performance-tests/luis-saraza/`. Solo se corrió la comprobación rápida (10 usuarios, 30 s), que no vale como resultado; ver la fila del 21/11. |
+| 21/11 | **Revisión de que el sistema completo funcione y se conecte.** | Revisar que el proyecto funcione y que se conecten todos los microservicios. | Alto | La IA levantó todo y probó un flujo de compra por el Gateway, pero antes amplió el `docker-compose.yml` de la rama de Luis, que estaba desactualizada: ese trabajo ya estaba en `main` (PR #14 y #15). Al pedirle revisar las ramas y los PR se descartó lo hecho, se actualizó la rama a `main` y los smoke-tests del equipo pasaron 53 de 53. Aprendizaje: revisar las ramas y los PR antes de construir algo nuevo. |
+| 21/11 | **Revisión y corrección de las 15 pruebas de rendimiento.** | Revisar las 15 pruebas de rendimiento de ms-compras y ms-notificaciones y corregir lo que falle. | Alto | Se halló que en modo Gateway las pruebas se quedaban esperando sin hacer ninguna petición (un candado que la preparación volvía a pedir); se corrigió con un candado reentrante y se comprobó en los dos modos. También se corrigieron los lotes de la preparación, que con nombres fijos respondían 409 al repetir la corrida. Aprendizaje: un modo que nunca se ejecutó no está probado. |
+| 21/11 | **Resultados preliminares de las 15 pruebas.** | Correr las 15 con los usuarios de cada escenario y menos duración, como resultado preliminar. | Medio | Las 15 en modo directo, con los usuarios de cada escenario y 1 minuto por prueba (`RESULTADOS.md`). Las 8 de consulta cumplen RNF06 con p95 de 9 a 15 ms y errores de 0 a 0,05 %; las 7 de referencia quedan dentro del umbral (la más lenta, C08 con recepciones simultáneas sobre la misma orden, p95 de 380 ms). Los 14 errores de N01–N06 fueron conexiones cortadas sin respuesta, 11 de ellos en el pico de 200 usuarios. Falta medir por el Gateway. Aprendizaje: un resultado preliminar debe decir cómo se midió para no confundirlo con el definitivo. |
+
 ## 3. Reflexión final de la fase *(borrador: reescribir con tus palabras)*
 
 En esta fase usamos la IA como implementadora de servicios con contratos ya definidos, como revisora de lo que hicieron los demás
@@ -48,19 +65,18 @@ ejecutarlo: primero con pruebas unitarias, luego con los servicios reales y fina
 Otra regla fue que **el equipo decide lo que entra**: las herramientas nuevas se consultaron antes de instalarlas, los cambios que
 tocaban código de otros integrantes se explicaron en el pull request y se evitó mezclar en un mismo commit servicios distintos.
 
-## 4. Plantilla para Luis y Mateo
+## 4. Plantilla para Mateo
 
-Cada uno debe registrar sus propias interacciones con herramientas de IA en esta fase (si usó alguna), con el mismo formato:
+Mateo debe registrar sus propias interacciones con herramientas de IA en esta fase (si usó alguna), con el mismo formato:
 
 | Fecha | Integrante | Herramienta de IA | Tarea / actividad apoyada | Prompt utilizado (resumen) | Nivel de intervención humana | Resultado / aprendizaje |
 |---|---|---|---|---|---|---|
-| | Luis Alejandro Saraza Marín | | *(por ejemplo: ms-compras y ms-notificaciones, PR #12; pruebas de rendimiento de compras y notificaciones)* | | | |
 | | Mateo Falla Muñoz | | *(por ejemplo: ms-catalogo, ms-proveedores y ms-reportes, PR #4 a #7 y #13)* | | | |
 
 > *El nivel de intervención humana (Alto, Medio o Bajo) indica cuánto modificó el equipo lo que generó la IA.*
 
 ## 5. Evidencia en el repositorio
 
-- Pull requests fusionados: #1 a #3 (Gateway), #8 y #9 (ms-inventario), #11 y #13 (integración de ms-reportes), #14 y #15 (cliente web, compose y Kubernetes), #16 (conteos, importaciones, rendimiento y análisis de código).
-- Pruebas: `smoke-tests/verificar_sistema.py` (53 pruebas de todo el sistema), `performance-tests/brayan-collazos/` (15 de rendimiento) y las suites de cada servicio.
+- Pull requests fusionados: #1 a #3 (Gateway), #8 y #9 (ms-inventario), #11 y #13 (integración de ms-reportes), #12 (ms-compras y ms-notificaciones), #14 y #15 (cliente web, compose y Kubernetes), #16 (conteos, importaciones, rendimiento y análisis de código).
+- Pruebas: `smoke-tests/verificar_sistema.py` (53 pruebas de todo el sistema), `performance-tests/brayan-collazos/` y `performance-tests/luis-saraza/` (15 de rendimiento cada uno) y las suites de cada servicio.
 - Decisiones de `ms-inventario`: `services/ms-inventario/DECISIONES.md`.
