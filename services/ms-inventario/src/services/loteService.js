@@ -1,6 +1,7 @@
 const { e } = require('../errors');
 const { scopeBodega } = require('../middleware/identity');
 const loteRepository = require('../repositories/loteRepository');
+const reloj = require('../domain/hoy');
 const { planificarFefo } = require('./stockService');
 
 // Lógica de negocio de las consultas de lotes (RF17; RNF13): la lista de lotes (GET /lotes) y la sugerencia de salida FEFO (GET
@@ -45,7 +46,8 @@ async function listarLotes({ db }, { identity, idProducto, idBodega, venceAntesD
  */
 async function sugerirSalida({ db }, { identity, idProducto, idBodega, cantidad }) {
   const bodegaEfectiva = scopeBodega(identity, idBodega);
-  const lotes = await loteRepository.listarConExistencia(db, { idBodega: bodegaEfectiva, idProducto });
+  // D36: la sugerencia es de una SALIDA, así que solo propone lotes vigentes (los vencidos no se despachan).
+  const lotes = await loteRepository.listarConExistencia(db, { idBodega: bodegaEfectiva, idProducto }, reloj.hoy());
   const { asignaciones, restante } = planificarFefo(lotes, cantidad);
   if (restante > 0) {
     // planificarFefo toma TODO lo que hay cuando no alcanza: lo disponible en lotes es lo pedido menos lo que faltó.

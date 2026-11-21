@@ -1,4 +1,5 @@
 const { delta } = require('../domain/tipos');
+const reloj = require('../domain/hoy');
 const { e } = require('../errors');
 const { esFechaValida } = require('../http/validate');
 const bodegaRepository = require('../repositories/bodegaRepository');
@@ -180,11 +181,12 @@ async function salirSinLote(trx, { idBodega, idProducto, saldo, solicitado }) {
 
 /**
  * Salida por FEFO (D6): bloquea los lotes del par con existencia en orden FEFO, los consume con planificarFefo y deja el
- * `restante` al stock sin lote (que alcanza: el saldo ya se comprobó y la suma de los lotes no lo supera).
+ * `restante` al stock sin lote (que alcanza: el saldo ya se comprobó y la suma de los lotes no lo supera). Con `vigenteDesde`
+ * (una SALIDA, D36) los lotes vencidos no entran en el plan: el saldo que se comprobó ya los descontó.
  * @returns {Promise<number|null>} el id del PRIMER lote consumido, o null si no se consumió ninguno
  */
-async function salirPorFefo(trx, { idBodega, idProducto, solicitado }) {
-  const lotes = await loteRepository.listarParaFefo(trx, { idBodega, idProducto });
+async function salirPorFefo(trx, { idBodega, idProducto, solicitado, vigenteDesde = null }) {
+  const lotes = await loteRepository.listarParaFefo(trx, { idBodega, idProducto }, vigenteDesde);
   const { asignaciones } = planificarFefo(lotes, solicitado);
   for (const { id_lote: id, cantidad } of asignaciones) await ajustarLote(trx, id, -cantidad);
   return asignaciones.length > 0 ? asignaciones[0].id_lote : null;
@@ -240,12 +242,23 @@ async function aplicarMovimiento(trx, datos) {
   const saldo = await saldoRepository.bloquear(trx, par);
   // El lote pedido por id se toma (y se valida, 404) antes de mirar el stock: una referencia inválida se informa primero.
   const lotePedido = idLote === null ? null : await bloquearLoteDelPar(trx, idLote, par);
+  // D36: una SALIDA no despacha mercancía vencida. Sin lote pedido, lo vencido no cuenta como disponible y no entra en el FEFO; con
+  // lote pedido, ese lote no puede estar vencido. Los demás movimientos que bajan el saldo (AJUSTE, DEVOLUCION_PROVEEDOR) sí pueden
+  // llevarse lo vencido: es como se da de baja.
+  const sinVencidos = tipo === 'SALIDA';
+  const hoy = sinVencidos ? reloj.hoy() : null;
+  if (sinVencidos && lotePedido?.fecha_vencimiento && lotePedido.fecha_vencimiento < hoy) {
+    throw e.conflicto('LOTE_VENCIDO', `El lote ${lotePedido.codigo_lote} venció el ${lotePedido.fecha_vencimiento}: una salida no puede despacharlo (dé de baja lo vencido con un ajuste)`);
+  }
+  const vencido = sinVencidos && lotePedido === null ? await loteRepository.sumarVencidos(trx, par, hoy) : 0;
+  const vendible = saldo.cantidad_disponible - vencido;
   const disponible = saldo.cantidad_disponible;
   const resultante = disponible + cambio;
-  if (resultante < 0) {
+  if (resultante < 0 || -cambio > vendible) {
     const solicitado = -cambio;
+    const aviso = vencido > 0 ? ` (hay ${vencido} unidades vencidas que no se pueden despachar)` : '';
     throw e.conflicto('STOCK_INSUFICIENTE', 'No hay stock suficiente en la bodega para este movimiento', [
-      { campo: 'cantidad', mensaje: `Disponible: ${disponible}; solicitado: ${solicitado}`, disponible, solicitado },
+      { campo: 'cantidad', mensaje: `Disponible: ${vendible}; solicitado: ${solicitado}${aviso}`, disponible: vendible, solicitado },
     ]);
   }
   // Se comprueba aquí y no se deja a la base: el 22003 de PostgreSQL acabaría en un 500.
@@ -263,7 +276,7 @@ async function aplicarMovimiento(trx, datos) {
   } else if (tipo === 'TRASLADO_SALIDA') {
     await salirSinLote(trx, { ...par, saldo: disponible, solicitado: -cambio }); // D28(a): nunca FEFO; id_lote null
   } else {
-    idLoteMovimiento = await salirPorFefo(trx, { ...par, solicitado: -cambio });
+    idLoteMovimiento = await salirPorFefo(trx, { ...par, solicitado: -cambio, vigenteDesde: hoy });
   }
 
   await saldoRepository.fijarCantidad(trx, saldo.id_saldo, resultante);

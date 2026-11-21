@@ -302,6 +302,17 @@ un fallo del código que reintentar no arregla, mientras que un 503 se reintenta
 violación de unicidad) sigue siendo 500: eso sí es un defecto. `/health` sigue sin consultar la base (D17). Lo comprobó la sonda
 «apagar cada base de datos» sobre la pila completa (2026-11-21), que también halló lo mismo en los demás servicios.
 
+## D36. Una salida no despacha lotes vencidos
+
+Un lote está **vencido** si su fecha de vencimiento es anterior a hoy (el día de Bogotá, `src/domain/hoy.js`: el servidor suele estar
+en UTC y a las 8 p. m. ya sería «mañana»); el que vence hoy todavía se puede vender y los lotes sin fecha nunca vencen. Antes (D6)
+el FEFO empezaba por los que vencen primero, es decir, por los vencidos, y una salida los despachaba. Ahora, en un movimiento
+`SALIDA`: sin `id_lote`, el FEFO sale de los lotes vigentes y del stock sin lote, y lo vencido no cuenta como disponible
+(`STOCK_INSUFICIENTE` con `disponible` = lo vendible, y el mensaje dice cuántas unidades vencidas hay); con `id_lote` de un lote
+vencido es 409 `LOTE_VENCIDO`. `GET /lotes/sugerencia-salida` propone solo lotes vigentes. Los demás movimientos que bajan el saldo
+no cambian: un `AJUSTE` negativo y una `DEVOLUCION_PROVEEDOR` siguen consumiendo primero lo vencido, que es como se da de baja. El
+traslado nunca hace FEFO (D28(a)). Las alertas de ms-notificaciones y `GET /lotes?vence_antes_de` siguen mostrando lo vencido.
+
 ## D30. Las migraciones aplicadas son inmutables
 
 Todo cambio de esquema va en una migración nueva con su propio `down`, nunca editando una ya aplicada: las bases de los demás
