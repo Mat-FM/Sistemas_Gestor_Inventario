@@ -20,23 +20,25 @@
 @section('clase-cuerpo', 'con-menu')
 
 @section('cuerpo')
+    <a class="saltar" href="#contenido">Saltar al contenido</a>
+
     {{-- Barra lateral (computador y tableta) --}}
     <aside class="lateral d-none d-md-flex">
         <a class="marca" href="{{ route('inicio') }}" aria-label="El Montañero, inicio">@include('partials.marca')</a>
-        <nav class="d-flex flex-column gap-1 overflow-auto">
+        <nav aria-label="Secciones" class="d-flex flex-column gap-1 overflow-auto">
             @foreach ($menu as $entrada)
                 @continue($entrada['ruta'] === 'administrar')
-                <a class="enlace {{ $activo($entrada['ruta']) ? 'activo' : '' }}" href="{{ route($entrada['ruta']) }}">
+                <a class="enlace {{ $activo($entrada['ruta']) ? 'activo' : '' }}" href="{{ route($entrada['ruta']) }}"@if ($activo($entrada['ruta'])) aria-current="page"@endif>
                     <i class="bi bi-{{ $entrada['icono'] }}"></i> {{ $entrada['etiqueta'] }}
                 </a>
             @endforeach
-            <a class="enlace {{ $activo('notificaciones.index') ? 'activo' : '' }}" href="{{ route('notificaciones.index') }}">
+            <a class="enlace {{ $activo('notificaciones.index') ? 'activo' : '' }}" href="{{ route('notificaciones.index') }}"@if ($activo('notificaciones.index')) aria-current="page"@endif>
                 <span class="campana"><i class="bi bi-bell"></i>@if ($alertasSinLeer)<span class="globo">{{ $alertasSinLeer > 99 ? '99+' : $alertasSinLeer }}</span>@endif</span> Alertas
             </a>
             @if (count($administracion))
                 <div class="seccion">Administración</div>
                 @foreach ($administracion as $seccion)
-                    <a class="enlace {{ $activo($seccion['ruta']) ? 'activo' : '' }}" href="{{ route($seccion['ruta']) }}">
+                    <a class="enlace {{ $activo($seccion['ruta']) ? 'activo' : '' }}" href="{{ route($seccion['ruta']) }}"@if ($activo($seccion['ruta'])) aria-current="page"@endif>
                         <i class="bi bi-{{ $seccion['icono'] }}"></i> {{ $seccion['etiqueta'] }}
                     </a>
                 @endforeach
@@ -81,7 +83,7 @@
         </div>
     </header>
 
-    <main class="contenedor">
+    <main class="contenedor" id="contenido" tabindex="-1">
         {{-- Escritorio: buscar un producto y ver las alertas desde cualquier pantalla (la tecla «/» enfoca el cuadro) --}}
         <div class="barra-escritorio d-none d-md-flex">
             {{-- En «Stock» la propia pantalla ya trae su búsqueda: no se repite --}}
@@ -104,7 +106,7 @@
     @if (count($menuMovil) > 1)
         <nav class="menu-inferior d-md-none" aria-label="Menú principal">
             @foreach ($menuMovil as $entrada)
-                <a class="{{ $activo($entrada['ruta']) ? 'activo' : '' }}" href="{{ route($entrada['ruta']) }}">
+                <a class="{{ $activo($entrada['ruta']) ? 'activo' : '' }}" href="{{ route($entrada['ruta']) }}"@if ($activo($entrada['ruta'])) aria-current="page"@endif>
                     <i class="bi bi-{{ $entrada['icono'] }}"></i>{{ $entrada['etiqueta'] }}
                 </a>
             @endforeach

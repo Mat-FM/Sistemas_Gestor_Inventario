@@ -91,3 +91,6 @@ document.addEventListener('keydown', function (evento) {
   var cuadro = document.getElementById('buscar-global');
   if (cuadro && cuadro.offsetParent !== null) { evento.preventDefault(); cuadro.focus(); cuadro.select(); }
 });
+
+// Los iconos son decoración: el texto de cada botón o enlace ya dice lo que hace. Así el lector de pantalla no los lee.
+document.querySelectorAll('i.bi').forEach(function (icono) { icono.setAttribute('aria-hidden', 'true'); });

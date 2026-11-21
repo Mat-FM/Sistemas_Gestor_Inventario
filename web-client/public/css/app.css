@@ -53,6 +53,10 @@
   --bs-border-radius: .8rem;
   --bs-border-radius-lg: 1.1rem;
   --bs-focus-ring-color: rgba(217, 144, 26, .35);
+  /* Rojo, verde y ámbar de los textos de Bootstrap, oscurecidos para llegar a 4,5:1 sobre el papel (WCAG AA) */
+  --bs-danger-rgb: 179, 38, 30;
+  --bs-success-rgb: 31, 107, 58;
+  --bs-warning-text-emphasis: #7a5200;
 }
 html { scroll-behavior: smooth; }
 body { font-size: 1rem; min-height: 100vh; font-feature-settings: "tnum" 0; -webkit-font-smoothing: antialiased; }
@@ -60,9 +64,16 @@ h1, h2, h3, .h1, .h2, .h3, .h4, .h5 { font-family: var(--serif); font-weight: 60
 h1, .h4 { font-size: 1.65rem; }
 .text-suave { color: var(--em-suave) !important; }
 .text-primary { color: var(--selva) !important; }
+.text-warning { --bs-warning-rgb: 168, 104, 10; }
 a { text-underline-offset: .18em; }
 ::selection { background: var(--ambar-nieblina); }
-:focus-visible { outline: 3px solid rgba(217, 144, 26, .55); outline-offset: 2px; border-radius: .4rem; }
+:focus-visible { outline: 3px solid #a8680a; outline-offset: 2px; border-radius: .4rem; }
+/* Sobre fondo oscuro, el ámbar claro */
+.lateral :focus-visible, .barra-superior :focus-visible, .acceso-panel :focus-visible { outline-color: #f0b84d; }
+/* «Saltar al contenido»: escondido hasta que recibe el foco con el teclado */
+.saltar { position: fixed; left: .75rem; top: -4rem; z-index: 2000; padding: .7rem 1.1rem; border-radius: .8rem; background: var(--tierra); color: #fff; font-weight: 700; text-decoration: none; transition: top .15s; }
+.saltar:focus { top: .75rem; }
+main:focus { outline: none; }
 
 /* Botones y campos */
 .btn { font-weight: 600; border-radius: .8rem; transition: transform .12s ease, background-color .15s ease, box-shadow .15s ease; }
