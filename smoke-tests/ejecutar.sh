@@ -35,6 +35,8 @@ llave() { echo "base64:$(openssl rand -base64 32)"; }
   echo "JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')"
   echo "GATEWAY_APP_KEY=$(llave)"; echo "CATALOGO_APP_KEY=$(llave)"; echo "PROVEEDORES_APP_KEY=$(llave)"; echo "WEB_APP_KEY=$(llave)"
   echo "ADMIN_EMAIL=admin@prueba.test"; echo "ADMIN_PASSWORD=ClavePrueba2026"
+  # Opcionales: súbelos para medir el rendimiento del Gateway (performance-tests/brayan-collazos); con los de siempre se mediría el límite.
+  echo "GATEWAY_RATE_LIMIT_PER_MINUTE=${GATEWAY_RATE_LIMIT_PER_MINUTE:-100}"; echo "GATEWAY_LOGIN_RATE_LIMIT_PER_MINUTE=${GATEWAY_LOGIN_RATE_LIMIT_PER_MINUTE:-10}"
   echo "GATEWAY_PORT=18100"; echo "WEB_PORT=18101"; echo "INVENTARIO_PORT=18102"; echo "COMPRAS_PORT=18103"; echo "NOTIFICACIONES_PORT=18104"
 } > "$ENV"
 chmod 600 "$ENV"
