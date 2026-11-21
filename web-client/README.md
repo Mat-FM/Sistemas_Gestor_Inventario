@@ -23,6 +23,20 @@ Interfaz web del sistema para el personal de la distribuidora. Solo se comunica 
 | Administrar (menú «Más») | Solo el administrador | **Productos** (crear, editar, dar de baja y buscar; RF01, RF12), **categorías** de dos niveles (RF02), **proveedores** y los productos que suministran (RF03), **bodegas** (RF05), **stock mínimo** por producto, **usuarios** con su rol y bodega, contraseña temporal y baja (RF07) y la **configuración de las alertas** (días de anticipación y hora de la revisión diaria) y la **importación masiva** de productos, proveedores y stock inicial desde CSV o Excel, con plantillas y los errores fila por fila (RF16) |
 
 
+## Diseño
+
+La identidad es **la cordillera y el café** (Manizales): verde selva y madera sobre papel crema, con el ámbar de la cosecha como acento. No es una plantilla de Bootstrap con otro color: todo lo visual sale de las variables de `public/css/app.css` (paleta, radios, sombras) y Bootstrap queda debajo solo para la rejilla, los formularios y los menús.
+
+- **Marca:** un signo propio (montañas y sol sobre verde, `public/img/marca.svg`, que también es el favicon) con el nombre en serif.
+- **Tipografía:** *Fraunces* (títulos y cifras) y *Hanken Grotesk* (texto), ambas con licencia OFL y alojadas en `public/vendor/fuentes/` (con sus licencias): no se pide nada a internet.
+- **Estructura:** en celular, barra superior oscura con una línea ámbar y menú inferior flotante con el elemento activo resaltado; desde `md`, barra lateral verde oscuro con curvas de nivel de fondo, indicador ámbar del elemento activo y la cuenta (avatar con iniciales) al pie.
+- **Acceso:** dos paneles (la marca con su lema y el formulario); en celular el panel pasa arriba.
+- **Inicio:** saludo según la hora de la distribuidora, con la fecha y lo que cada rol viene a hacer; indicadores con un riel de color por tipo, acciones grandes con su ícono de color y estados vacíos con ilustración.
+- **Computador:** desde 1200 px el contenido gana ancho (hasta 88 rem en pantallas grandes) y el inicio se reparte en dos columnas (indicadores arriba; lo urgente y los accesos debajo); la lista de stock pasa a rejilla de tarjetas y los formularios no se estiran. Una barra superior trae la búsqueda de producto (la tecla `/` la enfoca desde cualquier pantalla, salvo en Stock, que ya tiene la suya) y la campana de alertas. Se revisó a 1024, 1366 y 1920 px.
+- **Movimiento:** los bloques entran con una animación suave que se desactiva con «reducir movimiento» del sistema.
+- **Accesibilidad:** objetivos táctiles de al menos 44 px, foco visible en ámbar, contraste de texto sobre fondo claro y oscuro, y todo se verificó en pantallas desde 360 px hasta 1920 px.
+- **Indicadores que no se pueden calcular:** si un servicio no responde, el panel muestra «—» (no un 0) y avisa que faltan datos; el resto sigue al día.
+
 ## Cómo funciona
 
 - **Sesión:** el token del Gateway va en la sesión de Laravel, guardada en una cookie cifrada y `HttpOnly` (así no hace falta base de datos ni sesión compartida entre copias); nunca llega al HTML ni a JavaScript. La sesión dura lo mismo que el token (60 minutos). Si el Gateway responde 401, se cierra y se vuelve al inicio de sesión. Por eso **todas las copias deben llevar la misma `APP_KEY`** (con otra no pueden leer la cookie de la otra) y, bajo HTTPS, hay que poner `SESSION_SECURE_COOKIE=true`.
