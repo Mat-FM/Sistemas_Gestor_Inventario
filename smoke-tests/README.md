@@ -47,7 +47,8 @@ corrida): no la corras sobre los datos de la demo.
 | 11. Conteo físico | RF18 | Programar, contar por partes, aprobar con ajuste del saldo, aprobación idempotente, 403 al operador |
 | 12. Cliente web | RNF21 | Entra por el formulario y recorre 24 pantallas del administrador; el operador recibe 403 en administración |
 | 13. Trazabilidad y resiliencia | RNF10, RNF18 | Un identificador de petición se sigue entre Gateway y servicios; con notificaciones caído se sigue registrando; con catálogo o proveedores caído el Gateway responde 503 (no 500) y todo se recupera al volver |
-| 14. Límites | RNF19 | 429 con `Retry-After` tras 100 peticiones por minuto por usuario y tras 10 inicios de sesión por minuto desde una IP |
+| 14. Caída de cada microservicio | RNF18 | Apaga **uno por uno** los seis microservicios y comprueba, con 13 operaciones y 4 pantallas web, que lo que no depende de él sigue funcionando, que lo que sí responde 503 rápido (nunca 500 ni una espera larga), que el panel de indicadores solo pierde lo que necesita al servicio caído y que todo vuelve a la normalidad |
+| 15. Límites | RNF19 | 429 con `Retry-After` tras 100 peticiones por minuto por usuario y tras 10 inicios de sesión por minuto desde una IP |
 
 Si un 429 interrumpe una petición, el guion espera el `Retry-After` y la repite: el límite de 100 por minuto es de cada usuario y
 las pantallas del cliente web hacen varias llamadas cada una (por eso el recorrido del cliente web usa su propio administrador).

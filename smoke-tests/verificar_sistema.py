@@ -325,7 +325,7 @@ def usuarios_y_roles():
         roles = {x["nombre"]: x["id_rol"] for x in lista(llamar("GET", "/api/roles", E["admin"]))}
         exigir({"OPERADOR_BODEGA", "VENDEDOR", "CONTADOR"} <= set(roles), f"roles: {list(roles)}")
         temporal = "Temporal2026"
-        for clave_rol, rol, bodega in (("operador", "OPERADOR_BODEGA", E["bodega1"]), ("vendedor", "VENDEDOR", None), ("contador", "CONTADOR", None), ("adminweb", "ADMINISTRADOR", None)):
+        for clave_rol, rol, bodega in (("operador", "OPERADOR_BODEGA", E["bodega1"]), ("vendedor", "VENDEDOR", None), ("contador", "CONTADOR", None), ("adminweb", "ADMINISTRADOR", None), ("adminmatriz", "ADMINISTRADOR", None)):
             cuerpo = {"nombre": f"Prueba {clave_rol}", "correo": f"{clave_rol}.{sufijo}@prueba.test", "id_rol": roles[rol], "contrasena_temporal": temporal}
             if bodega:
                 cuerpo["id_bodega"] = bodega
@@ -759,8 +759,98 @@ def resiliencia_y_trazabilidad():
         exigir(esperar(lambda: llamar("GET", "/api/proveedores", E["admin"]).estado == 200, 60, 2), "proveedores no volvió")
 
 
+def caidas():
+    grupo("14. Si se cae un microservicio, el resto sigue funcionando (RNF18)")
+    # De qué servicios depende cada operación (Tabla 2 de la Entrega 2 y lo observado). Con uno caído, las que dependen de él responden
+    # 503 SERVICIO_NO_DISPONIBLE (rápido, nunca 500 ni colgada) y todas las demás siguen funcionando.
+    b1, p1, prov = E["bodega1"], E["p1"], E["proveedor"]
+    sondas = [  # nombre, método, ruta, cuerpo, dependencias
+        ("usuarios (solo Gateway)", "GET", "/api/usuarios", None, set()),
+        ("productos", "GET", "/api/productos?por_pagina=5", None, {"ms-catalogo"}),
+        ("proveedores", "GET", "/api/proveedores", None, {"ms-proveedores"}),
+        ("saldos", "GET", "/api/saldos", None, {"ms-inventario"}),
+        ("kardex", "GET", "/api/movimientos?por_pagina=5", None, {"ms-inventario"}),
+        ("bodegas", "GET", "/api/bodegas", None, {"ms-inventario"}),
+        ("registrar entrada", "POST", "/api/movimientos", {"tipo": "ENTRADA", "id_producto": p1, "id_bodega": b1, "cantidad": 1}, {"ms-inventario", "ms-catalogo"}),
+        ("órdenes de compra", "GET", "/api/ordenes-compra", None, {"ms-compras"}),
+        ("crear orden", "POST", "/api/ordenes-compra", {"id_proveedor": prov, "id_bodega_destino": b1, "fecha_esperada": en_dias(9),
+                                                      "detalles": [{"id_producto": p1, "cantidad_pedida": 1, "precio_unitario": 100}]}, {"ms-compras"}),
+        ("alertas", "GET", "/api/notificaciones", None, {"ms-notificaciones"}),
+        ("reporte de existencias", "GET", "/api/reportes/existencias", None, {"ms-reportes", "ms-inventario", "ms-catalogo"}),
+        ("valorización", "GET", "/api/reportes/valorizacion", None, {"ms-reportes", "ms-inventario", "ms-catalogo"}),
+        ("panel de indicadores", "GET", "/api/indicadores", None, {"ms-reportes"}),  # los demás servicios solo le quitan indicadores
+    ]
+    listo = {"ms-catalogo": "productos", "ms-proveedores": "proveedores", "ms-inventario": "saldos", "ms-compras": "órdenes de compra",
+             "ms-notificaciones": "alertas", "ms-reportes": "reporte de existencias"}
+    token = E["adminmatriz"]  # un administrador propio: cada usuario tiene su cupo de 100 peticiones por minuto y las pantallas web usan otro
+
+    # Una sesión del cliente web para ver que las pantallas siguen en pie.
+    jar = http.cookiejar.CookieJar()
+    abrir = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    html = abrir.open(ARGS.web + "/login", timeout=20).read().decode()
+    csrf = re.search(r'name="_token" value="([^"]+)"', html).group(1)
+    abrir.open(urllib.request.Request(ARGS.web + "/login", data=urllib.parse.urlencode(
+        {"_token": csrf, "correo": f"adminweb.{E['sufijo']}@prueba.test", "contrasena": "ClaveUsuario2026"}).encode()), timeout=20)
+
+    def pagina(ruta):
+        try:
+            r = abrir.open(ARGS.web + ruta, timeout=25)
+            return r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode("utf-8", "replace")
+
+    def sonda(nombre):
+        _, metodo, ruta, cuerpo, deps = [x for x in sondas if x[0] == nombre][0]
+        ini = time.time()
+        r = llamar(metodo, ruta, token, cuerpo, clave() if metodo == "POST" else None, reintentar=False)
+        return r, time.time() - ini
+
+    for servicio in ("ms-notificaciones", "ms-reportes", "ms-proveedores", "ms-catalogo", "ms-compras", "ms-inventario"):
+        def comprobar(servicio=servicio):
+            parar(servicio)
+            try:
+                time.sleep(2)
+                fallas = []
+                for nombre, metodo, ruta, cuerpo, deps in sondas:
+                    r, seg = sonda(nombre)
+                    esperado_503 = servicio in deps
+                    if esperado_503 and not (r.estado == 503 and r.datos and r.datos["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE"):
+                        fallas.append(f"«{nombre}» debía dar 503 y dio {r.estado}")
+                    elif not esperado_503 and r.estado not in (200, 201):
+                        fallas.append(f"«{nombre}» debía seguir funcionando y dio {r.estado} {r.texto[:80]}")
+                    if seg > 6:
+                        fallas.append(f"«{nombre}» tardó {seg:.1f} s")
+                exigir(not fallas, "; ".join(fallas))
+                # El panel de indicadores no cae entero: solo pierde lo que necesita al servicio caído.
+                if servicio in ("ms-catalogo", "ms-inventario", "ms-compras"):
+                    r, _ = sonda("panel de indicadores")
+                    perdidos = r.datos.get("no_disponibles", [])
+                    exigir(r.estado == 200 and perdidos and len(perdidos) < 6, f"indicadores con {servicio} caído: {r.estado} no_disponibles={perdidos}")
+                # Las pantallas del cliente web responden y conservan su menú y sus acciones (nunca un error 500).
+                for ruta, marca in (("/", "Buen"), ("/stock", "Stock"), ("/movimientos", "Movimientos"), ("/compras/ordenes", "Compras")):
+                    estado, cuerpo_html = pagina(ruta)
+                    exigir(estado == 200 and marca in cuerpo_html, f"la pantalla {ruta} dio {estado} con {servicio} caído")
+            finally:
+                arrancar(servicio)
+            exigir(esperar(lambda: sonda(listo[servicio])[0].estado == 200, 90, 3), f"{servicio} no se recuperó en 90 s")
+            return "lo demás siguió funcionando y volvió a la normalidad"
+
+        prueba(f"Con {servicio} caído, lo que no depende de él sigue funcionando y lo que sí responde 503", solo_con_docker=True)(comprobar)
+
+    @prueba("Con ms-reportes caído, el inicio sigue mostrando alertas de stock y accesos (solo faltan los indicadores)", solo_con_docker=True)
+    def _():
+        parar("ms-reportes")
+        try:
+            estado, cuerpo_html = pagina("/")
+            exigir(estado == 200 and "Entra mercancía" in cuerpo_html, f"el inicio dio {estado} o perdió sus accesos")
+            exigir("No pudimos calcular los indicadores" in cuerpo_html, "el inicio no avisa que faltan los indicadores")
+        finally:
+            arrancar("ms-reportes")
+        exigir(esperar(lambda: sonda("reporte de existencias")[0].estado == 200, 90, 3), "ms-reportes no se recuperó")
+
+
 def limites():
-    grupo("14. Límite de peticiones (RNF19)")
+    grupo("15. Límite de peticiones (RNF19)")
 
     @prueba("Más de 100 peticiones por minuto por usuario: 429 con Retry-After")
     def _():
@@ -795,7 +885,7 @@ def main():
     print(f"Pruebas de funcionamiento · Gateway {ARGS.gateway} · cliente web {ARGS.web} · sufijo {E['sufijo']}")
 
     for etapa in (salud_y_documentacion, autenticacion, aislamiento, usuarios_y_roles, catalogo_y_proveedores, inventario, compras, alertas,
-                  reportes, importaciones, conteos, cliente_web, resiliencia_y_trazabilidad) + (() if ARGS.sin_limites else (limites,)):
+                  reportes, importaciones, conteos, cliente_web, resiliencia_y_trazabilidad, caidas) + (() if ARGS.sin_limites else (limites,)):
         try:
             etapa()
         except KeyError as e:  # una etapa anterior falló y no dejó lo que esta necesita
