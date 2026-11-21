@@ -6,6 +6,7 @@ Es la misma forma y los mismos textos que usan el API Gateway, ms-catalogo y ms-
 import logging
 
 from flask import Flask, jsonify
+from sqlalchemy import exc as sa_exc
 from werkzeug.exceptions import HTTPException
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,22 @@ class ApiError(Exception):
         return cls(500, "ERROR_INTERNO", "Error interno del servidor.")
 
 
+# SQLSTATE de conexión: servidor apagándose, caído, sin aceptar aún o sin conexiones libres.
+_SQLSTATE_DE_CONEXION = {"53300", "57P01", "57P02", "57P03"}
+
+
+def _base_inalcanzable(e: Exception) -> bool:
+    """La base no se puede alcanzar (conexión rechazada o cortada, sin conexión libre en el pool). No es un fallo del
+    código: un reintento puede funcionar, así que se responde 503 y no 500 (RNF18)."""
+    if isinstance(e, sa_exc.TimeoutError):
+        return True
+    if isinstance(e, sa_exc.OperationalError):
+        # Sin SQLSTATE es un fallo del lado del cliente (no pudo conectar, se cortó); con él, solo los de conexión.
+        sqlstate = getattr(e.orig, "sqlstate", None)
+        return sqlstate is None or sqlstate.startswith("08") or sqlstate in _SQLSTATE_DE_CONEXION
+    return False
+
+
 def _responder(error: ApiError):
     return jsonify(error.cuerpo()), error.status
 
@@ -80,5 +97,8 @@ def registrar_manejadores(app: Flask) -> None:
     # Último recurso: cualquier otro fallo es un 500 genérico. La traza solo va al registro.
     @app.errorhandler(Exception)
     def _error_inesperado(e: Exception):
+        if _base_inalcanzable(e):
+            log.error("base_de_datos_inalcanzable", extra={"contexto": {"tipo": type(e).__name__}})
+            return _responder(ApiError.servicio_no_disponible())
         log.exception("error_interno")
         return _responder(ApiError.error_interno())
