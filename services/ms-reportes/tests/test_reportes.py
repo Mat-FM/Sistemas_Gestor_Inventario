@@ -119,6 +119,38 @@ def test_kardex_con_los_filtros_de_movimientos(client, datos):
     assert "fecha_hasta" not in filtros
 
 
+def test_kardex_con_mas_movimientos_que_el_maximo_pide_acotar_sin_recorrer_todo(client, datos, app):
+    """Con ~75 000 movimientos recorrer todas las páginas tarda más de los 3 s que espera el Gateway: se responde 422
+    de inmediato, con la primera página, y se pide acotar la consulta."""
+    app.config["KARDEX_MAX_FILAS"] = 150
+    datos.responder("/movimientos", lambda llamada: paginado(list(range(151)), llamada))
+
+    respuesta = client.get("/reportes/kardex")
+
+    assert respuesta.status_code == 422
+    error = respuesta.get_json()["error"]
+    assert error["codigo"] == "DATOS_NO_VALIDOS"
+    assert error["detalles"] == [{"campo": "filtros", "mensaje": (
+        "El kardex tiene 151 movimientos y el máximo por consulta es 150: acote por producto, bodega, tipo o fechas.")}]
+    assert len(datos.llamadas_a("/movimientos")) == 1
+
+
+def test_kardex_justo_en_el_maximo_se_entrega_completo(client, datos, app):
+    app.config["KARDEX_MAX_FILAS"] = len(SALIDAS)
+
+    respuesta = client.get("/reportes/kardex")
+
+    assert respuesta.status_code == 200
+    assert len(respuesta.get_json()) == len(SALIDAS)
+
+
+def test_kardex_en_archivo_tambien_respeta_el_maximo(client, datos, app):
+    app.config["KARDEX_MAX_FILAS"] = 1
+    datos.responder("/movimientos", lambda llamada: paginado(list(range(2)), llamada))
+
+    assert client.get("/reportes/kardex?formato=csv").status_code == 422
+
+
 def test_kardex_valida_los_filtros(client):
     respuesta = client.get("/reportes/kardex?tipo=ROBO&id_usuario=x&formato=xml")
 

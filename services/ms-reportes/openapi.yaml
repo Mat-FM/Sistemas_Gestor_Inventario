@@ -190,6 +190,9 @@ paths:
         Roles en el Gateway ADMINISTRADOR y CONTADOR (RF15). Los movimientos de `GET /movimientos` de ms-inventario con
         sus mismos filtros, del más reciente al más antiguo, con el código y el nombre del producto y el nombre de la
         bodega. Sin paginar.
+
+        Con más de `KARDEX_MAX_FILAS` movimientos (5000 por defecto) responde 422 con el total y pide acotar por
+        producto, bodega, tipo o fechas: traerlos de 100 en 100 tardaría más de los 3 s que espera el Gateway.
       parameters:
         - name: id_producto
           in: query

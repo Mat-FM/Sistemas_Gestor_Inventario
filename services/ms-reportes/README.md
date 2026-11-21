@@ -34,7 +34,7 @@ ejemplos, está en `GET /docs`.
 | `GET` | `/reportes/existencias?id_bodega&id_categoria&formato` | 200 existencias por producto y bodega | 422; 503 |
 | `GET` | `/reportes/valorizacion?id_bodega&formato` | 200 `{productos, valor_total}` | 422; 503 |
 | `GET` | `/reportes/rotacion?fecha_desde&fecha_hasta&limite&formato` | 200 `{mayor_rotacion, menor_rotacion}` | 422 fechas faltantes o rango no válido; 503 |
-| `GET` | `/reportes/kardex?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&formato` | 200 movimientos | 422; 503 |
+| `GET` | `/reportes/kardex?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&formato` | 200 movimientos | 422 filtros no válidos o más de `KARDEX_MAX_FILAS` movimientos (pide acotar); 503 |
 | `GET` | `/indicadores?fecha_desde&fecha_hasta` | 200 `{valor_total, productos_bajo_umbral, productos_agotados, proximos_a_vencer, mayor_rotacion, ordenes_pendientes, no_disponibles}` | 422; 503 |
 | `POST` | `/importaciones` (multipart: `tipo`, `archivo`; cabecera `X-User-Id`) | 201 importación con sus errores | 400 sin `X-User-Id`; 422 formato no soportado, faltan columnas o archivo vacío |
 | `GET` | `/importaciones?tipo&pagina&por_pagina` | 200 listado paginado, más recientes primero | 422 |
@@ -206,6 +206,7 @@ cortacircuitos.
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Conexión a PostgreSQL |
 | `MS_CATALOGO_URL`, `MS_PROVEEDORES_URL`, `MS_INVENTARIO_URL`, `MS_COMPRAS_URL` | Direcciones de los demás servicios. En el clúster, `http://<servicio>:<puerto>` |
 | `CALL_TIMEOUT_SECONDS` | Tiempo máximo de cada intento de llamada a otro servicio (3) |
+| `KARDEX_MAX_FILAS` | Movimientos máximos que acepta traer el kardex (5000). Con más responde 422 y pide acotar: traerlos de 100 en 100 tardaría más de los 3 s que espera el Gateway |
 
 ## Registros (RNF10)
 
