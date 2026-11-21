@@ -132,6 +132,8 @@ class ReporteController extends Controller
             'filas' => array_slice($filas ?? [], 0, self::FILAS_EN_PANTALLA),
             'total' => count($filas ?? []),
             'fallo' => $fallo !== null,
+            // Con demasiados movimientos ms-reportes pide acotar (422) y dice cuántos hay: se muestra su aviso.
+            'avisoDelServicio' => $fallo?->estado === 422 ? ($fallo->erroresPorCampo()['filtros'] ?? null) : null,
             'bodegas' => $bodegas ?? [],
             'productos' => collect($productos ?? [])->mapWithKeys(fn ($p) => [$p['id_producto'] => $p['nombre'].' ('.$p['codigo'].')'])->all(),
             'usuarios' => $esAdministrador ? collect($usuarios ?? [])->pluck('nombre', 'id_usuario')->all() : null,
@@ -159,7 +161,7 @@ class ReporteController extends Controller
 
             return back()->with('error', $e->esAmbigua()
                 ? 'No se pudo generar el archivo. Si el reporte es muy grande, prueba con un periodo o una bodega más acotados.'
-                : ($e->estado === 422 ? 'Revisa los filtros: no son válidos.' : 'No se pudo generar el archivo.'));
+                : ($e->estado === 422 ? ($e->erroresPorCampo()['filtros'] ?? 'Revisa los filtros: no son válidos.') : 'No se pudo generar el archivo.'));
         }
 
         return response($archivo['cuerpo'], 200, array_filter([
