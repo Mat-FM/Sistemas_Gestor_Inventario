@@ -313,6 +313,17 @@ vencido es 409 `LOTE_VENCIDO`. `GET /lotes/sugerencia-salida` propone solo lotes
 no cambian: un `AJUSTE` negativo y una `DEVOLUCION_PROVEEDOR` siguen consumiendo primero lo vencido, que es como se da de baja. El
 traslado nunca hace FEFO (D28(a)). Las alertas de ms-notificaciones y `GET /lotes?vence_antes_de` siguen mostrando lo vencido.
 
+## D37. Cada ruta lleva su lista de roles dentro del servicio
+
+El Gateway ya comprueba el rol de cada ruta (Tabla 9, 23 reglas), pero un servicio que acepta cualquier `X-User-Rol` depende de que nadie
+le salte el Gateway. `src/routes/permisos.js` repite esa matriz (más la ruta interna de la carga inicial, que es de ADMINISTRADOR) y
+`registrarRutas` pone `exigirRol` en cada ruta: un rol que no figura es 403 `SIN_PERMISO` antes de que la ruta haga nada, y el servicio
+no arranca si una ruta declarada no tiene regla. Dos lecturas quedan sin restringir (`null`): `GET /saldos/bajo-umbral` y `GET /lotes`,
+que ms-reportes lee para el panel de indicadores con la identidad del usuario que lo pidió (un CONTADOR), mientras que el Gateway solo
+deja entrar a ADMINISTRADOR y OPERADOR_BODEGA; restringirlas aquí rompería el panel. Una petición sin `X-User-Rol` es una llamada interna
+de lectura (D8) y no se restringe. `tests/permisosRoles.test.js` compara la tabla con `api-gateway/config/gateway_routes.php` y prueba las
+cuatro roles en cada ruta, así que las dos matrices no pueden separarse sin que falle una prueba. Atiende RNF07 y RNF09.
+
 ## D30. Las migraciones aplicadas son inmutables
 
 Todo cambio de esquema va en una migración nueva con su propio `down`, nunca editando una ya aplicada: las bases de los demás

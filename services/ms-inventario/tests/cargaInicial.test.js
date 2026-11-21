@@ -183,10 +183,17 @@ describe('POST /internas/saldos/carga-inicial: filas válidas (200)', () => {
     expect(clients.notificaciones.notificarStockBajo).toHaveBeenCalledTimes(1);
   });
 
-  it('cualquier rol con X-User-Id y X-User-Rol vale: la ruta no aplica alcance por bodega (llamada interna; el Gateway ya limita quién importa)', async () => {
-    const operador = headers('OPERADOR_BODEGA', { idUsuario: 11, idBodega: B2 });
-    expect((await cargar([fila({ id_bodega: B1 })], { cabeceras: operador })).body).toEqual({ creados: 1, rechazados: [] });
+  it('la importa un ADMINISTRADOR sin alcance por bodega, aunque tenga una asignada (llamada interna: ms-reportes reenvía su identidad)', async () => {
+    const admin = headers('ADMINISTRADOR', { idUsuario: 11, idBodega: B2 });
+    expect((await cargar([fila({ id_bodega: B1 })], { cabeceras: admin })).body).toEqual({ creados: 1, rechazados: [] });
     expect((await movimientos())[0]).toEqual(expect.objectContaining({ id_bodega: B1, id_usuario: 11 }));
+  });
+
+  it('otro rol es 403 SIN_PERMISO y no se escribe nada (D37: importar stock inicial es de ADMINISTRADOR)', async () => {
+    const res = await cargar([fila({ id_bodega: B1 })], { cabeceras: headers('OPERADOR_BODEGA', { idUsuario: 11, idBodega: B1 }) });
+    expect(res.status).toBe(403);
+    expect(res.body.error.codigo).toBe('SIN_PERMISO');
+    expect(await movimientos()).toEqual([]);
   });
 });
 

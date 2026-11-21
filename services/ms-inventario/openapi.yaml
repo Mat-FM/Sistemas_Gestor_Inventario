@@ -220,6 +220,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '409':
           description: 'Ya existe una bodega con ese código (sin distinguir mayúsculas), también si está inactiva.'
           content:
@@ -279,6 +280,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -313,6 +315,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -343,6 +346,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -433,6 +437,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ListadoUmbrales' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
@@ -469,6 +474,7 @@ paths:
               schema: { $ref: '#/components/schemas/Umbral' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404':
           description: 'El producto no existe en ms-catalogo, o el `{id_producto}` no es un entero positivo.'
           content:
@@ -1017,6 +1023,7 @@ paths:
               schema: { $ref: '#/components/schemas/Conteo' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404':
           description: 'La bodega no existe.'
           content:
@@ -1195,6 +1202,7 @@ paths:
               schema: { $ref: '#/components/schemas/ConteoAprobado' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '409':
           description: |
@@ -1274,6 +1282,7 @@ paths:
               schema: { $ref: '#/components/schemas/ResultadoCargaInicial' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '413':
           description: 'El cuerpo supera 1 MB.'
           content:

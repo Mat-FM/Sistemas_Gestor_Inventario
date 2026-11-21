@@ -421,8 +421,10 @@ El servicio **no autentica a quien le llama**: confía en `X-User-Id`, `X-User-R
 hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
 
 - **Lo que hace el servicio:** valida el formato de las cabeceras (una inválida es 401, nunca un 500 ni se ignora), no tiene
-  usuarios propios y deja el permiso por rol al Gateway. Las rutas `/internas/*` las llaman solo otros servicios: el Gateway
-  no las publica, y el servicio no las distingue de las demás.
+  usuarios propios y **repite la matriz de roles del Gateway** (D37, `src/routes/permisos.js`): un rol que no corresponde a la
+  ruta es 403 `SIN_PERMISO`. Solo se exceptúan `GET /saldos/bajo-umbral` y `GET /lotes`, que ms-reportes lee para el panel con la
+  identidad del contador, y las lecturas internas sin `X-User-Rol`. Las rutas `/internas/*` las llaman solo otros servicios: el
+  Gateway no las publica, y el servicio no las distingue de las demás (la carga inicial es de ADMINISTRADOR).
 - **Lo que no hace:** no comprueba quién envía las cabeceras ni filtra por origen (IP o token entre servicios): cualquiera que
   alcance el puerto puede llamar a `/internas/*` (la carga inicial exige `X-User-Id` y `X-User-Rol`, pero no verifica que
   vengan de ms-reportes), y `/health` y `/docs` no piden identidad.
