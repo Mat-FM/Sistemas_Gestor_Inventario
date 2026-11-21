@@ -70,7 +70,7 @@ def main(rapido):
         detalle.append(f"\n### {e['id']} — {e['descripcion']}\n")
         detalle.append("| Operación | Peticiones | Errores | p95 (ms) |\n|---|---|---|---|")
         for f in filas:
-            detalle.append(f"| `{f['Type']} {f['Name']}` | {numero(f, 'Request Count'):.0f} | {numero(f, 'Failure Count'):.0f} | {numero(f, '95%'):.0f} |")
+            detalle.append(f"| `{f['Name']}` | {numero(f, 'Request Count'):.0f} | {numero(f, 'Failure Count'):.0f} | {numero(f, '95%'):.0f} |")
     lineas += ["", "## Detalle por operación"] + detalle + [""]
     (AQUI / "RESULTADOS.md").write_text("\n".join(lineas), encoding="utf-8")
     print("\n".join(lineas[:9 + len(ESCENARIOS)]))
