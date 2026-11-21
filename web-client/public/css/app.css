@@ -175,8 +175,9 @@ main:focus { outline: none; }
   /* El contador: indicadores, valor y lo que más sale, y sus accesos con los movimientos */
   .panel-contador .pi-indicadores { grid-column: 1 / -1; grid-row: 1; }
   .panel-contador .pi-aviso { grid-column: 1; grid-row: 2; }
-  .panel-contador .pi-tareas { grid-column: 2; grid-row: 2; }
-  .panel-contador .pi-movimientos { grid-column: 1 / -1; grid-row: 3; }
+  .panel-contador .pi-rotacion { grid-column: 2; grid-row: 2; }
+  .panel-contador .pi-movimientos { grid-column: 1; grid-row: 3; }
+  .panel-contador .pi-tareas { grid-column: 2; grid-row: 3; }
 }
 @media (min-width: 992px) {
   /* Listas de tarjetas (stock): dos o tres por fila */
@@ -184,6 +185,9 @@ main:focus { outline: none; }
   /* Formularios: no se estiran por toda la pantalla */
   form.tarjeta, .tarjeta.formulario { max-width: 46rem; }
   .acceso-formulario form.tarjeta { max-width: none; }
+  /* Importar: el formulario y las plantillas, lado a lado */
+  .importar-par { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 1.25rem; align-items: start; }
+  .importar-par form.tarjeta { max-width: none; }
 }
 @media (min-width: 1600px) { .contenedor { max-width: 88rem; } }
 
@@ -204,6 +208,7 @@ main:focus { outline: none; }
 a.fila-dato { transition: background-color .15s ease, padding .15s ease; border-radius: .6rem; }
 a.fila-dato:hover { background: #f7f1e2; padding-left: .5rem; padding-right: .5rem; }
 .fila-dato:last-child { border-bottom: 0; }
+.fila-dato > .btn { flex: none; white-space: nowrap; }
 .cifra { font-family: var(--serif); font-size: 2rem; font-weight: 600; line-height: 1.05; font-variant-numeric: lining-nums tabular-nums; letter-spacing: -.02em; }
 .nada { color: var(--em-suave); text-align: center; padding: 1.6rem .75rem; }
 .nada > i { display: inline-grid; place-items: center; width: 3.4rem; height: 3.4rem; border-radius: 50%; background: var(--madera-nieblina); color: var(--madera); font-size: 1.5rem; margin-bottom: .5rem; }

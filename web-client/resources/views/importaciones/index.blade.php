@@ -5,6 +5,7 @@
 @section('contenido')
     @include('partials.encabezado', ['titulo' => 'Importar datos', 'volver' => route('administrar'), 'textoVolver' => 'Más'])
 
+    <div class="importar-par">
     <form method="post" action="{{ route('importaciones.guardar') }}" enctype="multipart/form-data" class="tarjeta" novalidate>
         @csrf
         <h2>Subir un archivo</h2>
@@ -32,6 +33,7 @@
             </div>
         @endforeach
     </section>
+    </div>
 
     <section class="tarjeta">
         <h2>Importaciones anteriores</h2>

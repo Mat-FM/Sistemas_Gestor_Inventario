@@ -109,6 +109,16 @@ class InicioTest extends TestCase
         $this->conSesion('ADMINISTRADOR')->get('/stock')->assertOk()->assertDontSee('id="buscar-global"', false);
     }
 
+    public function test_el_inicio_del_vendedor_no_repite_la_busqueda_en_la_barra_superior(): void
+    {
+        $this->fingirGateway([]);
+
+        // Su inicio ya es un cuadro de búsqueda; en otra pantalla sí la trae.
+        $this->conSesion('VENDEDOR')->get('/')->assertOk()->assertDontSee('id="buscar-global"', false)->assertSee('name="q"', false);
+        $this->fingirGateway(['GET productos' => self::listado([]), 'GET bodegas' => self::bodegas(), 'GET notificaciones' => self::listado([], 0)]);
+        $this->conSesion('VENDEDOR')->get('/notificaciones')->assertOk()->assertSee('id="buscar-global"', false);
+    }
+
     public function test_el_contador_ve_los_indicadores_y_lo_que_mas_sale_pero_sin_enlace_a_compras(): void
     {
         $this->fingirGateway([

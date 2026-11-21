@@ -86,8 +86,8 @@
     <main class="contenedor" id="contenido" tabindex="-1">
         {{-- Escritorio: buscar un producto y ver las alertas desde cualquier pantalla (la tecla «/» enfoca el cuadro) --}}
         <div class="barra-escritorio d-none d-md-flex">
-            {{-- En «Stock» la propia pantalla ya trae su búsqueda: no se repite --}}
-            @if (! request()->routeIs('stock'))
+            {{-- En «Stock» y en el inicio del vendedor (que es un cuadro de búsqueda) la propia pantalla ya la trae: no se repite --}}
+            @if (! request()->routeIs('stock') && ! ($rutaActual === 'inicio' && $sesion->rol() === \App\Support\Roles::VENDEDOR))
                 <form class="buscar-global" method="get" action="{{ route('stock') }}" role="search">
                     <i class="bi bi-search"></i>
                     <input class="form-control" type="search" name="q" id="buscar-global" placeholder="Buscar un producto por nombre o código" aria-label="Buscar producto" autocomplete="off">

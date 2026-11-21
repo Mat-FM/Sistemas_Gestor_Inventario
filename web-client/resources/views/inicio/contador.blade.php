@@ -9,15 +9,17 @@
         <div class="pi-indicadores">
         @if (! $falloIndicadores)
             @include('partials.indicadores', ['indicadores' => $indicadores])
-            @if (count($indicadores['mayor_rotacion']))
-                <section class="tarjeta">
-                    <h2>Lo que más sale</h2>
-                    @foreach ($indicadores['mayor_rotacion'] as $r)
-                        <div class="fila-dato"><span>{{ $r['nombre'] }}</span><span class="cant">{{ \App\Support\Formato::numero($r['salidas']) }} salidas</span></div>
-                    @endforeach
-                    <div class="small text-suave mt-2">En los últimos 30 días.</div>
-                </section>
-            @endif
+        @endif
+        </div>
+        <div class="pi-rotacion">
+        @if (! $falloIndicadores && count($indicadores['mayor_rotacion']))
+            <section class="tarjeta">
+                <h2>Lo que más sale</h2>
+                @foreach ($indicadores['mayor_rotacion'] as $r)
+                    <div class="fila-dato"><span>{{ $r['nombre'] }}</span><span class="cant">{{ \App\Support\Formato::numero($r['salidas']) }} salidas</span></div>
+                @endforeach
+                <div class="small text-suave mt-2">En los últimos 30 días.</div>
+            </section>
         @endif
         </div>
         <div class="pi-aviso">
