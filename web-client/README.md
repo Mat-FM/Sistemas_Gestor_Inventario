@@ -34,7 +34,7 @@ La identidad es **la cordillera y el café** (Manizales): verde selva y madera s
 - **Inicio:** saludo según la hora de la distribuidora, con la fecha y lo que cada rol viene a hacer; indicadores con un riel de color por tipo, acciones grandes con su ícono de color y estados vacíos con ilustración.
 - **Computador:** desde 1200 px el contenido gana ancho (hasta 88 rem en pantallas grandes) y el inicio se reparte en dos columnas (indicadores arriba; lo urgente y los accesos debajo); la lista de stock pasa a rejilla de tarjetas y los formularios no se estiran. Una barra superior trae la búsqueda de producto (la tecla `/` la enfoca desde cualquier pantalla, salvo en Stock, que ya tiene la suya) y la campana de alertas. Se revisó a 1024, 1366 y 1920 px.
 - **Movimiento:** los bloques entran con una animación suave que se desactiva con «reducir movimiento» del sistema.
-- **Accesibilidad:** objetivos táctiles de al menos 44 px, foco visible en ámbar, contraste de texto sobre fondo claro y oscuro, y todo se verificó en pantallas desde 360 px hasta 1920 px.
+- **Accesibilidad (WCAG 2.1 AA):** enlace «Saltar al contenido» al primer Tab, `aria-current` en la sección actual, navegaciones con nombre, iconos ocultos al lector de pantalla, objetivos táctiles de al menos 44 px, foco visible con contraste suficiente (ámbar oscuro sobre fondo claro y ámbar claro sobre el oscuro) y textos de al menos 4,5:1 (se oscurecieron el rojo, el verde y el ámbar de los textos de Bootstrap). Se verificó en pantallas desde 360 px hasta 1920 px; `tests/Feature/AccesibilidadTest.php` guarda lo estructural.
 - **Indicadores que no se pueden calcular:** si un servicio no responde, el panel muestra «—» (no un 0) y avisa que faltan datos; el resto sigue al día.
 
 ## Cómo funciona
@@ -55,7 +55,7 @@ La identidad es **la cordillera y el café** (Manizales): verde selva y madera s
 - **`TRUSTED_PROXIES` del Gateway:** el Gateway limita los inicios de sesión por IP (10 por minuto). Este cliente envía `X-Forwarded-For` con la IP real de cada usuario; si el Gateway no confía en este servidor, verá siempre la misma IP y todos los usuarios compartirían un solo límite. Hay que poner la IP o el CIDR de este servicio en `TRUSTED_PROXIES` del Gateway.
 - **Proxies de confianza de este cliente:** detrás de un Ingress, `request()->ip()` es la IP del Ingress salvo que este servicio también confíe en él (`trustProxies` en `bootstrap/app.php`, solo con IP o CIDR concretos, nunca `*`). Sin eso, el `X-Forwarded-For` que envía al Gateway no sirve para lo que fue pensado. Está pendiente de configurar con el despliegue en `k8s/`.
 - Las alertas son **por rol**: hoy todos los avisos de los servicios (stock bajo, vencimientos, órdenes recibidas) van al rol ADMINISTRADOR, así que la campana de los demás roles siempre está vacía. Es del diseño de `ms-notificaciones`, no de la interfaz.
-- `GET /indicadores` falla entero (503) si `ms-compras` o `ms-inventario` no responden: por eso el inicio lo trata como un bloque aparte.
+- `GET /indicadores` ya no falla entero si cae un servicio: devuelve `null` en lo que no puede calcular y lista `no_disponibles` (503 solo si no se puede calcular ninguno); el inicio lo trata como un bloque aparte y muestra «—» en lo que falta.
 
 ## Instalación y ejecución
 
