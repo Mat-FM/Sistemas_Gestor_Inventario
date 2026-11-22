@@ -1,29 +1,83 @@
 # Resultados de las pruebas de rendimiento — Mateo Falla (ms-catalogo, ms-proveedores y ms-reportes)
 
-Generado el 2026-11-21 17:47. La columna «Vía» dice cómo llegó cada prueba: `gateway` (por el API Gateway, con sesión) o `directo` (a cada servicio) · **resultados preliminares: los usuarios de cada escenario, 1m por prueba**
+Generado el 2026-11-22 02:51 con Locust 2.31.8. · **resultados preliminares: los usuarios de cada escenario, 2m por prueba**
 
-Entorno: MacBook Pro Apple M5 Pro (24 GB), sistema completo con Docker Compose (imágenes del repositorio, un contenedor por servicio y por base de datos), con el equipo en uso (otra aplicación consumía un núcleo). Todas las pruebas van por el API Gateway con una sola cuenta de administrador y con sus límites de peticiones subidos (RATE_LIMIT_PER_MINUTE=100000 y LOGIN_RATE_LIMIT_PER_MINUTE=1000), para medir los servicios y no el limitador (RNF19). Pila nueva (catálogo con unas decenas de productos) y las 15 seguidas en el orden de escenarios.py. Es una medición local de desarrollo, con el generador de carga en el mismo equipo; no es el despliegue en Kubernetes.
+Entorno: sin declarar
 
-Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia (escritura, integración, contención,
-estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas.
+Estado de la API: los listados de ms-catalogo y ms-proveedores **paginan** (`?pagina&por_pagina`, 20 por defecto, máximo 100). ms-reportes no pagina sus reportes: los calcula recorriendo **todo** el catálogo y los saldos (de 100 en 100) en cada petición, y limita el kardex a `KARDEX_MAX_FILAS`.
 
-| Prueba | Vía | Tipo | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |
-|---|---|---|---|---|---|---|---|---|---|---|
-| R01 ExistenciasYValorizacion | gateway | carga | 1282 | 0 (0.00%) | 120 | 590 | 6100 | 6371 | 21.7 | CUMPLE |
-| R02 RotacionEIndicadores | gateway | carga | 1120 | 0 (0.00%) | 370 | 2300 | 2900 | 3409 | 18.6 | NO CUMPLE |
-| R03 KardexFiltrado | gateway | carga | 1387 | 0 (0.00%) | 160 | 640 | 1200 | 1663 | 23.5 | CUMPLE |
-| R04 DescargasCsvYPdf | gateway | exportacion | 675 | 1 (0.15%) | 470 | 1800 | 2500 | 3070 | 11.2 | dentro del umbral |
-| R05 EstresReportes | gateway | estres | 693 | 15 (2.16%) | 850 | 2700 | 3400 | 3697 | 11.3 | fuera del umbral |
-| K01 ListadoProductos | gateway | carga | 1726 | 0 (0.00%) | 60 | 190 | 280 | 384 | 29.3 | CUMPLE |
-| K02 BusquedaDeProductos | gateway | carga | 1717 | 0 (0.00%) | 56 | 250 | 400 | 624 | 29.1 | CUMPLE |
-| K03 ConsultaPuntual | gateway | carga | 1738 | 0 (0.00%) | 51 | 160 | 330 | 465 | 29.4 | CUMPLE |
-| K04 AltaDeProductos | gateway | escritura | 1699 | 0 (0.00%) | 56 | 240 | 350 | 541 | 28.7 | dentro del umbral |
-| K05 EstresCatalogo | gateway | estres | 1157 | 22 (1.90%) | 16 | 120 | 1300 | 1544 | 19.6 | fuera del umbral |
-| K06 PicoCatalogo | gateway | pico | 4630 | 0 (0.00%) | 170 | 690 | 6700 | 62007 | 71.1 | dentro del umbral |
-| P01 ListadoProveedores | gateway | carga | 1629 | 0 (0.00%) | 37 | 69 | 410 | 524 | 27.6 | CUMPLE |
-| P02 ProveedorConSusProductos | gateway | carga | 1616 | 0 (0.00%) | 35 | 60 | 390 | 492 | 27.3 | CUMPLE |
-| P03 AltaDeProveedores | gateway | escritura | 1602 | 0 (0.00%) | 40 | 89 | 720 | 831 | 27.1 | dentro del umbral |
-| P04 PicoProveedores | gateway | pico | 3744 | 18 (0.48%) | 340 | 730 | 8200 | 50030 | 62.4 | dentro del umbral |
+Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas. Un estado inesperado o un cuerpo que no cumple lo esperado (por ejemplo, una importación que no queda PROCESADA) cuenta como error.
+
+| Prueba | Tipología | Qué ejercita | Vía | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| R01 ExistenciasYValorizacion | carga | consulta | gateway | 3618 | 0 (0.00%) | 27 | 35 | 2000 | 4803 | 30.4 | CUMPLE |
+| R02 RotacionEIndicadores | carga | consulta | gateway | 3684 | 1 (0.03%) | 36 | 49 | 60 | 195 | 30.9 | CUMPLE |
+| R03 KardexFiltrado | carga | consulta | gateway | 3721 | 0 (0.00%) | 29 | 35 | 43 | 107 | 31.2 | CUMPLE |
+| R04 DescargasCsvYPdf | carga | exportacion | gateway | 2178 | 0 (0.00%) | 43 | 180 | 340 | 785 | 18.3 | dentro del umbral |
+| R05 ImportacionStockInicial | carga | importacion | gateway | 736 | 0 (0.00%) | 61 | 74 | 140 | 150 | 6.2 | dentro del umbral |
+| K01 ListadoYProducto | carga | consulta | gateway | 3750 | 0 (0.00%) | 20 | 26 | 36 | 2806 | 31.5 | CUMPLE |
+| K02 BusquedaYCategorias | carga | consulta | gateway | 3771 | 0 (0.00%) | 20 | 26 | 30 | 49 | 31.7 | CUMPLE |
+| K03 FiltroPorProveedor | carga | consulta | gateway | 3750 | 0 (0.00%) | 28 | 37 | 45 | 96 | 31.5 | CUMPLE |
+| P01 ListadoProveedores | carga | consulta | gateway | 3732 | 0 (0.00%) | 20 | 25 | 32 | 83 | 31.3 | CUMPLE |
+| P02 ProveedorConSusProductos | carga | consulta | gateway | 3758 | 0 (0.00%) | 19 | 25 | 30 | 82 | 31.6 | CUMPLE |
+| M01 CargaMixta | carga | mezcla | gateway | 3624 | 0 (0.00%) | 21 | 93 | 110 | 660 | 30.4 | dentro del umbral |
+| E01 EstresMixto | estres | mezcla | gateway | 8164 | 0 (0.00%) | 22 | 130 | 10000 | 49926 | 64.7 | dentro del umbral |
+| S01 CapacidadMixta | capacidad | mezcla | gateway | 4347 | 0 (0.00%) | 21 | 130 | 150 | 259 | 36.5 | dentro del umbral |
+| P03 AltaYAsociacion | carga | escritura | gateway | 14326 | 0 (0.00%) | 21 | 26 | 33 | 121 | 120.3 | dentro del umbral |
+| K04 LoteInterno | carga | lote | directo (ruta interna) | 650 | 0 (0.00%) | 300 | 360 | 400 | 458 | 5.5 | dentro del umbral |
+
+## Parámetros de cada escenario
+
+| Prueba | Usuarios | Spawn rate (usuarios/s) | Duración | Host |
+|---|---|---|---|---|
+| R01 | 50 | 5 | 2m | http://api-gateway:8000 |
+| R02 | 50 | 5 | 2m | http://api-gateway:8000 |
+| R03 | 50 | 5 | 2m | http://api-gateway:8000 |
+| R04 | 30 | 5 | 2m | http://api-gateway:8000 |
+| R05 | 10 | 2 | 2m | http://api-gateway:8000 |
+| K01 | 50 | 5 | 2m | http://api-gateway:8000 |
+| K02 | 50 | 5 | 2m | http://api-gateway:8000 |
+| K03 | 50 | 5 | 2m | http://api-gateway:8000 |
+| P01 | 50 | 5 | 2m | http://api-gateway:8000 |
+| P02 | 50 | 5 | 2m | http://api-gateway:8000 |
+| M01 | 50 | 5 | 2m | http://api-gateway:8000 |
+| E01 | 300 | 2 | 2m | http://api-gateway:8000 |
+| S01 | 60 | 5 | 2m | http://api-gateway:8000 |
+| P03 | 50 | 5 | 2m | http://api-gateway:8000 |
+| K04 | 10 | 2 | 2m | http://ms-catalogo:8000 |
+
+## Estrés (E01): punto de quiebre
+
+**No se quebró**: llegó a 238 usuarios y 98.6 peticiones/s sin salir del umbral de forma sostenida.
+
+## Capacidad (S01): tendencia en el tiempo con 60 usuarios
+
+| Tramo | p95 medio (ms) | Peticiones/s | Errores |
+|---|---|---|---|
+| Primer 10 % de la meseta | 132 | 24.0 | 0.00% |
+| Último 10 % de la meseta | 126 | 38.9 | 0.00% |
+
+Cambio del p95: -5% → **estable** (se toma como estable un cambio menor del 20 %).
+
+## CPU y memoria de los contenedores
+
+| Contenedor | CPU máx. (%) | Memoria en ese momento |
+|---|---|---|
+| gi-prueba-ms-catalogo-1 | 153.2 | 66.9MiB / 14.41GiB |
+| gi-prueba-api-gateway-1 | 131.4 | 195.4MiB / 14.41GiB |
+| gi-prueba-ms-reportes-1 | 115.3 | 231.8MiB / 14.41GiB |
+| gi-prueba-ms-proveedores-1 | 96.2 | 55.3MiB / 14.41GiB |
+| gi-prueba-db-ms-catalogo-1 | 55.8 | 443.5MiB / 14.41GiB |
+| gi-prueba-ms-inventario-1 | 32.0 | 80.26MiB / 14.41GiB |
+| gi-prueba-db-api-gateway-1 | 32.0 | 489.1MiB / 14.41GiB |
+| gi-prueba-db-ms-inventario-1 | 26.4 | 41.62MiB / 14.41GiB |
+| gi-prueba-ms-notificaciones-1 | 23.7 | 54.15MiB / 14.41GiB |
+| gi-prueba-db-ms-proveedores-1 | 23.5 | 446.2MiB / 14.41GiB |
+| gi-prueba-db-ms-notificaciones-1 | 5.8 | 23.83MiB / 14.41GiB |
+| gi-prueba-ms-compras-1 | 5.7 | 22.79MiB / 14.41GiB |
+| gi-prueba-db-ms-compras-1 | 5.4 | 25.16MiB / 14.41GiB |
+| gi-prueba-db-ms-reportes-1 | 5.3 | 35.55MiB / 14.41GiB |
+| gi-prueba-web-client-1 | 5.0 | 54.64MiB / 14.41GiB |
 
 ## Detalle por operación
 
@@ -31,110 +85,132 @@ estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las co
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /reportes/existencias` | 625 | 0 | 600 |
-| `GET GET /reportes/valorizacion` | 657 | 0 | 580 |
+| `GET GET /reportes/existencias` | 1858 | 0 | 35 |
+| `GET GET /reportes/valorizacion` | 1760 | 0 | 33 |
 
 ### R02 — Rotación de 30 días y panel de indicadores (GET /reportes/rotacion y /indicadores)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /indicadores` | 563 | 0 | 2400 |
-| `GET GET /reportes/rotacion` | 557 | 0 | 2000 |
+| `GET GET /indicadores` | 1822 | 1 | 51 |
+| `GET GET /reportes/rotacion` | 1862 | 0 | 36 |
 
 ### R03 — Kardex de un producto, con y sin periodo (GET /reportes/kardex)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /reportes/kardex?id_producto` | 1019 | 0 | 650 |
-| `GET GET /reportes/kardex?id_producto&fechas` | 368 | 0 | 600 |
+| `GET GET /reportes/kardex?id_producto` | 2767 | 0 | 35 |
+| `GET GET /reportes/kardex?id_producto&fechas` | 954 | 0 | 35 |
 
 ### R04 — Los reportes como archivo: CSV de existencias y de kardex, y PDF de valorización
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /reportes/existencias?formato=csv` | 324 | 0 | 1200 |
-| `GET GET /reportes/kardex?formato=csv` | 245 | 0 | 1000 |
-| `GET GET /reportes/valorizacion?formato=pdf` | 106 | 1 | 2600 |
+| `GET GET /reportes/existencias?formato=csv` | 1107 | 0 | 160 |
+| `GET GET /reportes/kardex?formato=csv` | 693 | 0 | 140 |
+| `GET GET /reportes/valorizacion?formato=pdf` | 378 | 0 | 300 |
 
-### R05 — Estrés: de 0 a 200 usuarios, uno por segundo, sobre todos los reportes en JSON, para hallar el punto de quiebre
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /indicadores` | 146 | 14 | 3300 |
-| `GET GET /reportes/existencias` | 255 | 0 | 2600 |
-| `GET GET /reportes/kardex?id_producto` | 144 | 1 | 2400 |
-| `GET GET /reportes/valorizacion` | 148 | 0 | 2500 |
-
-### K01 — Listado paginado de productos (GET /productos)
+### R05 — Importación masiva de STOCK_INICIAL de 10 filas (POST /importaciones): lee, convierte con catálogo e inventario y envía
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /productos` | 1726 | 0 | 190 |
+| `POST POST /importaciones (STOCK_INICIAL)` | 736 | 0 | 74 |
 
-### K02 — Búsqueda de productos por nombre, por código y por categoría (GET /productos con filtros)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /productos?codigo` | 489 | 0 | 230 |
-| `GET GET /productos?id_categoria&estado` | 501 | 0 | 230 |
-| `GET GET /productos?nombre` | 727 | 0 | 270 |
-
-### K03 — Un producto, el árbol de categorías y una categoría (GET /productos/{id}, /categorias, /categorias/{id})
+### K01 — Listado paginado de productos y un producto (GET /productos y /productos/{id})
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /categorias/{id}` | 242 | 0 | 230 |
-| `GET GET /categorias?arbol` | 522 | 0 | 210 |
-| `GET GET /productos/{id}` | 974 | 0 | 140 |
+| `GET GET /productos` | 2289 | 0 | 26 |
+| `GET GET /productos/{id}` | 1461 | 0 | 25 |
 
-### K04 — Altas de productos a la vez (POST /productos), con código único
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `POST POST /productos` | 1699 | 0 | 240 |
-
-### K05 — Estrés: de 0 a 200 usuarios, uno por segundo, sobre el listado, la búsqueda y la consulta de productos
+### K02 — Búsqueda por nombre, código y categoría (con subcategorías), árbol de categorías y una categoría
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /productos` | 585 | 11 | 120 |
-| `GET GET /productos/{id}` | 351 | 8 | 330 |
-| `GET GET /productos?nombre` | 221 | 3 | 77 |
+| `GET GET /categorias/{id}` | 450 | 0 | 25 |
+| `GET GET /categorias?arbol` | 392 | 0 | 26 |
+| `GET GET /productos?codigo` | 821 | 0 | 25 |
+| `GET GET /productos?id_categoria&estado` | 847 | 0 | 26 |
+| `GET GET /productos?nombre` | 1261 | 0 | 26 |
 
-### K06 — Pico: 200 usuarios en 2 s con el uso típico (consultas y alguna alta)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /productos` | 2094 | 0 | 670 |
-| `GET GET /productos/{id}` | 1264 | 0 | 680 |
-| `GET GET /productos?nombre` | 857 | 0 | 730 |
-| `POST POST /productos` | 415 | 0 | 670 |
-
-### P01 — Listado de proveedores, por razón social y por producto (GET /proveedores)
+### K03 — Filtro por proveedor (GET /productos?id_proveedor): ms-catalogo consulta a ms-proveedores en cada petición (RNF18)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /proveedores` | 801 | 0 | 67 |
-| `GET GET /proveedores?id_producto` | 267 | 0 | 71 |
-| `GET GET /proveedores?razon_social&estado` | 561 | 0 | 77 |
+| `GET GET /productos?id_proveedor` | 3750 | 0 | 37 |
+
+### P01 — Listado, por razón social y por producto (GET /proveedores)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /proveedores` | 1860 | 0 | 25 |
+| `GET GET /proveedores?id_producto` | 613 | 0 | 26 |
+| `GET GET /proveedores?razon_social&estado` | 1259 | 0 | 25 |
 
 ### P02 — Un proveedor y sus productos asociados (GET /proveedores/{id} y /proveedores/{id}/productos)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /proveedores/{id}` | 808 | 0 | 60 |
-| `GET GET /proveedores/{id}/productos` | 808 | 0 | 56 |
+| `GET GET /proveedores/{id}` | 1891 | 0 | 25 |
+| `GET GET /proveedores/{id}/productos` | 1867 | 0 | 25 |
 
-### P03 — Altas de proveedores a la vez (POST /proveedores), con NIT único
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `POST POST /proveedores` | 1602 | 0 | 89 |
-
-### P04 — Pico: 200 usuarios en 2 s con el uso típico (consultas y alguna alta)
+### M01 — Carga: ~85 % GET y ~15 % POST sobre los tres servicios, 50 usuarios en meseta
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /proveedores` | 2058 | 12 | 720 |
-| `GET GET /proveedores/{id}/productos` | 1260 | 2 | 740 |
-| `POST POST /proveedores` | 426 | 4 | 740 |
+| `GET GET /indicadores` | 164 | 0 | 110 |
+| `GET GET /productos` | 710 | 0 | 26 |
+| `GET GET /productos/{id}` | 547 | 0 | 25 |
+| `GET GET /productos?id_proveedor` | 309 | 0 | 34 |
+| `GET GET /productos?nombre` | 352 | 0 | 24 |
+| `GET GET /proveedores` | 340 | 0 | 26 |
+| `GET GET /proveedores/{id}/productos` | 334 | 0 | 25 |
+| `GET GET /reportes/existencias` | 190 | 0 | 84 |
+| `GET GET /reportes/kardex?id_producto` | 166 | 0 | 76 |
+| `POST POST /importaciones (STOCK_INICIAL)` | 156 | 0 | 98 |
+| `POST POST /proveedores` | 356 | 0 | 27 |
+
+### E01 — Estrés: la misma mezcla con una rampa hasta 300 usuarios (2 por segundo), para hallar el punto de quiebre
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /indicadores` | 388 | 0 | 180 |
+| `GET GET /productos` | 1539 | 0 | 27 |
+| `GET GET /productos/{id}` | 1166 | 0 | 25 |
+| `GET GET /productos?id_proveedor` | 785 | 0 | 38 |
+| `GET GET /productos?nombre` | 748 | 0 | 27 |
+| `GET GET /proveedores` | 777 | 0 | 27 |
+| `GET GET /proveedores/{id}/productos` | 774 | 0 | 27 |
+| `GET GET /reportes/existencias` | 420 | 0 | 130 |
+| `GET GET /reportes/kardex?id_producto` | 377 | 0 | 110 |
+| `POST POST /importaciones (STOCK_INICIAL)` | 401 | 0 | 150 |
+| `POST POST /proveedores` | 789 | 0 | 29 |
+
+### S01 — Capacidad (soak): la misma mezcla con 60 usuarios durante 60 min, para ver la tendencia en el tiempo
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /indicadores` | 208 | 0 | 160 |
+| `GET GET /productos` | 833 | 0 | 25 |
+| `GET GET /productos/{id}` | 615 | 0 | 24 |
+| `GET GET /productos?id_proveedor` | 374 | 0 | 34 |
+| `GET GET /productos?nombre` | 425 | 0 | 25 |
+| `GET GET /proveedores` | 387 | 0 | 25 |
+| `GET GET /proveedores/{id}/productos` | 431 | 0 | 25 |
+| `GET GET /reportes/existencias` | 210 | 0 | 110 |
+| `GET GET /reportes/kardex?id_producto` | 205 | 0 | 100 |
+| `POST POST /importaciones (STOCK_INICIAL)` | 204 | 0 | 130 |
+| `POST POST /proveedores` | 455 | 0 | 27 |
+
+### P03 — Alta de proveedores (NIT único) y asociación de 3 productos a cada uno
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /proveedores` | 3583 | 0 | 27 |
+| `POST POST /proveedores/{id}/productos` | 10743 | 0 | 26 |
+
+### K04 — Carga masiva interna de productos, 100 filas por petición (POST /internas/productos/lote, siempre directo)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /internas/productos/lote (100 filas)` | 650 | 0 | 360 |

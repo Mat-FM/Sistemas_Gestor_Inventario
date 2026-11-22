@@ -70,15 +70,30 @@ ejecutarlo: primero con pruebas unitarias, luego con los servicios reales y fina
 Otra regla fue que **el equipo decide lo que entra**: las herramientas nuevas se consultaron antes de instalarlas, los cambios que
 tocaban código de otros integrantes se explicaron en el pull request y se evitó mezclar en un mismo commit servicios distintos.
 
-## 4. Plantilla para Mateo
+## 4. Registro de interacciones — Mateo Falla Muñoz
 
-Mateo debe registrar sus propias interacciones con herramientas de IA en esta fase (si usó alguna), con el mismo formato:
+Herramienta en todas las filas: **Claude (Claude Code)**.
 
 | Fecha | Integrante | Herramienta de IA | Tarea / actividad apoyada | Prompt utilizado (resumen) | Nivel de intervención humana | Resultado / aprendizaje |
 |---|---|---|---|---|---|---|
-| | Mateo Falla Muñoz | | *(por ejemplo: ms-catalogo, ms-proveedores y ms-reportes, PR #4 a #7 y #13)* | | | |
+| 14/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **ms-proveedores** (Laravel 12 + MySQL): apoyo en la construcción del CRUD con filtros, la asociación con productos, la carga masiva interna, `/health`, `/docs` y el registro JSON con `X-Request-Id` (PR #4). | Apóyame en la implementación del servicio según la Tabla 8 de la Entrega 2. | Medio | El servicio quedó con 20 pruebas automáticas. Para obtener un buen resultado es necesario plantear y delimitar el trabajo de la IA, de forma que las decisiones sobre qué se va a hacer y cómo se va a hacer queden en manos del desarrollador y no de la herramienta de apoyo. |
+| 14/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **ms-catalogo** (Laravel 12 + MySQL): categorías en dos niveles, productos con búsqueda y filtros, filtro por proveedor que consulta a ms-proveedores con reintentos y cortacircuitos (RNF18) y carga masiva interna (PR #5). | Apóyame en la implementación del servicio según la Tabla 7, con la llamada a ms-proveedores según RNF18. | Medio | 38 pruebas y una cobertura del 98,8 %. La IA a veces propone acciones que se salen de lo pedido en el proyecto, lo que aumenta su complejidad; por eso hay que hacer una revisión y un seguimiento detallados de cada fase del proceso de apoyo. |
+| 14/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **ms-reportes** (Flask + PostgreSQL): reportes de existencias, valorización, rotación y kardex en JSON, CSV y PDF; panel de indicadores e importación masiva validada de CSV y Excel (PR #6). | Apóyame en la implementación del servicio según la Tabla 12; antes, ayúdame a elegir las librerías y a resolver lo que el contrato deja abierto. | Medio | Si se va a usar una herramienta de IA como apoyo, es vital que conozca el contexto general del proyecto: con un contexto amplio puede abordar situaciones distintas sin apartarse de lo acordado. |
+| 14/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **Dockerfiles** de los tres servicios (RNF03): Apache y PHP 8.4 para los de Laravel, y gunicorn para el de Flask. | Haz solo los Dockerfiles (Kubernetes aún no se ha visto), en cada rama y sin tocar el `docker-compose.yml` compartido. | Medio | Es vital probar los resultados de la IA antes de darlos por buenos: no basta con sus pruebas internas, hay que verificar uno mismo que todo funcione correctamente. |
+| 14/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **Integración continua de ms-catalogo** (RNF20: pruebas automáticas con 60 % de cobertura en cada PR). | ¿Por qué hacer el CI y qué impacto tiene? Después, créalo. | Alto | La IA es una excelente herramienta para detectar problemas y apoyar su solución en contextos personalizados. |
+| 16/11/2026 – 17/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **Issue #10** (abierta por Brayan): integración de ms-reportes con ms-inventario; importación en bloques de 1 000 filas, clave de idempotencia derivada del contenido, plazo propio para la carga inicial, bodegas paginadas y `USER` numérico en los Dockerfiles (PR #11 de Brayan y PR #13). | Lee la issue y ayúdame con los cambios; luego verifica que todo esté bien hecho según la issue. | Medio | La IA es una gran herramienta para identificar errores en el código, sobre todo los que aparecen en casos extremos o que no son fáciles de rastrear. |
+| 21/11/2026 | Mateo Falla Muñoz | Claude (Claude Code) | **15 pruebas de rendimiento con Locust** (RNF06, RNF11): revisión del borrador de Brayan y pruebas nuevas de importación, filtro por proveedor, carga masiva interna y asociaciones. | Revisa las pruebas existentes y ayúdame a definir y generar 15 que no choquen con lo ya hecho. | Medio | Una prueba de rendimiento solo es útil si deja claro cómo y cuándo se ejecutó, en qué equipo y qué escenario se aplicó: así ofrece una base sólida sobre el estado actual del desarrollo. |
 
-> *El nivel de intervención humana (Alto, Medio o Bajo) indica cuánto modificó el equipo lo que generó la IA.*
+### Reflexión de Mateo sobre la fase
+
+En esta fase usé la IA como herramienta de apoyo, tanto en temas conceptuales como de desarrollo y lógica, para escribir mis tres
+microservicios a partir de los contratos de la Entrega 2. Me reservé una serie de decisiones, como las librerías, las reglas que el contrato
+no definía y todo lo que tocara archivos compartidos o código de mis compañeros. Las reglas que fijé al inicio (no hacer commits, no
+ejecutar generadores, preguntar antes de suponer) me obligaron a entender cada paso antes de confirmarlo. La IA cometió errores que solo
+aparecieron al ejecutar: un orden equivocado en las pruebas de rendimiento, una corrida sobre datos contaminados y un commit con archivos de
+otro servicio. Los detectamos porque nada se dio por hecho sin probarlo, primero con pruebas automáticas y luego con los servicios reales en
+contenedores. Aprendí que las pruebas con simulaciones no reemplazan la integración real y que un resultado de rendimiento no vale sin decir
+sobre qué datos y en qué entorno se midió.
 
 ## 5. Evidencia en el repositorio
 

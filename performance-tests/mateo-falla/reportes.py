@@ -1,5 +1,6 @@
 """Pruebas R01 a R05: ms-reportes (Flask). No guarda reportes: los calcula llamando a ms-catalogo, ms-inventario y ms-compras, así que
-lo que se mide es el servicio más lo que él espera de los demás. Los escenarios están en escenarios.py."""
+lo que se mide es el servicio más lo que él espera de los demás. R05 mide la importación masiva (RF16). Los escenarios están en escenarios.py."""
+import io
 import random
 from datetime import date, timedelta
 
@@ -19,6 +20,7 @@ def _datos():
     categoria = preparar("catalogo", "POST", "/categorias", json={"nombre": f"PERF reportes {corrida}"})
     vence = (date.today() + timedelta(days=120)).isoformat()
     productos = []
+    codigos = []
     for i in range(PRODUCTOS_DE_PRUEBA):
         producto = preparar(
             "catalogo", "POST", "/productos",
@@ -27,6 +29,7 @@ def _datos():
         )
         idp = producto["id_producto"]
         productos.append(idp)
+        codigos.append(producto["codigo"])
         for bodega in (comun.ID_BODEGA, comun.ID_BODEGA_2):
             preparar(
                 "inventario", "POST", "/movimientos", headers={"Idempotency-Key": clave()},
@@ -38,7 +41,38 @@ def _datos():
                 "inventario", "POST", "/movimientos", headers={"Idempotency-Key": clave()},
                 json={"tipo": "SALIDA" if m % 2 else "ENTRADA", "id_producto": idp, "id_bodega": comun.ID_BODEGA, "cantidad": 1 + m},
             )
-    return {"corrida": corrida, "productos": productos}
+    # La importación de R05 escribe las bodegas por su código, como lo haría un usuario en el archivo.
+    bodegas = [preparar("inventario", "GET", f"/bodegas/{b}")["codigo"] for b in (comun.ID_BODEGA, comun.ID_BODEGA_2)]
+    return {"corrida": corrida, "productos": productos, "codigos": codigos, "bodegas": bodegas}
+
+
+FILAS_POR_IMPORTACION = 10
+
+
+def archivo_stock_inicial(datos):
+    """Un CSV de STOCK_INICIAL con 10 filas válidas. Las cantidades son al azar: ms-reportes deriva la clave de idempotencia del
+    contenido, y un archivo idéntico se tomaría como repetición y no sumaría nada (no se mediría la carga real)."""
+    lineas = ["codigo_producto,codigo_bodega,cantidad,codigo_lote,fecha_vencimiento"]
+    for _ in range(FILAS_POR_IMPORTACION):
+        lineas.append(f"{random.choice(datos['codigos'])},{random.choice(datos['bodegas'])},{random.randint(1, 50)},,")
+    return ("\n".join(lineas) + "\n").encode("utf-8")
+
+
+def importacion_procesada(cuerpo):
+    """Una importación cuenta como éxito solo si quedó PROCESADA con todas sus filas: un 201 FALLIDA o CON_ERRORES es un error."""
+    if not isinstance(cuerpo, dict):
+        return "respuesta sin JSON"
+    if cuerpo.get("estado") != "PROCESADA" or cuerpo.get("filas_validas") != FILAS_POR_IMPORTACION:
+        return f"importación {cuerpo.get('estado')} con {cuerpo.get('filas_validas')} filas válidas: {str(cuerpo.get('errores'))[:150]}"
+    return None
+
+
+def lista(cuerpo):
+    return None if isinstance(cuerpo, list) else "se esperaba una lista"
+
+
+def con_valor_total(cuerpo):
+    return None if isinstance(cuerpo, dict) and "valor_total" in cuerpo else "falta valor_total"
 
 
 class UsuarioReportes(UsuarioBase):
@@ -64,11 +98,11 @@ class ExistenciasYValorizacion(UsuarioReportes):
 
     @task
     def existencias(self):
-        self.pedir("GET", "/reportes/existencias", "GET /reportes/existencias")
+        self.pedir("GET", "/reportes/existencias", "GET /reportes/existencias", validar=lista)
 
     @task
     def valorizacion(self):
-        self.pedir("GET", "/reportes/valorizacion", "GET /reportes/valorizacion")
+        self.pedir("GET", "/reportes/valorizacion", "GET /reportes/valorizacion", validar=con_valor_total)
 
 
 class RotacionEIndicadores(UsuarioReportes):
@@ -113,21 +147,15 @@ class DescargasCsvYPdf(UsuarioReportes):
         self.pedir("GET", "/reportes/valorizacion?formato=pdf", "GET /reportes/valorizacion?formato=pdf")
 
 
-class EstresReportes(UsuarioReportes):
-    """R05: de 0 a 200 usuarios, uno por segundo, sobre todos los reportes en JSON."""
+class ImportacionStockInicial(UsuarioReportes):
+    """R05: importación masiva de STOCK_INICIAL (RF16) con un archivo pequeño: ms-reportes lee el CSV, valida cada fila, pide a ms-catalogo
+    todos los productos y a ms-inventario todas las bodegas para convertir los códigos, envía las filas a la carga inicial de ms-inventario
+    y guarda la importación. Es la operación más pesada del servicio. Solo cuenta como éxito una importación PROCESADA."""
 
-    @task(3)
-    def existencias(self):
-        self.pedir("GET", "/reportes/existencias", "GET /reportes/existencias")
-
-    @task(2)
-    def valorizacion(self):
-        self.pedir("GET", "/reportes/valorizacion", "GET /reportes/valorizacion")
-
-    @task(2)
-    def indicadores(self):
-        self.pedir("GET", "/indicadores", "GET /indicadores")
-
-    @task(2)
-    def kardex(self):
-        self.pedir("GET", f"/reportes/kardex?id_producto={self.un_producto()}", "GET /reportes/kardex?id_producto")
+    @task
+    def importar(self):
+        self.pedir(
+            "POST", "/importaciones", "POST /importaciones (STOCK_INICIAL)", esperados=(201,), validar=importacion_procesada,
+            data={"tipo": "STOCK_INICIAL"},
+            files={"archivo": ("stock-inicial.csv", io.BytesIO(archivo_stock_inicial(self.datos)), "text/csv")},
+        )
