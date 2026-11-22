@@ -97,6 +97,12 @@ def url_publica(servicio, ruta):
     return f"{URLS['gateway']}/api{ruta}" if MODO == "gateway" else f"{URLS[servicio]}{ruta}"
 
 
+def url_interna(servicio, ruta):
+    """Rutas /internas/...: el Gateway no las publica (las llama ms-reportes dentro de la red), así que van siempre directo al servicio,
+    en los dos modos. Por eso estas pruebas se corren dentro de la red de contenedores (ver README)."""
+    return f"{URLS[servicio]}{ruta}"
+
+
 def una_vez(nombre, funcion):
     """Ejecuta la preparación una sola vez por corrida aunque la pidan los 50 usuarios a la vez."""
     with _candado_datos:
@@ -116,7 +122,7 @@ def preparar(servicio, metodo, ruta, **opciones):
 
 class UsuarioBase(HttpUser):
     """Usuario simulado. Piensa entre 1 y 2 s entre una operación y otra, como una persona en la interfaz. Cada subclase abstracta
-    de un servicio fija `host`."""
+    de un servicio fija `host`; la mezcla de M01, E01 y S01 llama a los tres servicios indicando `servicio` en cada petición."""
 
     abstract = True
     wait_time = between(1, 2)
@@ -131,18 +137,37 @@ class UsuarioBase(HttpUser):
             # Cada usuario simulado es una persona distinta: el log de cada petición lleva quién la hizo.
             self.cabeceras = {**ADMIN_DIRECTO, "X-User-Id": str(next(_ids_usuario))}
 
-    def pedir(self, metodo, ruta, nombre, esperados=(200,), **opciones):
-        """Petición medida. `nombre` agrupa las rutas con parámetros en una sola fila de resultados. Un estado fuera
-        de `esperados` cuenta como error."""
+    def pedir(self, metodo, ruta, nombre, esperados=(200,), servicio=None, validar=None, interna=False, **opciones):
+        """Petición medida. `nombre` agrupa las rutas con parámetros en una sola fila de resultados.
+
+        Cuenta como error (guía del taller: no contar como éxito lo que no lo es):
+        - un estado fuera de `esperados` (por ejemplo, un 422 por un código o NIT repetido);
+        - un cuerpo que no cumple `validar(cuerpo)`: la función devuelve un texto con el problema, o None si está bien.
+
+        `servicio` permite llamar a otro servicio desde la misma prueba (en modo gateway da igual: todo va al Gateway).
+        `interna=True` va siempre directo al servicio (rutas /internas/...)."""
+        if interna:
+            url = url_interna(servicio, ruta)
+        elif servicio and MODO == "directo":
+            url = f"{URLS[servicio]}{ruta}"
+        else:
+            url = f"{self.prefijo}{ruta}"
         cabeceras = {**self.cabeceras, "X-Request-Id": nuevo_request_id(self.__class__.__name__), **opciones.pop("headers", {})}
-        with self.client.request(
-            metodo, f"{self.prefijo}{ruta}", name=nombre, headers=cabeceras, catch_response=True, **opciones
-        ) as respuesta:
+        if interna:
+            # La ruta interna no pasa por el Gateway: lleva la identidad que él pondría (ms-catalogo exige ADMINISTRADOR en el lote).
+            cabeceras = {**cabeceras, **ADMIN_DIRECTO}
+            cabeceras.pop("Authorization", None)
+        with self.client.request(metodo, url, name=nombre, headers=cabeceras, catch_response=True, **opciones) as respuesta:
             if respuesta.status_code not in esperados:
                 respuesta.failure(f"{respuesta.status_code}: {respuesta.text[:200]}")
                 return None
-            respuesta.success()
             try:
-                return respuesta.json()
+                cuerpo = respuesta.json()
             except ValueError:
+                cuerpo = None
+            problema = validar(cuerpo) if validar else None
+            if problema:
+                respuesta.failure(problema)
                 return None
+            respuesta.success()
+            return cuerpo

@@ -1,7 +1,7 @@
-"""Pruebas P01 a P04: ms-proveedores (Laravel + MySQL). Los escenarios están en escenarios.py."""
+"""Pruebas P01 a P03: ms-proveedores (Laravel + MySQL). Los escenarios están en escenarios.py."""
 import random
 
-from locust import between, task
+from locust import task
 
 from comun import UsuarioBase, host, preparar, sufijo, una_vez
 
@@ -26,6 +26,16 @@ def _datos():
     return {"corrida": corrida, "proveedores": ids}
 
 
+def paginado(cuerpo):
+    if not isinstance(cuerpo, dict) or not isinstance(cuerpo.get("datos"), list) or "meta" not in cuerpo:
+        return "se esperaba un listado {datos, meta}"
+    return None
+
+
+def lista(cuerpo):
+    return None if isinstance(cuerpo, list) else "se esperaba una lista"
+
+
 class UsuarioProveedores(UsuarioBase):
     abstract = True
     host = host("proveedores")
@@ -45,15 +55,16 @@ class ListadoProveedores(UsuarioProveedores):
 
     @task(3)
     def listado(self):
-        self.pedir("GET", f"/proveedores?pagina={random.randint(1, 2)}&por_pagina=20", "GET /proveedores")
+        self.pedir("GET", f"/proveedores?pagina={random.randint(1, 2)}&por_pagina=20", "GET /proveedores", validar=paginado)
 
     @task(2)
     def por_razon_social(self):
-        self.pedir("GET", "/proveedores?razon_social=Proveedor&estado=ACTIVO", "GET /proveedores?razon_social&estado")
+        self.pedir("GET", "/proveedores?razon_social=Proveedor&estado=ACTIVO", "GET /proveedores?razon_social&estado", validar=paginado)
 
     @task(1)
     def por_producto(self):
-        self.pedir("GET", f"/proveedores?id_producto={10_000 + random.randint(0, PROVEEDORES_DE_PRUEBA - 1) * 10 + 1}", "GET /proveedores?id_producto")
+        self.pedir("GET", f"/proveedores?id_producto={10_000 + random.randint(0, PROVEEDORES_DE_PRUEBA - 1) * 10 + 1}", "GET /proveedores?id_producto",
+                   validar=paginado)
 
 
 class ProveedorConSusProductos(UsuarioProveedores):
@@ -65,32 +76,20 @@ class ProveedorConSusProductos(UsuarioProveedores):
 
     @task(3)
     def productos(self):
-        self.pedir("GET", f"/proveedores/{self.uno()}/productos", "GET /proveedores/{id}/productos")
+        self.pedir("GET", f"/proveedores/{self.uno()}/productos", "GET /proveedores/{id}/productos", validar=lista)
 
 
-# ---------------- Referencia: escritura y pico ----------------
+# ---------------- Referencia: escritura ----------------
 
-class AltaDeProveedores(UsuarioProveedores):
-    """P03"""
+class AltaYAsociacion(UsuarioProveedores):
+    """P03: el alta de un proveedor (NIT único) y la asociación de sus productos, como se hace desde el formulario del cliente web. Las
+    asociaciones son las que luego usa el filtro por proveedor de ms-catalogo. Un 409 (NIT o asociación repetidos) cuenta como error."""
 
     @task
-    def crear(self):
-        self.pedir("POST", "/proveedores", "POST /proveedores", esperados=(201,), json=_proveedor("Alta", sufijo(), random.randint(0, 999)))
-
-
-class PicoProveedores(UsuarioProveedores):
-    """P04: 200 usuarios en 2 s con el uso típico: consultas y alguna alta."""
-
-    wait_time = between(1, 2)
-
-    @task(5)
-    def listado(self):
-        self.pedir("GET", f"/proveedores?pagina={random.randint(1, 2)}&por_pagina=20", "GET /proveedores")
-
-    @task(3)
-    def productos(self):
-        self.pedir("GET", f"/proveedores/{self.uno()}/productos", "GET /proveedores/{id}/productos")
-
-    @task(1)
-    def alta(self):
-        self.pedir("POST", "/proveedores", "POST /proveedores", esperados=(201,), json=_proveedor("Pico", sufijo(), random.randint(0, 999)))
+    def alta_y_asociacion(self):
+        proveedor = self.pedir("POST", "/proveedores", "POST /proveedores", esperados=(201,), json=_proveedor("Alta", sufijo(), random.randint(0, 999)))
+        if not proveedor:
+            return
+        for producto in random.sample(range(20_000, 30_000), 3):
+            self.pedir("POST", f"/proveedores/{proveedor['id_proveedor']}/productos", "POST /proveedores/{id}/productos", esperados=(201,),
+                       json={"id_producto": producto})
