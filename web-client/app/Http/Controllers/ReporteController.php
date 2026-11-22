@@ -123,7 +123,7 @@ class ReporteController extends Controller
 
         [$filas, $fallo] = Intento::de(fn () => $this->reportes->kardex($filtros));
         [$bodegas] = Intento::de(fn () => $this->nombres->bodegas());
-        [$productos] = Intento::de(fn () => $this->catalogo->productos(['por_pagina' => 100])['datos']);
+        [$productos] = Intento::de(fn () => $this->catalogo->todos());
         $esAdministrador = $this->sesion->rol() === Roles::ADMINISTRADOR;
         // Solo el administrador puede listar a los usuarios para filtrar por quien registró el movimiento.
         [$usuarios] = $esAdministrador ? Intento::de(fn () => $this->usuarios->listar(['por_pagina' => 100])['datos']) : [[], null];
