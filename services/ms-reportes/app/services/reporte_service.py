@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.clients import catalogo, compras, inventario
-from app.clients.base import ServicioNoDisponible
+from app.clients.base import ServicioNoDisponible, llamadas_rapidas
 from app.errores import ApiError
 
 # Rotación: solo las salidas por venta o despacho; los traslados, ajustes y devoluciones no cuentan.
@@ -20,6 +20,9 @@ LIMITE_ROTACION = 10
 DIAS_PERIODO = 30
 DIAS_PROXIMOS_A_VENCER = 30
 LIMITE_INDICADORES = 5
+# Plazo de cada llamada del panel, sin reintentos (ver indicadores): así responde antes de los 3 s del Gateway aunque un servicio esté
+# lento o caído.
+ESPERA_INDICADORES = 1.0
 # Órdenes que todavía esperan mercancía.
 ESTADOS_PENDIENTES = ("ENVIADA", "RECIBIDA_PARCIAL")
 
@@ -90,7 +93,10 @@ def indicadores(fecha_desde: date | None, fecha_hasta: date | None) -> dict:
     de fecha_hasta. El periodo solo afecta a mayor_rotacion; los demás indicadores son del momento.
 
     Cada indicador depende de unos servicios (RNF18): si uno no responde, solo se pierden los que lo necesitan, que
-    salen en null y se listan en `no_disponibles`. Solo si no se puede calcular ninguno responde 503."""
+    salen en null y se listan en `no_disponibles`. Solo si no se puede calcular ninguno responde 503.
+
+    Para que el panel parcial llegue a tiempo, cada llamada se hace UNA sola vez y espera como máximo ESPERA_INDICADORES (1 s): con los
+    reintentos de RNF18 y el plazo normal de 3 s, un servicio lento hacía que el Gateway (3 s) cortara el panel entero con un 503."""
     hoy = date.today()
     fecha_hasta = fecha_hasta or hoy
     fecha_desde = fecha_desde or fecha_hasta - timedelta(days=DIAS_PERIODO)
@@ -101,11 +107,12 @@ def indicadores(fecha_desde: date | None, fecha_hasta: date | None) -> dict:
 
     def fuente(servicio, llamada, *argumentos):
         """Lo que devuelve otro servicio, o None si no responde: el panel sigue con lo que sí tiene. Un servicio que ya falló en esta
-        petición no se vuelve a llamar (cada intento gasta reintentos y el Gateway espera como máximo 3 s por toda la respuesta)."""
+        petición no se vuelve a llamar (el Gateway espera como máximo 3 s por toda la respuesta)."""
         if servicio in caidos:
             return None
         try:
-            return llamada(*argumentos)
+            with llamadas_rapidas(ESPERA_INDICADORES):
+                return llamada(*argumentos)
         except ServicioNoDisponible as error:
             caidos.add(servicio)
             errores.append(error)

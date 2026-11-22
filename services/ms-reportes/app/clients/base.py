@@ -9,10 +9,15 @@
   inmediato. Después se vuelve a probar: si falla, se abre otra vez; si responde, el contador vuelve a 0.
 
 El estado del cortacircuitos vive en la memoria del proceso, así que cada copia del servicio lleva el suyo.
+
+Excepción: dentro de `llamadas_rapidas()` cada llamada se intenta una sola vez y con un plazo corto. La usa el panel de indicadores, que
+debe responder antes de los 3 s del Gateway con lo que tenga aunque un servicio esté lento o caído.
 """
 
+import contextvars
 import logging
 import time
+from contextlib import contextmanager
 
 import requests
 from flask import current_app, g, has_request_context, request
@@ -28,6 +33,24 @@ log = logging.getLogger(__name__)
 
 # Por servicio: fallos seguidos y hasta cuándo está abierto (reloj monotónico).
 _cortacircuitos: dict[str, dict] = {}
+
+# Plazo de las llamadas rápidas (None: llamadas normales, con RNF18 completo). Es una variable de contexto: cada hilo de gunicorn
+# atiende su propia petición y no ve el plazo de las demás.
+_plazo_rapido: contextvars.ContextVar[float | None] = contextvars.ContextVar("plazo_rapido", default=None)
+
+
+@contextmanager
+def llamadas_rapidas(espera: float):
+    """Dentro del bloque, cada llamada a otro servicio se intenta UNA sola vez y espera como máximo `espera` segundos.
+
+    El Gateway espera como máximo 3 s por toda la respuesta. Con los reintentos de RNF18, un servicio lento (por ejemplo, ms-compras con
+    su base caída tarda 5 s en responder 503) haría que el Gateway cortara antes de que el panel de indicadores respondiera con lo que sí
+    tiene. Un fallo dentro del bloque cuenta igual para el cortacircuitos."""
+    marca = _plazo_rapido.set(espera)
+    try:
+        yield
+    finally:
+        _plazo_rapido.reset(marca)
 
 
 class ServicioNoDisponible(ApiError):
@@ -103,6 +126,9 @@ class ClienteServicio:
                     cabeceras[nombre] = request.headers[nombre]
 
         espera = espera or current_app.config["CALL_TIMEOUT_SECONDS"]
+        rapido = _plazo_rapido.get()
+        if rapido is not None:
+            espera, reintentar = min(espera, rapido), False
         intentos = 1 + len(ESPERAS_REINTENTO) if reintentar else 1
         respuesta = None
         for intento in range(intentos):
