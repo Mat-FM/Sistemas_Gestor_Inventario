@@ -16,8 +16,9 @@ Productos, categorías y subcategorías; búsqueda y filtrado.
 - Una categoría se borra (borrado real) solo si no tiene productos ni subcategorías.
 - El proveedor de un producto vive en ms-proveedores. Este servicio no lo guarda: lo consulta para el filtro
   `?id_proveedor` (RF12).
-- El servicio **no revisa roles**: el Gateway ya lo hizo antes de reenviar la petición, y el servicio solo es accesible
-  dentro del clúster.
+- **Los roles** los comprueba el Gateway antes de reenviar la petición y el servicio **los repite** (`config/permisos.php`, la Tabla 7; defensa en
+  profundidad, RNF07 y RNF09): un rol que no corresponde a la ruta es 403 `SIN_PERMISO`. Una petición sin `X-User-Rol` es una llamada interna
+  de otro servicio y no se restringe. `tests/Feature/PermisosRolesTest.php` compara la tabla con la matriz del Gateway.
 
 ## Rutas
 

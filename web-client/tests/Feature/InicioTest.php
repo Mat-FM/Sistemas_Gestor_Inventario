@@ -85,6 +85,40 @@ class InicioTest extends TestCase
         $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()->assertSee('No pudimos calcular los indicadores')->assertSee('Entra mercancía');
     }
 
+    public function test_si_un_servicio_cae_el_panel_muestra_lo_que_si_tiene_y_no_un_cero(): void
+    {
+        $this->fingirGateway([
+            'GET saldos/bajo-umbral' => Http::response([]), 'GET traslados' => self::listado([], 0), 'GET movimientos' => self::listado([]), 'GET bodegas' => self::bodegas(),
+            'GET indicadores' => Http::response(['valor_total' => 6561842.5, 'productos_bajo_umbral' => 2, 'productos_agotados' => 2, 'proximos_a_vencer' => 1,
+                'mayor_rotacion' => [], 'ordenes_pendientes' => null, 'no_disponibles' => ['ordenes_pendientes']]),
+        ]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()
+            ->assertSee('$ 6.561.843')->assertSee('Productos agotados')->assertSee('—')->assertSee('No disponible por ahora', false)
+            ->assertSee('Algunos datos no están disponibles por ahora');
+    }
+
+    public function test_en_computador_cualquier_pantalla_trae_la_busqueda_de_producto_salvo_stock_que_ya_tiene_la_suya(): void
+    {
+        $this->fingirGateway([
+            'GET saldos/bajo-umbral' => Http::response([]), 'GET traslados' => self::listado([], 0), 'GET movimientos' => self::listado([]), 'GET bodegas' => self::bodegas(),
+            'GET indicadores' => Http::response($this->indicadores()), 'GET saldos' => self::listado([]),
+        ]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/')->assertOk()->assertSee('id="buscar-global"', false)->assertSee('panel-inicio', false);
+        $this->conSesion('ADMINISTRADOR')->get('/stock')->assertOk()->assertDontSee('id="buscar-global"', false);
+    }
+
+    public function test_el_inicio_del_vendedor_no_repite_la_busqueda_en_la_barra_superior(): void
+    {
+        $this->fingirGateway([]);
+
+        // Su inicio ya es un cuadro de búsqueda; en otra pantalla sí la trae.
+        $this->conSesion('VENDEDOR')->get('/')->assertOk()->assertDontSee('id="buscar-global"', false)->assertSee('name="q"', false);
+        $this->fingirGateway(['GET productos' => self::listado([]), 'GET bodegas' => self::bodegas(), 'GET notificaciones' => self::listado([], 0)]);
+        $this->conSesion('VENDEDOR')->get('/notificaciones')->assertOk()->assertSee('id="buscar-global"', false);
+    }
+
     public function test_el_contador_ve_los_indicadores_y_lo_que_mas_sale_pero_sin_enlace_a_compras(): void
     {
         $this->fingirGateway([

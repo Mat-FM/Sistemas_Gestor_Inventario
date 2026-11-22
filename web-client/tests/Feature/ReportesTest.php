@@ -97,6 +97,24 @@ class ReportesTest extends TestCase
             ->assertSee('No pudimos generar el kardex')->assertSee('acota por producto, bodega o fechas');
     }
 
+    public function test_si_el_kardex_supera_el_maximo_se_muestra_el_aviso_del_servicio(): void
+    {
+        $aviso = 'El kardex tiene 75000 movimientos y el máximo por consulta es 5000: acote por producto, bodega, tipo o fechas.';
+        $this->gatewayDeReportes(['GET reportes/kardex' => self::error(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos.', [['campo' => 'filtros', 'mensaje' => $aviso]])]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/reportes/kardex')->assertOk()
+            ->assertSee('El kardex tiene 75000 movimientos')->assertSee('acote por producto, bodega, tipo o fechas');
+    }
+
+    public function test_si_el_archivo_del_kardex_supera_el_maximo_se_explica_como_acotarlo(): void
+    {
+        $aviso = 'El kardex tiene 75000 movimientos y el máximo por consulta es 5000: acote por producto, bodega, tipo o fechas.';
+        $this->gatewayDeReportes(['GET reportes/kardex' => self::error(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos.', [['campo' => 'filtros', 'mensaje' => $aviso]])]);
+
+        $this->conSesion('ADMINISTRADOR')->from('/reportes/kardex')->get('/reportes/kardex?formato=csv')
+            ->assertRedirect('/reportes/kardex')->assertSessionHas('error', $aviso);
+    }
+
     public function test_el_kardex_rechaza_un_rango_de_fechas_al_reves_sin_llamar_al_servicio(): void
     {
         $this->gatewayDeReportes();

@@ -183,10 +183,17 @@ describe('POST /internas/saldos/carga-inicial: filas válidas (200)', () => {
     expect(clients.notificaciones.notificarStockBajo).toHaveBeenCalledTimes(1);
   });
 
-  it('cualquier rol con X-User-Id y X-User-Rol vale: la ruta no aplica alcance por bodega (llamada interna; el Gateway ya limita quién importa)', async () => {
-    const operador = headers('OPERADOR_BODEGA', { idUsuario: 11, idBodega: B2 });
-    expect((await cargar([fila({ id_bodega: B1 })], { cabeceras: operador })).body).toEqual({ creados: 1, rechazados: [] });
+  it('la importa un ADMINISTRADOR sin alcance por bodega, aunque tenga una asignada (llamada interna: ms-reportes reenvía su identidad)', async () => {
+    const admin = headers('ADMINISTRADOR', { idUsuario: 11, idBodega: B2 });
+    expect((await cargar([fila({ id_bodega: B1 })], { cabeceras: admin })).body).toEqual({ creados: 1, rechazados: [] });
     expect((await movimientos())[0]).toEqual(expect.objectContaining({ id_bodega: B1, id_usuario: 11 }));
+  });
+
+  it('otro rol es 403 SIN_PERMISO y no se escribe nada (D37: importar stock inicial es de ADMINISTRADOR)', async () => {
+    const res = await cargar([fila({ id_bodega: B1 })], { cabeceras: headers('OPERADOR_BODEGA', { idUsuario: 11, idBodega: B1 }) });
+    expect(res.status).toBe(403);
+    expect(res.body.error.codigo).toBe('SIN_PERMISO');
+    expect(await movimientos()).toEqual([]);
   });
 });
 
@@ -725,7 +732,7 @@ describe('POST /internas/saldos/carga-inicial: fallos a mitad de la carga', () =
     expect(res.body).toEqual({ creados: 4, rechazados: [{ fila: 2, motivo: 'cantidad: el saldo resultante superaría el máximo permitido (2147483647)' }] });
   });
 
-  it('si la RELECTURA de la clave falla, un 4xx del motor NO se informa como rechazo de la fila (que quizá sí se creó): la petición es un 500 genérico y la repetición cuenta la fila como creada', async () => {
+  it('si la RELECTURA de la clave falla, un 4xx del motor NO se informa como rechazo de la fila (que quizá sí se creó): la petición es un 503 genérico (la base cortó la conexión, D35) y la repetición cuenta la fila como creada', async () => {
     /* Ruling 61. La otra petición con la misma clave confirmó la fila 2 y esta recibe del motor el desborde que depende de eso;
        justo entonces la base corta la conexión al releer. Clasificar el 4xx original daría un 200 con una fila «rechazada»
        que existe. */
@@ -742,8 +749,8 @@ describe('POST /internas/saldos/carga-inicial: fallos a mitad de la carga', () =
     });
     const res = await cargar(cinco(), { clave: 'k-relectura-falla' });
     expect(relectura.mock.calls.map(([, clave]) => clave)).toEqual([`${USUARIO}:ini:k-relectura-falla#2`]); // se intentó releer ESA fila
-    expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: { codigo: 'ERROR_INTERNO', mensaje: expect.any(String), detalles: [] } });
+    expect(res.status).toBe(503); // ms-reportes reintenta un 5xx con la misma clave, y la repetición converge (abajo)
+    expect(res.body).toEqual({ error: { codigo: 'SERVICIO_NO_DISPONIBLE', mensaje: expect.any(String), detalles: [] } });
     expect(JSON.stringify(res.body)).not.toMatch(/Connection terminated|cantidad|máximo/); // ni el error de la relectura ni el 4xx del motor salen
     expect((await movimientos()).map((m) => m.id_producto)).toEqual([11, 12]); // la fila 1 y la que aplicó la otra; se detuvo ahí
 

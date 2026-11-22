@@ -31,7 +31,8 @@ USER 10001
 # FLASK_APP permite ejecutar `flask db upgrade` dentro del contenedor.
 ENV FLASK_APP=app \
     PORT=5000 \
-    GUNICORN_WORKERS=2
+    GUNICORN_WORKERS=2 \
+    GUNICORN_THREADS=8
 
 EXPOSE 5000
 
@@ -40,4 +41,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/health', timeout=4)"
 
 # exec: gunicorn queda como el proceso principal y recibe la señal de parada de Docker para terminar ordenadamente.
-CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT} --workers ${GUNICORN_WORKERS} 'app:create_app()'"]
+# gthread y no el worker síncrono de siempre: cada reporte pasa casi todo el tiempo esperando las respuestas de los demás servicios, y con 2 procesos
+# síncronos solo atendía 2 reportes a la vez (con 50 usuarios la cola superaba los 3 s del Gateway y todo era 503). Con 2 x 8 hilos atiende 16.
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT} --workers ${GUNICORN_WORKERS} --worker-class gthread --threads ${GUNICORN_THREADS} 'app:create_app()'"]

@@ -8,6 +8,7 @@ from flask import Flask
 from app.config import cargar_configuracion
 from app.errores import registrar_manejadores
 from app.extensions import db, migrate
+from app.permisos import exigir_rol
 from app.registro import configurar_registro
 
 
@@ -26,6 +27,8 @@ def create_app(configuracion: dict | None = None) -> Flask:
 
     configurar_registro(app)
     registrar_manejadores(app)
+    # Defensa de roles (RNF07, RNF09): después del registro, para que el 403 también quede en el log de peticiones.
+    app.before_request(exigir_rol)
 
     db.init_app(app)
     migrate.init_app(app, db)

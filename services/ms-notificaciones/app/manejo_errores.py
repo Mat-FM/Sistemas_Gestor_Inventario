@@ -1,9 +1,26 @@
 """Convierte cualquier error en la respuesta común {"error": {...}} y registra los inesperados."""
+import psycopg
 from flask import g, request
+from psycopg_pool import PoolClosed, PoolTimeout
 from werkzeug.exceptions import BadRequest, HTTPException, MethodNotAllowed, NotFound
 
 from . import logger
 from .errores import ApiError
+
+# Errores de PostgreSQL de conexión: servidor apagándose, caído, sin aceptar aún o sin conexiones libres.
+_SQLSTATE_DE_CONEXION = {"53300", "57P01", "57P02", "57P03"}
+
+
+def _base_inalcanzable(error):
+    """La base no se puede alcanzar (conexión rechazada, cortada, sin conexión libre en el pool...). No es un fallo del
+    código: el servicio sigue sano y un reintento puede funcionar, así que se responde 503 y no 500 (RNF18)."""
+    if isinstance(error, (PoolTimeout, PoolClosed, psycopg.InterfaceError)):
+        return True
+    if isinstance(error, psycopg.OperationalError):
+        # Sin SQLSTATE es un fallo del lado del cliente (no pudo conectar, se cortó); con él, solo los de conexión.
+        sqlstate = error.sqlstate
+        return sqlstate is None or sqlstate.startswith("08") or sqlstate in _SQLSTATE_DE_CONEXION
+    return False
 
 
 def registrar(app):
@@ -32,5 +49,8 @@ def registrar(app):
 
     @app.errorhandler(Exception)
     def _inesperado(error):
+        if _base_inalcanzable(error):
+            logger.error("base de datos inalcanzable", request_id=g.get("request_id"), error=str(error), tipo=type(error).__name__)
+            return ApiError(503, "SERVICIO_NO_DISPONIBLE", "El servicio no está disponible.").a_json(), 503
         logger.error("error inesperado", request_id=g.get("request_id"), error=str(error), tipo=type(error).__name__)
         return ApiError(500, "ERROR_INTERNO", "Ocurrió un error inesperado en ms-notificaciones.").a_json(), 500

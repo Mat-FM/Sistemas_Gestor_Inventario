@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="El Montañero">
+  <rect width="64" height="64" rx="16" fill="#24493a"/>
+  <circle cx="45" cy="19" r="6" fill="#e0a032"/>
+  <path d="M6 50 22 25l9 13 6-8 21 20z" fill="#f6f1e7"/>
+  <path d="M22 25l-4.5 7 4 3 3-3 3.5 4.5 5.5-1.5z" fill="#cfe0d3"/>
+  <path d="M6 50c10-2 18 1 26-1s17-5 26-1v9H6z" fill="#6a4025"/>
+</svg>

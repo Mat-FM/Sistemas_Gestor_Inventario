@@ -105,10 +105,15 @@ async function bloquearPorId(trx, idLote, par) {
 // Los lotes CON existencia (> 0) de un par (producto, bodega), en orden FEFO. La consulta que comparten listarParaFefo (que le
 // añade el bloqueo FOR UPDATE) y listarConExistencia (que no): así la sugerencia de salida y la salida del motor ven SIEMPRE los
 // mismos lotes en el mismo orden.
-const conExistenciaFefo = (dbOrTrx, { idBodega, idProducto }) => dbOrTrx(TABLA)
+// Con `vigenteDesde` (AAAA-MM-DD, D36) quedan fuera los lotes ya vencidos: los que tienen fecha anterior a ese día. Un lote que vence
+// ese mismo día sigue vigente y los lotes sin fecha nunca vencen.
+const conExistenciaFefo = (dbOrTrx, { idBodega, idProducto }, vigenteDesde = null) => dbOrTrx(TABLA)
   .select(COLUMNAS)
   .where({ id_bodega: idBodega, id_producto: idProducto })
   .andWhere('cantidad_disponible', '>', 0)
+  .modify((consulta) => {
+    if (vigenteDesde) consulta.andWhere((vigentes) => vigentes.whereNull('fecha_vencimiento').orWhere('fecha_vencimiento', '>=', vigenteDesde));
+  })
   .orderByRaw(ORDEN_FEFO);
 
 /**
@@ -117,8 +122,8 @@ const conExistenciaFefo = (dbOrTrx, { idBodega, idProducto }) => dbOrTrx(TABLA)
  * es el orden FEFO (D27(c)). Debe llamarse con una transacción y DESPUÉS de bloquear el saldo del mismo par.
  * @returns {Promise<Lote[]>}
  */
-async function listarParaFefo(trx, par) {
-  return conExistenciaFefo(trx, par).forUpdate();
+async function listarParaFefo(trx, par, vigenteDesde = null) {
+  return conExistenciaFefo(trx, par, vigenteDesde).forUpdate();
 }
 
 /**
@@ -127,8 +132,23 @@ async function listarParaFefo(trx, par) {
  * coherente de los lotes del par. Sirve con la instancia de Knex o con una transacción.
  * @returns {Promise<Lote[]>}
  */
-async function listarConExistencia(dbOrTrx, par) {
-  return conExistenciaFefo(dbOrTrx, par);
+async function listarConExistencia(dbOrTrx, par, vigenteDesde = null) {
+  return conExistenciaFefo(dbOrTrx, par, vigenteDesde);
+}
+
+/**
+ * Cuántas unidades hay en lotes ya vencidos (fecha anterior a `hoy`, AAAA-MM-DD) de un producto en una bodega (D36). Es una suma
+ * sin bloqueo: se llama con el saldo del par ya bloqueado, y todo movimiento del par bloquea primero ese saldo, así que los lotes
+ * no cambian mientras tanto.
+ * @returns {Promise<number>}
+ */
+async function sumarVencidos(dbOrTrx, { idBodega, idProducto }, hoy) {
+  const fila = await dbOrTrx(TABLA)
+    .where({ id_bodega: idBodega, id_producto: idProducto })
+    .andWhere('fecha_vencimiento', '<', hoy)
+    .sum({ total: 'cantidad_disponible' })
+    .first();
+  return Number(fila?.total ?? 0);
 }
 
 /**
@@ -179,4 +199,4 @@ async function sumarDelPar(trx, { idBodega, idProducto }) {
   return { enLotes: Number(fila.en_lotes), aislamiento: fila.aislamiento };
 }
 
-module.exports = { upsertEntrada, buscarPorCodigo, findById, bloquearPorId, listarParaFefo, listarConExistencia, listar, ajustar, sumarDelPar };
+module.exports = { upsertEntrada, buscarPorCodigo, findById, bloquearPorId, listarParaFefo, listarConExistencia, sumarVencidos, listar, ajustar, sumarDelPar };

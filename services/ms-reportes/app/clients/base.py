@@ -40,6 +40,15 @@ class ServicioNoDisponible(ApiError):
         self.servicio = servicio
 
 
+class DemasiadosElementos(Exception):
+    """El listado tiene más elementos de los que se aceptan traer (ver `maximo` en todas_las_paginas)."""
+
+    def __init__(self, total: int, maximo: int):
+        super().__init__(f"{total} elementos, máximo {maximo}")
+        self.total = total
+        self.maximo = maximo
+
+
 class ClienteServicio:
     def __init__(self, servicio: str, clave_url: str):
         self.servicio = servicio
@@ -49,15 +58,20 @@ class ClienteServicio:
         """Consulta: se reintenta. Devuelve el JSON de una respuesta 200."""
         return self._json(self._llamar("GET", ruta, reintentar=True, params=params))
 
-    def todas_las_paginas(self, ruta: str, params: dict | None = None, por_pagina: int = 100) -> list:
-        """Pide un listado paginado {datos, meta} página por página y devuelve todos sus elementos."""
+    def todas_las_paginas(self, ruta: str, params: dict | None = None, por_pagina: int = 100,
+                          maximo: int | None = None) -> list:
+        """Pide un listado paginado {datos, meta} página por página y devuelve todos sus elementos. Con `maximo`,
+        si el total que informa la primera página lo supera se lanza DemasiadosElementos sin pedir las demás."""
         todos = []
         pagina = 1
         while True:
             respuesta = self.get(ruta, params={**(params or {}), "pagina": pagina, "por_pagina": por_pagina})
             try:
                 todos.extend(respuesta["datos"])
-                if pagina * por_pagina >= int(respuesta["meta"]["total"]):
+                total = int(respuesta["meta"]["total"])
+                if maximo is not None and total > maximo:
+                    raise DemasiadosElementos(total, maximo)
+                if pagina * por_pagina >= total:
                     return todos
             except (KeyError, TypeError, ValueError):
                 log.error("respuesta_no_valida", extra={"contexto": {"destino": self.servicio, "ruta": ruta}})

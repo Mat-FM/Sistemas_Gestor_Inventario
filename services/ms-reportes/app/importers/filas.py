@@ -17,6 +17,27 @@ COLUMNAS = {
 
 _PRECIO_MAXIMO = Decimal("9999999999.99")
 _CORREO = re.compile(r"^[^@\s]+@[^@\s]+$")
+# Parte entera con separador de miles: 1.234 o 1.234.567 (grupos de tres cifras).
+_MILES = {sep: re.compile(rf"^\d{{1,3}}(?:{re.escape(sep)}\d{{3}})+$") for sep in (".", ",")}
+
+
+def _normalizar_numero(valor: str) -> str:
+    """Lleva un número escrito a la española (2.500,50), a la inglesa (2,500.50) o sin miles (2500,5) a la forma
+    2500.50 que lee Decimal. Con los dos separadores, el último es el decimal; con uno repetido es de miles. Los
+    grupos de miles deben ser de tres cifras: si la forma es imposible (1.2.3) se devuelve tal cual y Decimal la
+    rechaza. Un solo separador, una sola vez, es decimal ("2,500" vale 2,5, como siempre)."""
+    for miles, decimal in ((".", ","), (",", ".")):
+        if miles in valor and decimal in valor:
+            if valor.rfind(decimal) < valor.rfind(miles) or valor.count(decimal) != 1:
+                continue  # el decimal no es el último separador: no es este formato
+            entero, fraccion = valor.split(decimal)
+            if _MILES[miles].match(entero):
+                return entero.replace(miles, "") + "." + fraccion
+            return valor
+    for miles in (".", ","):
+        if valor.count(miles) > 1 and _MILES[miles].match(valor):
+            return valor.replace(miles, "")
+    return valor.replace(",", ".") if "." not in valor else valor
 
 
 def validar(tipo: str, valores: dict[str, str]) -> tuple[dict, list[dict]]:
@@ -80,12 +101,12 @@ class _Validador:
 
     def numero(self, campo: str, minimo: Decimal | None = None, maximo: Decimal | None = None,
                mayor_que: Decimal | None = None) -> int | float | None:
-        """Acepta 2500.5 y también 2500,5 (coma decimal, como en Excel en español)."""
+        """Acepta 2500.5, 2500,5 (coma decimal, como en Excel en español) y con separador de miles (2.500,50)."""
         valor = self.texto(campo)
         if valor is None:
             return None
         try:
-            numero = Decimal(valor.replace(",", ".") if "." not in valor else valor)
+            numero = Decimal(_normalizar_numero(valor))
             if not numero.is_finite():
                 raise InvalidOperation
         except InvalidOperation:

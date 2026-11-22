@@ -31,4 +31,5 @@ def cargar_configuracion() -> dict:
         "MS_INVENTARIO_URL": os.environ.get("MS_INVENTARIO_URL", "http://ms-inventario:3000"),
         "MS_COMPRAS_URL": os.environ.get("MS_COMPRAS_URL", "http://ms-compras:3000"),
         "CALL_TIMEOUT_SECONDS": float(os.environ.get("CALL_TIMEOUT_SECONDS", "3")),
+        "KARDEX_MAX_FILAS": int(os.environ.get("KARDEX_MAX_FILAS", "5000")),
     }

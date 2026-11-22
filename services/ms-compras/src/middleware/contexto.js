@@ -51,6 +51,15 @@ function requiereUsuario(req, res, next) {
   return next();
 }
 
+// Defensa de roles (RNF07, RNF09): 403 SIN_PERMISO si el rol no figura en `roles`. Sin usuario es una llamada interna y pasa.
+function exigirRol(roles) {
+  return function exigirRolDeLaRuta(req, res, next) {
+    const rol = req.contexto.usuario?.rol;
+    if (rol && !roles.includes(rol)) return next(ApiError.sinPermiso('Su rol no puede realizar esta operación.'));
+    return next();
+  };
+}
+
 // Solo el operador de bodega queda limitado a su bodega (Tabla 5, «Su bodega»).
 function verificarBodega(usuario, idBodega) {
   if (usuario?.rol === 'OPERADOR_BODEGA' && usuario.idBodega !== idBodega) {
@@ -58,4 +67,4 @@ function verificarBodega(usuario, idBodega) {
   }
 }
 
-module.exports = { contexto, requiereUsuario, verificarBodega };
+module.exports = { contexto, requiereUsuario, exigirRol, verificarBodega };

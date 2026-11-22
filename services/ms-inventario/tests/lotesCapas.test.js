@@ -481,6 +481,37 @@ describe('loteRepository.listarConExistencia (la lectura de la sugerencia: FEFO 
   });
 });
 
+describe('loteRepository: lotes vencidos (D36)', () => {
+  const sembrar = (codigo, fecha, cantidad, extra = {}) => crearLote(db, { idBodega: b1, idProducto: 5, codigoLote: codigo, fechaVencimiento: fecha, cantidad, ...extra });
+  const par = () => ({ idBodega: b1, idProducto: 5 });
+
+  it('listarConExistencia y listarParaFefo con vigenteDesde dejan fuera los lotes anteriores a esa fecha, y conservan el del mismo día y los sin fecha', async () => {
+    const vencido = await sembrar('V', '2027-02-14', 3);
+    const hoy = await sembrar('H', '2027-02-15', 3);
+    const sinFecha = await sembrar('SF', null, 3);
+    const tarde = await sembrar('T', '2027-06-01', 3);
+
+    expect((await loteRepository.listarConExistencia(db, par())).map((l) => l.id_lote)).toEqual([vencido, hoy, tarde, sinFecha].map((l) => l.id_lote));
+    expect((await loteRepository.listarConExistencia(db, par(), '2027-02-15')).map((l) => l.id_lote)).toEqual([hoy, tarde, sinFecha].map((l) => l.id_lote));
+    await conTransaccionAbierta((trx) => loteRepository.listarParaFefo(trx, par(), '2027-02-15'), async (lista) => {
+      expect(lista.map((l) => l.id_lote)).toEqual([hoy, tarde, sinFecha].map((l) => l.id_lote));
+    });
+  });
+
+  it('sumarVencidos suma solo los lotes de ese par con fecha anterior a hoy (el de hoy, los sin fecha y los de otro par no cuentan)', async () => {
+    await sembrar('V1', '2027-01-01', 3);
+    await sembrar('V2', '2027-02-14', 4);
+    await sembrar('H', '2027-02-15', 9);
+    await sembrar('SF', null, 9);
+    await sembrar('OTRA-BODEGA', '2027-01-01', 9, { idBodega: b2 });
+    await sembrar('OTRO-PRODUCTO', '2027-01-01', 9, { idProducto: 6 });
+
+    expect(await loteRepository.sumarVencidos(db, par(), '2027-02-15')).toBe(7);
+    expect(await loteRepository.sumarVencidos(db, par(), '2026-12-31')).toBe(0);
+    expect(await loteRepository.sumarVencidos(db, { idBodega: b1, idProducto: 999 }, '2027-02-15')).toBe(0);
+  });
+});
+
 describe('loteRepository.sumarDelPar', () => {
   it('suma la existencia de los lotes de ESE par (también los que están en 0), o 0 si no hay; e informa el aislamiento', async () => {
     /* El motor la usa para el stock sin lote de un traslado (D28(a)). */
@@ -621,7 +652,7 @@ describe('loteService', () => {
       const leer = espiar([lote(1, 'A', '2027-01-31', 9)]);
       await loteService.sugerirSalida(deps(), peticion({ identity }));
       expect(leer).toHaveBeenCalledTimes(1);
-      expect(leer).toHaveBeenCalledWith(db, { idBodega: 2, idProducto: 5 });
+      expect(leer).toHaveBeenCalledWith(db, { idBodega: 2, idProducto: 5 }, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)); // D36: solo lotes vigentes desde hoy
     });
 
     it('nunca toma el bloqueo FOR UPDATE de listarParaFefo: es una consulta, no una reserva', async () => {
@@ -708,6 +739,7 @@ promesasReales(loteRepository, {
   bloquearPorId: [1, { idBodega: 1, idProducto: 5 }],
   listarParaFefo: [{ idBodega: 1, idProducto: 5 }],
   listarConExistencia: [{ idBodega: 1, idProducto: 5 }],
+  sumarVencidos: [{ idBodega: 1, idProducto: 5 }, '2027-02-15'],
   listar: [{ limit: 10, offset: 0 }],
   ajustar: [1, 0],
   sumarDelPar: [{ idBodega: 1, idProducto: 5 }],

@@ -1,7 +1,10 @@
 <?php
 
 use App\Exceptions\ApiException;
+use App\Http\Middleware\ExigirRol;
 use App\Http\Middleware\RegistrarPeticion;
+use Illuminate\Database\LostConnectionDetector;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -24,6 +27,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // Registro de cada petición de la API (RNF10). /health y /docs quedan fuera, para que
         // las comprobaciones de Kubernetes no llenen los registros.
         $middleware->api(prepend: [RegistrarPeticion::class]);
+        // Después de las rutas resueltas y antes del controlador: el rol de cada ruta está en config/permisos.php.
+        $middleware->api(append: [ExigirRol::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Todas las respuestas de error son JSON con la forma común, pida lo que pida el cliente.
@@ -58,6 +63,17 @@ return Application::configure(basePath: dirname(__DIR__))
                 $status >= 400 && $status < 500 => ApiException::peticionMalFormada($status),
                 default => ApiException::errorInterno(),
             });
+        });
+
+        // Base de datos inalcanzable (RNF18): 503 y no 500, para que el cliente reintente. Solo los fallos de conexión; un
+        // error de SQL (columna que no existe, etc.) sigue siendo un error interno. El detalle del driver no sale en la
+        // respuesta; queda en el log por el report normal de Laravel.
+        $exceptions->render(function (QueryException|PDOException $e) use ($responder) {
+            if (! (new LostConnectionDetector)->causedByLostConnection($e)) {
+                return null;
+            }
+
+            return $responder(ApiException::servicioNoDisponible());
         });
 
         // Último recurso: cualquier otro fallo es un 500 genérico, sin traza (Laravel ya lo registra en el log).

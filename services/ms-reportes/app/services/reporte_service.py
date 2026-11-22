@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.clients import catalogo, compras, inventario
+from app.clients.base import ServicioNoDisponible
 from app.errores import ApiError
 
 # Rotación: solo las salidas por venta o despacho; los traslados, ajustes y devoluciones no cuentan.
@@ -86,31 +87,61 @@ def kardex(filtros: dict) -> list[dict]:
 
 def indicadores(fecha_desde: date | None, fecha_hasta: date | None) -> dict:
     """Panel de indicadores (RF14). Sin fecha_hasta, el periodo termina hoy; sin fecha_desde, empieza 30 días antes
-    de fecha_hasta. El periodo solo afecta a mayor_rotacion; los demás indicadores son del momento."""
+    de fecha_hasta. El periodo solo afecta a mayor_rotacion; los demás indicadores son del momento.
+
+    Cada indicador depende de unos servicios (RNF18): si uno no responde, solo se pierden los que lo necesitan, que
+    salen en null y se listan en `no_disponibles`. Solo si no se puede calcular ninguno responde 503."""
     hoy = date.today()
     fecha_hasta = fecha_hasta or hoy
     fecha_desde = fecha_desde or fecha_hasta - timedelta(days=DIAS_PERIODO)
     validar_rango(fecha_desde, fecha_hasta)
 
-    productos = catalogo.productos()
-    saldos = inventario.saldos()
+    errores = []
+    caidos = set()
 
-    # Agotados: productos activos cuya suma en las dos bodegas es 0, también los que no tienen saldo.
-    totales = defaultdict(Decimal)
-    for saldo in saldos:
-        totales[int(saldo["id_producto"])] += _decimal(saldo["cantidad_disponible"])
-    agotados = sum(1 for p in productos if p.get("estado") == "ACTIVO" and totales[int(p["id_producto"])] <= 0)
+    def fuente(servicio, llamada, *argumentos):
+        """Lo que devuelve otro servicio, o None si no responde: el panel sigue con lo que sí tiene. Un servicio que ya falló en esta
+        petición no se vuelve a llamar (cada intento gasta reintentos y el Gateway espera como máximo 3 s por toda la respuesta)."""
+        if servicio in caidos:
+            return None
+        try:
+            return llamada(*argumentos)
+        except ServicioNoDisponible as error:
+            caidos.add(servicio)
+            errores.append(error)
+            return None
 
+    productos = fuente("ms-catalogo", catalogo.productos)
+    saldos = fuente("ms-inventario", inventario.saldos)
     vence_antes_de = (hoy + timedelta(days=DIAS_PROXIMOS_A_VENCER)).isoformat()
 
-    return {
-        "valor_total": _valorizar(productos, saldos)["valor_total"],
-        "productos_bajo_umbral": len(inventario.saldos_bajo_umbral()),
+    valor_total = agotados = rotacion = None
+    if productos is not None and saldos is not None:
+        # Agotados: productos activos cuya suma en las dos bodegas es 0, también los que no tienen saldo.
+        totales = defaultdict(Decimal)
+        for saldo in saldos:
+            totales[int(saldo["id_producto"])] += _decimal(saldo["cantidad_disponible"])
+        agotados = sum(1 for p in productos if p.get("estado") == "ACTIVO" and totales[int(p["id_producto"])] <= 0)
+        valor_total = _valorizar(productos, saldos)["valor_total"]
+    if productos is not None:
+        calculada = fuente("ms-inventario", _rotacion, productos, fecha_desde, fecha_hasta, LIMITE_INDICADORES)
+        rotacion = None if calculada is None else calculada["mayor_rotacion"]
+    bajo_umbral = fuente("ms-inventario", inventario.saldos_bajo_umbral)
+    lotes = fuente("ms-inventario", inventario.lotes, vence_antes_de)
+    pendientes = fuente("ms-compras", lambda: sum(compras.contar_ordenes(estado) for estado in ESTADOS_PENDIENTES))
+
+    resultado = {
+        "valor_total": valor_total,
+        "productos_bajo_umbral": None if bajo_umbral is None else len(bajo_umbral),
         "productos_agotados": agotados,
-        "proximos_a_vencer": len(inventario.lotes(vence_antes_de)),
-        "mayor_rotacion": _rotacion(productos, fecha_desde, fecha_hasta, LIMITE_INDICADORES)["mayor_rotacion"],
-        "ordenes_pendientes": sum(compras.contar_ordenes(estado) for estado in ESTADOS_PENDIENTES),
+        "proximos_a_vencer": None if lotes is None else len(lotes),
+        "mayor_rotacion": rotacion,
+        "ordenes_pendientes": pendientes,
     }
+    faltan = [nombre for nombre, valor in resultado.items() if valor is None]
+    if len(faltan) == len(resultado):
+        raise errores[0]
+    return resultado | {"no_disponibles": faltan}
 
 
 def validar_rango(fecha_desde: date, fecha_hasta: date) -> None:
