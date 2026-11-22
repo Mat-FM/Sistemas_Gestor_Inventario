@@ -39,6 +39,9 @@ docker-compose.yml    Entorno local: las siete bases de datos, los siete servici
 
 ## Entorno local
 
+El paso a paso completo (requisitos, configuración del `.env`, verificación, primer ingreso, problemas frecuentes y despliegue en
+Kubernetes) está en el **[manual de instalación](docs/manual-de-instalacion.md)**. En resumen:
+
 ```bash
 cp .env.example .env      # cambiar las contraseñas y completar los secretos (cada uno trae el comando que lo genera)
 docker compose up -d --build
