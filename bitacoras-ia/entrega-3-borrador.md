@@ -5,7 +5,7 @@
 > trabajo de Brayan con Claude Code. **Cada fila es un hecho verificable en el repositorio; el nivel de intervención y la reflexión son un
 > juicio de quien usó la herramienta**, así que están propuestos y Brayan debe confirmarlos o cambiarlos con sus palabras antes de entregar.
 > Las filas de Luis (sección 2.1) se redactaron a partir de sus commits y de su sesión de trabajo con Claude Code del 21/11; Luis debe
-> confirmarlas. Las de Mateo debe registrarlas él (hay una plantilla al final).
+> confirmarlas. Las de Mateo (sección 4) las registró él.
 
 ## 1. Datos de la bitácora
 
@@ -98,5 +98,5 @@ sobre qué datos y en qué entorno se midió.
 ## 5. Evidencia en el repositorio
 
 - Pull requests fusionados: #1 a #3 (Gateway), #8 y #9 (ms-inventario), #11 y #13 (integración de ms-reportes), #12 (ms-compras y ms-notificaciones), #14 y #15 (cliente web, compose y Kubernetes), #16 (conteos, importaciones, rendimiento y análisis de código).
-- Pruebas: `smoke-tests/verificar_sistema.py` (67 pruebas de todo el sistema), `performance-tests/brayan-collazos/`, `performance-tests/luis-saraza/` y el borrador de `performance-tests/mateo-falla/` (15 de rendimiento cada uno) y las suites de cada servicio.
+- Pruebas: `smoke-tests/verificar_sistema.py` (67 pruebas de todo el sistema), `performance-tests/brayan-collazos/`, `performance-tests/luis-saraza/` y `performance-tests/mateo-falla/` (15 de rendimiento cada uno) y las suites de cada servicio.
 - Decisiones de `ms-inventario`: `services/ms-inventario/DECISIONES.md`.
