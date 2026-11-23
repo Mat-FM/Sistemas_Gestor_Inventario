@@ -5,7 +5,7 @@ Manifiestos del sistema completo con **kustomize** (`kubectl kustomize` ya viene
 > **Estado:** además de la revisión estática (`kubectl kustomize` y `k8s/verificar.py`, que corre en la CI), los manifiestos **se
 > desplegaron y probaron en un clúster local de kind** con `k8s/probar-en-kind.sh`: arranque sin reinicios, migraciones, Ingress,
 > NetworkPolicy (las bases solo las alcanza su servicio, RNF02), autoescalado del Gateway y de `ms-inventario` de 1 a 4 copias bajo carga
-> (RNF05), persistencia de las bases al reiniciar sus Pods y las 53 pruebas de funcionamiento de `smoke-tests/`. Esas pruebas
+> (RNF05), persistencia de las bases al reiniciar sus Pods y las pruebas de funcionamiento de `smoke-tests/` (53 el 19/11). Esas pruebas
 > encontraron y corrigieron dos defectos: el contenedor que espera a la base de las migraciones corría como root y `runAsNonRoot` lo
 > rechazaba, y `ms-compras` y `ms-notificaciones` se reiniciaban al arrancar antes que su base. **No se probó** en un clúster real
 > (nube, varios nodos) ni con HTTPS.
