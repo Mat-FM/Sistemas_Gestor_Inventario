@@ -83,9 +83,76 @@ class TrasladosTest extends TestCase
 
     public function test_el_formulario_de_traslado_del_operador_no_deja_elegir_el_origen(): void
     {
-        $this->gatewayBase(['GET saldos' => self::listado([['id_saldo' => 1, 'id_producto' => 1, 'id_bodega' => 1, 'cantidad_disponible' => 40]])]);
+        $this->gatewayBase([
+            'GET saldos' => self::listado([['id_saldo' => 1, 'id_producto' => 1, 'id_bodega' => 1, 'cantidad_disponible' => 40]]),
+            'GET lotes' => self::listado([]),
+        ]);
 
         $this->conSesion('OPERADOR_BODEGA', 1)->get('/traslados/nuevo?id_producto=1')->assertOk()
-            ->assertSee('Café molido 500 g')->assertSee('Sale de')->assertSee('disabled', false);
+            ->assertSee('Café molido 500 g')->assertSee('Sale de')->assertSee('disabled', false)
+            ->assertDontSee('Cambiar la bodega de origen');
+    }
+
+    /** Saldo de 100 en la bodega 1: 50 + 30 en lotes, un lote agotado y 20 sin lote. */
+    private function gatewayConLotes(array $mas = []): void
+    {
+        $this->gatewayBase($mas + [
+            'GET saldos' => self::listado([['id_saldo' => 1, 'id_producto' => 1, 'id_bodega' => 1, 'cantidad_disponible' => 100]]),
+            'GET lotes' => self::listado([
+                ['id_lote' => 7, 'id_producto' => 1, 'id_bodega' => 1, 'codigo_lote' => 'L-TARDE', 'fecha_vencimiento' => '2027-06-30', 'cantidad_disponible' => 30],
+                ['id_lote' => 8, 'id_producto' => 1, 'id_bodega' => 1, 'codigo_lote' => 'L-PRONTO', 'fecha_vencimiento' => '2027-01-15', 'cantidad_disponible' => 50],
+                ['id_lote' => 9, 'id_producto' => 1, 'id_bodega' => 1, 'codigo_lote' => 'L-AGOTADO', 'fecha_vencimiento' => '2026-12-01', 'cantidad_disponible' => 0],
+            ]),
+        ]);
+    }
+
+    public function test_el_formulario_ofrece_los_lotes_del_origen_primero_el_que_vence_antes_y_el_stock_sin_lote(): void
+    {
+        $this->gatewayConLotes();
+
+        $this->conSesion('OPERADOR_BODEGA', 1)->get('/traslados/nuevo?id_producto=1')->assertOk()
+            ->assertSee('¿De qué lote?')
+            ->assertSeeInOrder(['Lote L-PRONTO', '50 disponibles', 'Lote L-TARDE', '30 disponibles', 'Sin lote · 20 disponibles'])
+            ->assertSee('<option value="8" selected', false)
+            ->assertDontSee('L-AGOTADO');
+        $this->assertTrue($this->seEnvio('GET', 'lotes', fn (Request $p) => str_contains($p->url(), 'id_producto=1') && str_contains($p->url(), 'id_bodega=1')));
+    }
+
+    public function test_el_administrador_elige_primero_la_bodega_de_origen_y_luego_ve_sus_lotes(): void
+    {
+        $this->gatewayConLotes();
+
+        $this->conSesion('ADMINISTRADOR')->get('/traslados/nuevo?id_producto=1')->assertOk()
+            ->assertSee('¿De qué bodega sale?')->assertSee('id_bodega_origen=1', false)->assertDontSee('¿De qué lote?');
+        $this->assertFalse($this->seEnvio('GET', 'lotes'));
+
+        $this->conSesion('ADMINISTRADOR')->get('/traslados/nuevo?id_producto=1&id_bodega_origen=1')->assertOk()
+            ->assertSee('¿De qué lote?')->assertSee('Lote L-PRONTO')->assertSee('Cambiar la bodega de origen')
+            ->assertSee('<input type="hidden" name="id_bodega_origen" value="1">', false);
+    }
+
+    public function test_sin_existencias_en_el_origen_se_dice_en_lugar_de_ofrecer_lotes(): void
+    {
+        $this->gatewayBase(['GET saldos' => self::listado([]), 'GET lotes' => self::listado([])]);
+
+        $this->conSesion('OPERADOR_BODEGA', 1)->get('/traslados/nuevo?id_producto=1')->assertOk()
+            ->assertSee('No hay existencias de este producto en esta bodega.');
+    }
+
+    public function test_el_traslado_envia_el_lote_elegido_y_sin_lote_no_lo_envia(): void
+    {
+        $this->gatewayBase(['POST traslados' => Http::response(['id_traslado' => 9, 'estado' => 'EN_TRANSITO'], 201)]);
+
+        $this->conSesion('ADMINISTRADOR')->post('/traslados', [
+            'id_producto' => 1, 'id_bodega_origen' => 1, 'id_bodega_destino' => 2, 'cantidad' => '20', 'id_lote' => '8', 'clave' => 'tras-lote',
+        ])->assertRedirect('/traslados');
+        $this->assertTrue($this->seEnvio('POST', 'traslados', fn (Request $p) => $p->header('Idempotency-Key') === ['tras-lote']
+            && $p->data() === ['id_producto' => 1, 'id_bodega_origen' => 1, 'id_bodega_destino' => 2, 'cantidad' => 20, 'id_lote' => 8]));
+
+        $this->conSesion('ADMINISTRADOR')->post('/traslados', [
+            'id_producto' => 1, 'id_bodega_origen' => 1, 'id_bodega_destino' => 2, 'cantidad' => '5', 'id_lote' => '', 'clave' => 'tras-sin-lote',
+        ])->assertRedirect('/traslados');
+        $this->assertTrue($this->seEnvio('POST', 'traslados', fn (Request $p) => $p->header('Idempotency-Key') === ['tras-sin-lote']
+            && ! array_key_exists('id_lote', $p->data())));
     }
 }

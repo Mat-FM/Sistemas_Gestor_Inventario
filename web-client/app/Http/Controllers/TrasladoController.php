@@ -74,16 +74,34 @@ class TrasladoController extends Controller
             return view('traslados.crear', $datos + ['resultados' => $resultados ?? [], 'fallo' => $fallo !== null]);
         }
 
+        // El administrador elige primero la bodega de origen (los lotes que se pueden enviar dependen de ella); el operador sale
+        // siempre de la suya.
         $origen = $operador ? $this->sesion->idBodega() : ($request->integer('id_bodega_origen') ?: null);
         [$bodegas] = Intento::de(fn () => $this->nombres->bodegas());
-        [$saldos] = Intento::de(fn () => $this->inventario->saldosDeProductos([$idProducto], $origen)[$idProducto] ?? null);
+        [$saldos] = Intento::de(fn () => $this->inventario->saldosDeProductos([$idProducto], null)[$idProducto] ?? null);
+        $saldos = $saldos instanceof GatewayException ? [] : ($saldos['datos'] ?? []);
+
+        // Un traslado mueve un solo lote o solo stock sin lote (ms-inventario, D28(a)): sin elegir el lote, el stock que está en
+        // lotes no se puede enviar. Se ofrecen los lotes con existencia en el origen, primero el que vence antes, y el stock sin lote
+        // (el saldo menos lo que está en lotes).
+        [$lotes, $falloLotes] = $origen === null ? [[], null]
+            : Intento::de(fn () => $this->inventario->lotes(['id_producto' => $idProducto, 'id_bodega' => $origen, 'por_pagina' => 100])['datos']);
+        $lotes = $lotes ?? [];
+        $enOrigen = (int) (collect($saldos)->firstWhere('id_bodega', $origen)['cantidad_disponible'] ?? 0);
+        $sinLote = max(0, $enOrigen - (int) array_sum(array_column($lotes, 'cantidad_disponible')));
+        $lotes = array_values(array_filter($lotes, static fn (array $lote) => (int) $lote['cantidad_disponible'] > 0));
+        usort($lotes, static fn (array $a, array $b) => [$a['fecha_vencimiento'] === null, $a['fecha_vencimiento'], $a['id_lote']]
+            <=> [$b['fecha_vencimiento'] === null, $b['fecha_vencimiento'], $b['id_lote']]);
 
         return view('traslados.crear', array_merge($datos, [
             'producto' => $catalogo->obtener($idProducto),
             'origenFijo' => $operador,
             'idOrigen' => $origen,
             'bodegas' => array_filter($bodegas ?? [], static fn (array $bodega) => $bodega['activa']),
-            'saldos' => $saldos instanceof GatewayException ? [] : ($saldos['datos'] ?? []),
+            'saldos' => $saldos,
+            'lotes' => $lotes,
+            'sinLote' => $sinLote,
+            'falloLotes' => $falloLotes !== null,
         ]));
     }
 
@@ -100,6 +118,7 @@ class TrasladoController extends Controller
             'id_bodega_origen' => ['required', 'integer', 'min:1'],
             'id_bodega_destino' => ['required', 'integer', 'min:1', 'different:id_bodega_origen'],
             'cantidad' => ['required', 'integer', 'min:1', 'max:2147483647'],
+            'id_lote' => ['nullable', 'integer', 'min:1'], // vacío: solo stock sin lote
             'clave' => ['required', 'string', 'max:200', 'not_regex:/#/'],
         ], [
             'id_bodega_origen.required' => 'Elige la bodega de origen.',
@@ -125,6 +144,9 @@ class TrasladoController extends Controller
             'id_bodega_destino' => (int) $datos['id_bodega_destino'],
             'cantidad' => (int) $datos['cantidad'],
         ];
+        if (! empty($datos['id_lote'])) {
+            $cuerpo['id_lote'] = (int) $datos['id_lote'];
+        }
 
         try {
             $this->inventario->crearTraslado($cuerpo, $datos['clave']);
