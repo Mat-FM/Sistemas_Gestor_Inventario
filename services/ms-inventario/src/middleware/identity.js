@@ -59,4 +59,16 @@ function scopeBodega(identidad, idBodega) {
   return identidad.idBodega;
 }
 
-module.exports = { ROLES, identity, requireUser, scopeBodega };
+/**
+ * Defensa de roles (D37): 403 SIN_PERMISO si el rol de la petición no está en `roles`. Una petición sin rol es una llamada interna de
+ * solo lectura (D8: las escrituras ya se rechazaron por falta de usuario) y pasa.
+ */
+function exigirRol(roles) {
+  return function exigirRolDeLaRuta(req, _res, next) {
+    const { rol } = req.identity;
+    if (rol !== null && !roles.includes(rol)) throw e.sinPermiso('Su rol no puede realizar esta operación');
+    next();
+  };
+}
+
+module.exports = { ROLES, identity, requireUser, scopeBodega, exigirRol };

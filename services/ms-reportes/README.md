@@ -26,7 +26,7 @@ pruebas).
 ## Rutas
 
 Las rutas no llevan el prefijo `/api`: el Gateway lo quita al reenviar (`GET /api/importaciones` llega como
-`GET /importaciones`). El servicio no revisa roles: el Gateway ya lo hizo. La documentación completa, con esquemas y
+`GET /importaciones`). Los roles los comprueba el Gateway y el servicio los repite (`app/permisos.py`, defensa en profundidad): un rol que no corresponde es 403 `SIN_PERMISO`. La documentación completa, con esquemas y
 ejemplos, está en `GET /docs`.
 
 | Método | Ruta | Respuesta | Errores |
@@ -34,8 +34,8 @@ ejemplos, está en `GET /docs`.
 | `GET` | `/reportes/existencias?id_bodega&id_categoria&formato` | 200 existencias por producto y bodega | 422; 503 |
 | `GET` | `/reportes/valorizacion?id_bodega&formato` | 200 `{productos, valor_total}` | 422; 503 |
 | `GET` | `/reportes/rotacion?fecha_desde&fecha_hasta&limite&formato` | 200 `{mayor_rotacion, menor_rotacion}` | 422 fechas faltantes o rango no válido; 503 |
-| `GET` | `/reportes/kardex?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&formato` | 200 movimientos | 422; 503 |
-| `GET` | `/indicadores?fecha_desde&fecha_hasta` | 200 `{valor_total, productos_bajo_umbral, productos_agotados, proximos_a_vencer, mayor_rotacion, ordenes_pendientes}` | 422; 503 |
+| `GET` | `/reportes/kardex?id_producto&id_bodega&id_usuario&tipo&fecha_desde&fecha_hasta&formato` | 200 movimientos | 422 filtros no válidos o más de `KARDEX_MAX_FILAS` movimientos (pide acotar); 503 |
+| `GET` | `/indicadores?fecha_desde&fecha_hasta` | 200 `{valor_total, productos_bajo_umbral, productos_agotados, proximos_a_vencer, mayor_rotacion, ordenes_pendientes, no_disponibles}` | 422; 503 |
 | `POST` | `/importaciones` (multipart: `tipo`, `archivo`; cabecera `X-User-Id`) | 201 importación con sus errores | 400 sin `X-User-Id`; 422 formato no soportado, faltan columnas o archivo vacío |
 | `GET` | `/importaciones?tipo&pagina&por_pagina` | 200 listado paginado, más recientes primero | 422 |
 | `GET` | `/importaciones/{id}` | 200 importación con sus errores por fila | 404 |
@@ -72,7 +72,7 @@ La Entrega 2 no define estos detalles; se acordaron al implementar el servicio.
 | --- | --- |
 | Archivo | Campos `tipo` y `archivo` del formulario. CSV en UTF-8 separado por `,` o `;`, o Excel `.xlsx` (primera hoja) |
 | Columnas | La fila 1 es el encabezado y debe traer todas las columnas de la Tabla 13; no distingue mayúsculas y las columnas de más se ignoran. Las filas vacías se saltan |
-| Validación | Cada fila se valida con las reglas del servicio destino (obligatorios, largos, números, correo, fecha `AAAA-MM-DD`), para señalar el campo exacto. `precio` y `cantidad` admiten coma decimal |
+| Validación | Cada fila se valida con las reglas del servicio destino (obligatorios, largos, números, correo, fecha `AAAA-MM-DD`), para señalar el campo exacto. `precio` y `cantidad` admiten coma decimal y separador de miles (`2500,5`, `2.500,50`, `2,500.50`) |
 | Conversión | `categoria` por nombre exacto (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la fila se rechaza. `codigo_producto` y `codigo_bodega` por código. Solo se convierten las filas sin errores de formato |
 | `numero_fila` | El número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila` 0 es un error de toda la importación |
 | Errores | Uno por fila y campo. Las filas que rechaza el servicio destino quedan con `campo` vacío y su `motivo` como mensaje |
@@ -111,7 +111,9 @@ Toda la comunicación está en `app/clients/` y pasa por `app/clients/base.py`:
   ms-proveedores **no** se reintentan: repetirlas rechazaría como duplicadas las filas ya creadas.
 - **Cortacircuitos:** uno por servicio. Tras 5 llamadas fallidas seguidas, durante 30 s no se le llama y se falla de
   inmediato; después se vuelve a probar.
-- Si un servicio no responde, los reportes responden 503 `SERVICIO_NO_DISPONIBLE` y la importación se guarda como
+- **Excepción, el panel de indicadores (RNF18):** si un servicio no responde, solo se pierden los indicadores que lo necesitan (salen en `null` y se listan en `no_disponibles`); responde 503 únicamente cuando no se puede calcular ninguno. Para que ese panel parcial llegue antes de los 3 s del Gateway, **sus llamadas se hacen una sola vez y esperan como máximo 1 s** (`ESPERA_INDICADORES`, con `llamadas_rapidas()` de `app/clients/base.py`): con los reintentos y el plazo normal, un servicio lento (por ejemplo, ms-compras con su base caída tarda 5 s en responder 503) hacía que el Gateway cortara el panel entero. Los demás reportes conservan el plazo y los reintentos de RNF18.
+- Si la base de datos de ms-reportes no responde, solo fallan las importaciones (503): los reportes y el panel no la usan.
+- Si un servicio no responde, los demás reportes responden 503 `SERVICIO_NO_DISPONIBLE` y la importación se guarda como
   `FALLIDA`. Una respuesta con otra forma (por ejemplo sin `datos` o sin `creados`) se trata igual.
 
 **Notas:**
@@ -200,10 +202,12 @@ cortacircuitos.
 | `SERVICE_NAME` | Nombre del servicio en los registros y en `/health` (`ms-reportes`) |
 | `PORT` | Puerto en el que escucha gunicorn en la imagen Docker (5000). `flask run` no lo lee: en local se indica con `--port` |
 | `GUNICORN_WORKERS` | Procesos de gunicorn en la imagen Docker (2) |
+| `GUNICORN_THREADS` | Hilos de cada proceso (8). Un reporte espera casi todo el tiempo a ms-catalogo, ms-inventario y ms-compras, así que con procesos síncronos solo se atendían 2 a la vez |
 | `LOG_LEVEL` | Nivel mínimo de los registros (`INFO`) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Conexión a PostgreSQL |
 | `MS_CATALOGO_URL`, `MS_PROVEEDORES_URL`, `MS_INVENTARIO_URL`, `MS_COMPRAS_URL` | Direcciones de los demás servicios. En el clúster, `http://<servicio>:<puerto>` |
 | `CALL_TIMEOUT_SECONDS` | Tiempo máximo de cada intento de llamada a otro servicio (3) |
+| `KARDEX_MAX_FILAS` | Movimientos máximos que acepta traer el kardex (5000). Con más responde 422 y pide acotar: traerlos de 100 en 100 tardaría más de los 3 s que espera el Gateway |
 
 ## Registros (RNF10)
 

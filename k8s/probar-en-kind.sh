@@ -3,7 +3,7 @@
 #   1. construye las ocho imágenes (de una en una) y las carga en el clúster;
 #   2. instala el controlador de Ingress (ingress-nginx) y metrics-server, que el autoescalado necesita;
 #   3. crea los Secret con valores al azar, aplica k8s/, espera las migraciones y siembra al administrador;
-#   4. comprueba el Ingress, las NetworkPolicy y las 53 pruebas de funcionamiento (smoke-tests/verificar_sistema.py --k8s);
+#   4. comprueba el Ingress, las NetworkPolicy y las pruebas de funcionamiento (smoke-tests/verificar_sistema.py --k8s);
 #   5. genera carga y comprueba que el Gateway y ms-inventario pasan de 1 a 4 copias (RNF05), salvo con --sin-carga.
 #
 #   ./k8s/probar-en-kind.sh                 # todo, y al final borra el clúster
@@ -107,7 +107,7 @@ if alcanza "app.kubernetes.io/name=api-gateway" db-ms-inventario 5432; then echo
 if alcanza "app.kubernetes.io/name=api-gateway" ms-inventario 3000; then echo "  ✔ el Gateway sí llega a ms-inventario"; else echo "  ✘ el Gateway no llegó a ms-inventario"; fallos=$((fallos+1)); fi
 if alcanza "app.kubernetes.io/name=ms-inventario,db=db-ms-inventario" db-ms-inventario 5432; then echo "  ✔ ms-inventario sí llega a su base de datos"; else echo "  ✘ ms-inventario no llegó a su base"; fallos=$((fallos+1)); fi
 
-paso "5. Pruebas de funcionamiento (53)"
+paso "5. Pruebas de funcionamiento"
 $KN port-forward --address 127.0.0.1 svc/api-gateway 18200:8000 >/dev/null 2>&1 & PF+=($!)
 $KN port-forward --address 127.0.0.1 svc/web-client 18201:8000 >/dev/null 2>&1 & PF+=($!)
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18200/health >/dev/null && curl -sf http://127.0.0.1:18201/login >/dev/null && break; sleep 1; done

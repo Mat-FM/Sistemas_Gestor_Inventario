@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 import requests
 
-from tests.simulacion import paginado
+from tests.simulacion import Respuesta, paginado
 
 PRODUCTOS = [
     {"id_producto": 1, "codigo": "CAF-500", "nombre": "Café molido", "id_categoria": 2, "precio": "18500.50",
@@ -119,6 +119,38 @@ def test_kardex_con_los_filtros_de_movimientos(client, datos):
     assert "fecha_hasta" not in filtros
 
 
+def test_kardex_con_mas_movimientos_que_el_maximo_pide_acotar_sin_recorrer_todo(client, datos, app):
+    """Con ~75 000 movimientos recorrer todas las páginas tarda más de los 3 s que espera el Gateway: se responde 422
+    de inmediato, con la primera página, y se pide acotar la consulta."""
+    app.config["KARDEX_MAX_FILAS"] = 150
+    datos.responder("/movimientos", lambda llamada: paginado(list(range(151)), llamada))
+
+    respuesta = client.get("/reportes/kardex")
+
+    assert respuesta.status_code == 422
+    error = respuesta.get_json()["error"]
+    assert error["codigo"] == "DATOS_NO_VALIDOS"
+    assert error["detalles"] == [{"campo": "filtros", "mensaje": (
+        "El kardex tiene 151 movimientos y el máximo por consulta es 150: acote por producto, bodega, tipo o fechas.")}]
+    assert len(datos.llamadas_a("/movimientos")) == 1
+
+
+def test_kardex_justo_en_el_maximo_se_entrega_completo(client, datos, app):
+    app.config["KARDEX_MAX_FILAS"] = len(SALIDAS)
+
+    respuesta = client.get("/reportes/kardex")
+
+    assert respuesta.status_code == 200
+    assert len(respuesta.get_json()) == len(SALIDAS)
+
+
+def test_kardex_en_archivo_tambien_respeta_el_maximo(client, datos, app):
+    app.config["KARDEX_MAX_FILAS"] = 1
+    datos.responder("/movimientos", lambda llamada: paginado(list(range(2)), llamada))
+
+    assert client.get("/reportes/kardex?formato=csv").status_code == 422
+
+
 def test_kardex_valida_los_filtros(client):
     respuesta = client.get("/reportes/kardex?tipo=ROBO&id_usuario=x&formato=xml")
 
@@ -131,7 +163,7 @@ def test_indicadores_con_los_valores_por_defecto(client, datos):
     indicadores = respuesta.get_json()
     assert indicadores | {"mayor_rotacion": None} == {
         "valor_total": 231756.25, "productos_bajo_umbral": 1, "productos_agotados": 2, "proximos_a_vencer": 2,
-        "mayor_rotacion": None, "ordenes_pendientes": 3}
+        "mayor_rotacion": None, "ordenes_pendientes": 3, "no_disponibles": []}
     assert [p["codigo"] for p in indicadores["mayor_rotacion"]] == ["AGU-001", "CAF-500", "GAS-001"]
 
     hoy = date.today()
@@ -144,15 +176,99 @@ def test_indicadores_con_un_periodo_invertido(client):
     assert client.get("/indicadores?fecha_desde=2026-12-01&fecha_hasta=2026-11-01").status_code == 422
 
 
-def test_un_servicio_caido_responde_503(client, datos):
+def test_los_reportes_con_un_servicio_caido_responden_503(client, datos):
+    datos.responder("/saldos", requests.ConnectionError("rechazada"))
+
+    respuesta = client.get("/reportes/existencias")
+
+    assert respuesta.status_code == 503
+    assert respuesta.get_json()["error"] == {
+        "codigo": "SERVICIO_NO_DISPONIBLE", "mensaje": "ms-inventario no responde. Intente de nuevo más tarde.",
+        "detalles": []}
+
+
+def test_los_indicadores_sin_ms_compras_siguen_con_lo_demas(client, datos):
     datos.responder("/ordenes-compra", requests.ConnectionError("rechazada"))
 
     respuesta = client.get("/indicadores")
 
+    assert respuesta.status_code == 200
+    indicadores = respuesta.get_json()
+    assert indicadores["ordenes_pendientes"] is None
+    assert indicadores["no_disponibles"] == ["ordenes_pendientes"]
+    assert (indicadores["valor_total"], indicadores["productos_agotados"], indicadores["productos_bajo_umbral"]) == (231756.25, 2, 1)
+    assert len(indicadores["mayor_rotacion"]) == 3
+
+
+def test_el_panel_no_espera_a_un_servicio_lento(client, datos, sin_esperas):
+    """ms-compras con su base caída tarda 5 s en responder 503: el panel lo intenta una sola vez y espera como máximo 1 s, para
+    responder antes de los 3 s del Gateway con los demás indicadores (smoke-tests: «base de datos de ms-compras caída»)."""
+    datos.responder("/ordenes-compra", requests.Timeout("ms-compras no respondió a tiempo"))
+
+    respuesta = client.get("/indicadores")
+
+    assert respuesta.status_code == 200
+    assert respuesta.get_json()["no_disponibles"] == ["ordenes_pendientes"]
+    assert len(datos.llamadas_a("/ordenes-compra")) == 1
+    assert sin_esperas == []
+    assert {llamada["timeout"] for llamada in datos.llamadas} == {1.0}
+
+
+def test_el_panel_no_reintenta_un_5xx(client, datos, sin_esperas):
+    datos.responder("/ordenes-compra", Respuesta(503))
+
+    respuesta = client.get("/indicadores")
+
+    assert respuesta.status_code == 200
+    assert len(datos.llamadas_a("/ordenes-compra")) == 1
+    assert sin_esperas == []
+
+
+def test_los_demas_reportes_conservan_el_plazo_y_los_reintentos(app, client, datos, sin_esperas):
+    """El plazo corto es solo del panel: después de él, un reporte vuelve a esperar CALL_TIMEOUT_SECONDS y a reintentar (RNF18)."""
+    client.get("/indicadores")
+    datos.llamadas.clear()
+    fallos = iter([Respuesta(502)])
+    datos.responder("/categorias", lambda llamada: next(fallos, None) or [
+        {"id_categoria": 2, "nombre": "Bebidas", "id_categoria_padre": None}])
+
+    client.get("/reportes/existencias")
+    respuesta = client.get("/reportes/existencias?id_categoria=2")
+
+    assert respuesta.status_code == 200
+    assert {llamada["timeout"] for llamada in datos.llamadas} == {app.config["CALL_TIMEOUT_SECONDS"]}
+    assert sin_esperas == [0.2]
+
+
+def test_los_indicadores_sin_ms_catalogo_pierden_solo_los_que_lo_necesitan(client, datos):
+    datos.responder("/productos", requests.ConnectionError("rechazada"))
+
+    indicadores = client.get("/indicadores").get_json()
+
+    assert indicadores["no_disponibles"] == ["valor_total", "productos_agotados", "mayor_rotacion"]
+    assert (indicadores["productos_bajo_umbral"], indicadores["proximos_a_vencer"], indicadores["ordenes_pendientes"]) == (1, 2, 3)
+
+
+def test_los_indicadores_sin_ms_inventario_conservan_las_ordenes(client, datos):
+    for ruta in ("/saldos", "/saldos/bajo-umbral", "/lotes", "/movimientos"):
+        datos.responder(ruta, requests.ConnectionError("rechazada"))
+
+    indicadores = client.get("/indicadores").get_json()
+
+    assert indicadores["ordenes_pendientes"] == 3
+    assert indicadores["no_disponibles"] == ["valor_total", "productos_bajo_umbral", "productos_agotados", "proximos_a_vencer", "mayor_rotacion"]
+    # Un servicio que ya falló en la petición no se vuelve a llamar: el Gateway espera 3 s por toda la respuesta.
+    assert datos.llamadas_a("/saldos/bajo-umbral") == [] and datos.llamadas_a("/lotes") == []
+
+
+def test_los_indicadores_responden_503_solo_si_no_hay_ninguno(client, datos):
+    for ruta in ("/productos", "/saldos", "/saldos/bajo-umbral", "/lotes", "/movimientos", "/ordenes-compra"):
+        datos.responder(ruta, requests.ConnectionError("rechazada"))
+
+    respuesta = client.get("/indicadores")
+
     assert respuesta.status_code == 503
-    assert respuesta.get_json()["error"] == {
-        "codigo": "SERVICIO_NO_DISPONIBLE", "mensaje": "ms-compras no responde. Intente de nuevo más tarde.",
-        "detalles": []}
+    assert respuesta.get_json()["error"]["codigo"] == "SERVICIO_NO_DISPONIBLE"
 
 
 # ---------- Exportación ----------

@@ -9,7 +9,8 @@ import json
 
 from flask import current_app
 
-from app.clients.base import ClienteServicio
+from app.clients.base import ClienteServicio, DemasiadosElementos
+from app.errores import ApiError
 
 _cliente = ClienteServicio("ms-inventario", "MS_INVENTARIO_URL")
 
@@ -35,8 +36,15 @@ def saldos_bajo_umbral() -> list[dict]:
 
 def movimientos(filtros: dict) -> list[dict]:
     """El kardex con los filtros de GET /movimientos (id_producto, id_bodega, id_usuario, tipo, fecha_desde,
-    fecha_hasta), del más reciente al más antiguo."""
-    return _cliente.todas_las_paginas("/movimientos", _sin_vacios(filtros))
+    fecha_hasta), del más reciente al más antiguo. Se piden de 100 en 100 y con muchos movimientos no se llega a
+    responder antes de que el Gateway se rinda (3 s): pasado KARDEX_MAX_FILAS se pide acotar la consulta (422)."""
+    try:
+        return _cliente.todas_las_paginas("/movimientos", _sin_vacios(filtros),
+                                          maximo=current_app.config["KARDEX_MAX_FILAS"])
+    except DemasiadosElementos as e:
+        raise ApiError.datos_no_validos([{"campo": "filtros", "mensaje": (
+            f"El kardex tiene {e.total} movimientos y el máximo por consulta es {e.maximo}: "
+            "acote por producto, bodega, tipo o fechas.")}]) from e
 
 
 def lotes(vence_antes_de: str) -> list[dict]:

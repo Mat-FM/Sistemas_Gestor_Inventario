@@ -1,16 +1,29 @@
-{{-- El panel de indicadores (RF14). Recibe $indicadores y, opcional, $enlaceOrdenes (solo quien puede abrir las órdenes). --}}
+{{-- El panel de indicadores (RF14). Recibe $indicadores y, opcional, $enlaceOrdenes (solo quien puede abrir las órdenes lleva al enlace).
+     Un indicador en null no se pudo calcular porque un servicio no respondió: se muestra «—», no un 0 que parecería verdad. --}}
+@php
+    $numero = fn (?int $n) => \App\Support\Formato::numero($n ?? 0);
+    $tarjetas = [
+        ['valor' => $indicadores['valor_total'], 'texto' => \App\Support\Formato::monedaEntera($indicadores['valor_total'] ?? 0), 'etiqueta' => 'Valor del inventario', 'clase' => '', 'enlace' => null],
+        ['valor' => $indicadores['productos_agotados'], 'texto' => $numero($indicadores['productos_agotados']), 'etiqueta' => $indicadores['productos_agotados'] === 1 ? 'Producto agotado' : 'Productos agotados',
+            'clase' => $indicadores['productos_agotados'] ? 'text-danger' : '', 'enlace' => null],
+        ['valor' => $indicadores['proximos_a_vencer'], 'texto' => $numero($indicadores['proximos_a_vencer']), 'etiqueta' => $indicadores['proximos_a_vencer'] === 1 ? 'Lote por vencer' : 'Lotes por vencer',
+            'clase' => $indicadores['proximos_a_vencer'] ? 'text-warning-emphasis' : '', 'enlace' => ! empty($enlaceOrdenes) ? route('lotes.index') : null],
+        ['valor' => $indicadores['ordenes_pendientes'], 'texto' => $numero($indicadores['ordenes_pendientes']), 'etiqueta' => $indicadores['ordenes_pendientes'] === 1 ? 'Orden por recibir' : 'Órdenes por recibir',
+            'clase' => '', 'enlace' => ! empty($enlaceOrdenes) ? route('compras.ordenes.index') : null, 'flecha' => true],
+    ];
+@endphp
 <section class="indicadores" aria-label="Indicadores">
-    <div class="indicador"><div class="cifra">{{ \App\Support\Formato::monedaEntera($indicadores['valor_total']) }}</div><div class="peq">Valor del inventario</div></div>
-    <div class="indicador"><div class="cifra {{ $indicadores['productos_agotados'] ? 'text-danger' : '' }}">{{ \App\Support\Formato::numero($indicadores['productos_agotados']) }}</div><div class="peq">{{ $indicadores['productos_agotados'] === 1 ? 'Producto agotado' : 'Productos agotados' }}</div></div>
-    @php($tarjetaVencer = '<div class="cifra '.($indicadores['proximos_a_vencer'] ? 'text-warning-emphasis' : '').'">'.\App\Support\Formato::numero($indicadores['proximos_a_vencer']).'</div><div class="peq">'.($indicadores['proximos_a_vencer'] === 1 ? 'Lote por vencer' : 'Lotes por vencer').'</div>')
-    @if (! empty($enlaceOrdenes))
-        <a class="indicador" href="{{ route('lotes.index') }}">{!! $tarjetaVencer !!}</a>
-    @else
-        <div class="indicador">{!! $tarjetaVencer !!}</div>
-    @endif
-    @if (! empty($enlaceOrdenes))
-        <a class="indicador" href="{{ route('compras.ordenes.index') }}"><div class="cifra">{{ \App\Support\Formato::numero($indicadores['ordenes_pendientes']) }}</div><div class="peq">{{ $indicadores['ordenes_pendientes'] === 1 ? 'Orden por recibir' : 'Órdenes por recibir' }} <i class="bi bi-chevron-right"></i></div></a>
-    @else
-        <div class="indicador"><div class="cifra">{{ \App\Support\Formato::numero($indicadores['ordenes_pendientes']) }}</div><div class="peq">{{ $indicadores['ordenes_pendientes'] === 1 ? 'Orden por recibir' : 'Órdenes por recibir' }}</div></div>
-    @endif
+    @foreach ($tarjetas as $t)
+        @if ($t['enlace'])<a class="indicador" href="{{ $t['enlace'] }}">@else<div class="indicador">@endif
+            @if ($t['valor'] === null)
+                <div class="cifra sin-dato" title="No disponible por ahora">—</div>
+            @else
+                <div class="cifra {{ $t['clase'] }}">{{ $t['texto'] }}</div>
+            @endif
+            <div class="peq">{{ $t['etiqueta'] }}@if ($t['enlace'] && ! empty($t['flecha'])) <i class="bi bi-chevron-right"></i>@endif</div>
+        @if ($t['enlace'])</a>@else</div>@endif
+    @endforeach
 </section>
+@if (! empty($indicadores['no_disponibles']))
+    <p class="small text-suave mb-3"><i class="bi bi-info-circle"></i> Algunos datos no están disponibles por ahora; el resto está al día.</p>
+@endif

@@ -66,6 +66,17 @@ class Catalogo
         return ['datos' => $respuesta['datos'] ?? [], 'meta' => $respuesta['meta'] ?? ['pagina' => 1, 'por_pagina' => 20, 'total' => 0]];
     }
 
+    /**
+     * Todos los productos que cumplen los filtros, sin paginar (para los desplegables).
+     *
+     * @param  array<string, scalar|null>  $filtros  nombre, codigo, id_categoria, estado
+     * @return list<array<string, mixed>>
+     */
+    public function todos(array $filtros = []): array
+    {
+        return $this->gateway->todas('productos', $filtros);
+    }
+
     /** @param  array<string, mixed>  $cuerpo */
     public function crearProducto(array $cuerpo): array
     {

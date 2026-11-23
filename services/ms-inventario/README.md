@@ -23,7 +23,9 @@ físicos y carga inicial de saldos. Es el servicio más consultado.
   `TRASLADO_ENTRADA` y `CARGA_INICIAL`. Las operaciones bloquean el saldo mientras lo actualizan (`SELECT … FOR UPDATE`):
   dos movimientos simultáneos nunca lo dejan negativo.
 - **Lotes con FEFO** (RF17): los lotes nacen y cambian con los movimientos. Una salida sin lote consume primero los que vencen
-  antes, y `GET /lotes/sugerencia-salida` calcula esa misma asignación sin reservar nada.
+  antes, y `GET /lotes/sugerencia-salida` calcula esa misma asignación sin reservar nada. **Una salida nunca despacha un lote
+  vencido** (D36): sale de los vigentes y del stock sin lote, y pedir un lote vencido por `id_lote` es 409 `LOTE_VENCIDO`. Lo
+  vencido se da de baja con un `AJUSTE` o una devolución a proveedor, que sí lo consumen primero.
 - **Traslados** (RF04): dos pasos, envío (`TRASLADO_SALIDA`) y recepción (`TRASLADO_ENTRADA`); entre ambos la mercancía está
   en tránsito. Un traslado nunca hace FEFO: con `id_lote` mueve ese lote y sin él solo stock sin lote.
 - **Conteos físicos** (RF18): se programan, se registra lo contado y un administrador los aprueba; la aprobación aplica un
@@ -72,9 +74,9 @@ registro de peticiones. `/health` no consulta la base de datos, para que una ca�
 
 Formato común (Entrega 2, sección 4.1): errores `{"error": {"codigo", "mensaje", "detalles"}}` con los códigos
 `PETICION_MAL_FORMADA` 400, `NO_AUTENTICADO` 401, `SIN_PERMISO` 403, `NO_EXISTE` 404, `CONFLICTO` 409,
-`DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 y `ERROR_INTERNO` 500 (sin traza ni mensaje), más los propios de este
-servicio (`STOCK_INSUFICIENTE`, `CODIGO_DUPLICADO`, `BODEGA_INACTIVA`, `TRASLADO_YA_RECIBIDO`, `CONTEO_ESTADO_INVALIDO`, todos
-409); listados `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}` con `?pagina=1&por_pagina=20` (máximo 100);
+`DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 (también si PostgreSQL no se puede alcanzar, D35) y `ERROR_INTERNO` 500 (sin traza ni mensaje), más los propios de este
+servicio (`STOCK_INSUFICIENTE`, `CODIGO_DUPLICADO`, `BODEGA_INACTIVA`, `LOTE_VENCIDO`, `TRASLADO_YA_RECIBIDO`, `CONTEO_ESTADO_INVALIDO`,
+todos 409); listados `{"datos": [...], "meta": {"pagina", "por_pagina", "total"}}` con `?pagina=1&por_pagina=20` (máximo 100);
 instantes en ISO 8601 UTC y fechas de un día como `AAAA-MM-DD`.
 
 ## Identidad y alcance por bodega
@@ -419,8 +421,10 @@ El servicio **no autentica a quien le llama**: confía en `X-User-Id`, `X-User-R
 hacerse pasar por cualquier usuario y rol con solo enviar esas cabeceras.
 
 - **Lo que hace el servicio:** valida el formato de las cabeceras (una inválida es 401, nunca un 500 ni se ignora), no tiene
-  usuarios propios y deja el permiso por rol al Gateway. Las rutas `/internas/*` las llaman solo otros servicios: el Gateway
-  no las publica, y el servicio no las distingue de las demás.
+  usuarios propios y **repite la matriz de roles del Gateway** (D37, `src/routes/permisos.js`): un rol que no corresponde a la
+  ruta es 403 `SIN_PERMISO`. Solo se exceptúan `GET /saldos/bajo-umbral` y `GET /lotes`, que ms-reportes lee para el panel con la
+  identidad del contador, y las lecturas internas sin `X-User-Rol`. Las rutas `/internas/*` las llaman solo otros servicios: el
+  Gateway no las publica, y el servicio no las distingue de las demás (la carga inicial es de ADMINISTRADOR).
 - **Lo que no hace:** no comprueba quién envía las cabeceras ni filtra por origen (IP o token entre servicios): cualquiera que
   alcance el puerto puede llamar a `/internas/*` (la carga inicial exige `X-User-Id` y `X-User-Rol`, pero no verifica que
   vengan de ms-reportes), y `/health` y `/docs` no piden identidad.

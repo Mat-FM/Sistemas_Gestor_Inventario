@@ -90,6 +90,45 @@ describe('errorHandler', () => {
     });
   });
 
+  describe('base de datos inalcanzable → 503 SERVICIO_NO_DISPONIBLE (RNF18, D35)', () => {
+    const CUERPO_503 = { error: { codigo: 'SERVICIO_NO_DISPONIBLE', mensaje: 'El servicio no está disponible', detalles: [] } };
+    const conCodigo = (code, mensaje = 'clave-secreta-123') => Object.assign(new Error(mensaje), { code });
+
+    it.each([
+      ['conexión rechazada', () => conCodigo('ECONNREFUSED')],
+      ['nombre del servidor que ya no resuelve', () => conCodigo('ENOTFOUND')],
+      ['DNS sin respuesta', () => conCodigo('EAI_AGAIN')],
+      ['conexión reiniciada', () => conCodigo('ECONNRESET')],
+      ['plazo de red agotado', () => conCodigo('ETIMEDOUT')],
+      ['servidor apagándose (57P01)', () => conCodigo('57P01')],
+      ['servidor sin poder aceptar conexiones (57P03)', () => conCodigo('57P03')],
+      ['demasiadas conexiones (53300)', () => conCodigo('53300')],
+      ['fallo de conexión de la clase 08', () => conCodigo('08006')],
+      ['Knex sin conexión libre', () => Object.assign(new Error('clave-secreta-123'), { name: 'KnexTimeoutError' })],
+      ['pg: conexión terminada de golpe', () => new Error('Connection terminated unexpectedly clave-secreta-123')],
+      ['pg: plazo para conectar', () => new Error('timeout exceeded when trying to connect clave-secreta-123')],
+    ])('%s es 503, sin filtrar el mensaje, y se registra como fallo de disponibilidad', async (_n, crear) => {
+      const { request } = miniApp((app) => app.get('/x', async () => { throw crear(); }));
+      const res = await request.get('/x');
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual(CUERPO_503);
+      expect(res.text).not.toContain('clave-secreta-123');
+      const linea = await stdout.esperar((l) => l.mensaje === 'Error de disponibilidad');
+      expect(linea).toMatchObject({ estado: 503, codigo: 'SERVICIO_NO_DISPONIBLE' });
+    });
+
+    it.each([
+      ['columna que no existe (42703)', () => conCodigo('42703')],
+      ['violación de unicidad (23505)', () => conCodigo('23505')],
+      ['error de programación sin código', () => new Error('clave-secreta-123')],
+    ])('%s sigue siendo 500: no es un problema de conexión', async (_n, crear) => {
+      const { request } = miniApp((app) => app.get('/x', async () => { throw crear(); }));
+      const res = await request.get('/x');
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual(CUERPO_500);
+    });
+  });
+
   describe('errores 4xx de Express o de express.json() (D18)', () => {
     const cuerpoMalFormada = (res) => {
       expect(res.body.error.codigo).toBe('PETICION_MAL_FORMADA');

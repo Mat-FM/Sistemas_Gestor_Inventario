@@ -41,9 +41,11 @@
                 @else Todavía no hay existencias registradas. @endif
             </div>
         @else
-            @foreach ($tarjetas as $tarjeta)
-                @include('stock._producto', ['tarjeta' => $tarjeta, 'puedeOperar' => $puedeOperar])
-            @endforeach
+            <div class="rejilla">
+                @foreach ($tarjetas as $tarjeta)
+                    @include('stock._producto', ['tarjeta' => $tarjeta, 'puedeOperar' => $puedeOperar])
+                @endforeach
+            </div>
             @if ($hayMas)
                 <p class="text-suave small text-center">Mostramos los primeros resultados. Escribe más del nombre para afinar.</p>
             @endif

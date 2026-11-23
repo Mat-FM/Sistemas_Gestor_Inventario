@@ -33,6 +33,12 @@ test('migrar dos veces no falla ni repite migraciones', async () => {
   expect(rows[0].n).toBe(1);
 });
 
+test('si PostgreSQL se apaga o reinicia, el proceso NO muere: el pool atiende el error de una conexión inactiva', () => {
+  // Sin un oyente de 'error', Node lanza el evento como excepción y el servicio entero se cae (pasaba con «terminating connection due to
+  // administrator command»); Docker lo reinicia en bucle mientras la base no vuelve y el Gateway ve 503 de más.
+  expect(() => pool.emit('error', new Error('terminating connection due to administrator command'))).not.toThrow();
+});
+
 describe('errores de la base de datos', () => {
   const { manejarErrores } = require('../src/middleware/errores');
   const responder = () => {
@@ -45,6 +51,29 @@ describe('errores de la base de datos', () => {
     manejarErrores(new Error('timeout exceeded when trying to connect'), { contexto: {} }, res, () => {});
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json.mock.calls[0][0].error.codigo).toBe('SERVICIO_NO_DISPONIBLE');
+  });
+
+  test.each([
+    ['conexión rechazada', { code: 'ECONNREFUSED' }],
+    ['nombre de la base que ya no resuelve', { code: 'ENOTFOUND' }],
+    ['DNS sin respuesta', { code: 'EAI_AGAIN' }],
+    ['conexión reiniciada', { code: 'ECONNRESET' }],
+    ['servidor apagándose', { code: '57P01' }],
+    ['demasiadas conexiones', { code: '53300' }],
+    ['fallo de conexión de la clase 08', { code: '08006' }],
+    ['conexión terminada de golpe', { message: 'Connection terminated unexpectedly' }],
+  ])('una base inalcanzable (%s) responde 503 sin mostrar el detalle', (_nombre, datos) => {
+    const res = responder();
+    manejarErrores(Object.assign(new Error(datos.message ?? 'detalle-interno-secreto'), datos), { contexto: {} }, res, () => {});
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json.mock.calls[0][0].error.codigo).toBe('SERVICIO_NO_DISPONIBLE');
+    expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('detalle-interno-secreto');
+  });
+
+  test('un error de SQL que no es de conexión sigue siendo 500', () => {
+    const res = responder();
+    manejarErrores(Object.assign(new Error('la columna x no existe'), { code: '42703' }), { contexto: {} }, res, () => {});
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 
   test('esperar demasiado el candado de una orden responde 409 ORDEN_OCUPADA', () => {

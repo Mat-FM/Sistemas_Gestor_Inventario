@@ -22,6 +22,9 @@ x-mysql: &mysql
     interval: 5s
     timeout: 3s
     retries: 20
+    # La primera vez MySQL crea su directorio de datos, y en un equipo cargado tarda más de los 100 s de los reintentos: durante este
+    # margen los fallos no cuentan (con la base lista, queda sana al primer acierto).
+    start_period: 150s
 
 x-postgres: &postgres
   image: postgres:16
@@ -239,6 +242,9 @@ services:
       # Las direcciones de los servicios son las de la imagen (los nombres de esta red y del clúster: RNF14). Con el cliente web
       # detrás, TRUSTED_PROXIES debe tener la IP o el CIDR de su red para que el límite de inicios de sesión cuente por usuario.
       TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
+      # Límites de peticiones (RNF19). Solo se suben para medir el rendimiento del Gateway: con los de siempre se mediría el límite.
+      RATE_LIMIT_PER_MINUTE: ${GATEWAY_RATE_LIMIT_PER_MINUTE:-100}
+      LOGIN_RATE_LIMIT_PER_MINUTE: ${GATEWAY_LOGIN_RATE_LIMIT_PER_MINUTE:-10}
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
     depends_on:

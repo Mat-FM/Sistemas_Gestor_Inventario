@@ -292,6 +292,38 @@ usan UTC y la API devuelve instantes ISO 8601 en UTC. Limitación conocida: un m
 día UTC siguiente. La comparación usa límites UTC explícitos y no depende del huso de la sesión de PostgreSQL. `fecha_desde`
 posterior a `fecha_hasta` es 422 (RF15).
 
+## D35. Con la base de datos inalcanzable el servicio responde 503, no 500
+
+Si PostgreSQL no acepta conexiones, el nombre de su contenedor ya no resuelve, cortó la conexión o el pool no consigue una a tiempo
+(`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, `ECONNRESET`, `ETIMEDOUT`, los códigos `57P01`/`57P02`/`57P03`, `53300` y los de la clase `08`,
+`KnexTimeoutError`, «Connection terminated» o «timeout exceeded when trying to connect»), el manejador de errores responde 503
+`SERVICIO_NO_DISPONIBLE` genérico y registra «Error de disponibilidad» con su `request_id`. Antes respondía 500, y para el cliente un 500 es
+un fallo del código que reintentar no arregla, mientras que un 503 se reintenta (RNF18). Un error de SQL (columna que no existe,
+violación de unicidad) sigue siendo 500: eso sí es un defecto. `/health` sigue sin consultar la base (D17). Lo comprobó la sonda
+«apagar cada base de datos» sobre la pila completa (2026-11-21), que también halló lo mismo en los demás servicios.
+
+## D36. Una salida no despacha lotes vencidos
+
+Un lote está **vencido** si su fecha de vencimiento es anterior a hoy (el día de Bogotá, `src/domain/hoy.js`: el servidor suele estar
+en UTC y a las 8 p. m. ya sería «mañana»); el que vence hoy todavía se puede vender y los lotes sin fecha nunca vencen. Antes (D6)
+el FEFO empezaba por los que vencen primero, es decir, por los vencidos, y una salida los despachaba. Ahora, en un movimiento
+`SALIDA`: sin `id_lote`, el FEFO sale de los lotes vigentes y del stock sin lote, y lo vencido no cuenta como disponible
+(`STOCK_INSUFICIENTE` con `disponible` = lo vendible, y el mensaje dice cuántas unidades vencidas hay); con `id_lote` de un lote
+vencido es 409 `LOTE_VENCIDO`. `GET /lotes/sugerencia-salida` propone solo lotes vigentes. Los demás movimientos que bajan el saldo
+no cambian: un `AJUSTE` negativo y una `DEVOLUCION_PROVEEDOR` siguen consumiendo primero lo vencido, que es como se da de baja. El
+traslado nunca hace FEFO (D28(a)). Las alertas de ms-notificaciones y `GET /lotes?vence_antes_de` siguen mostrando lo vencido.
+
+## D37. Cada ruta lleva su lista de roles dentro del servicio
+
+El Gateway ya comprueba el rol de cada ruta (Tabla 9, 23 reglas), pero un servicio que acepta cualquier `X-User-Rol` depende de que nadie
+le salte el Gateway. `src/routes/permisos.js` repite esa matriz (más la ruta interna de la carga inicial, que es de ADMINISTRADOR) y
+`registrarRutas` pone `exigirRol` en cada ruta: un rol que no figura es 403 `SIN_PERMISO` antes de que la ruta haga nada, y el servicio
+no arranca si una ruta declarada no tiene regla. Dos lecturas quedan sin restringir (`null`): `GET /saldos/bajo-umbral` y `GET /lotes`,
+que ms-reportes lee para el panel de indicadores con la identidad del usuario que lo pidió (un CONTADOR), mientras que el Gateway solo
+deja entrar a ADMINISTRADOR y OPERADOR_BODEGA; restringirlas aquí rompería el panel. Una petición sin `X-User-Rol` es una llamada interna
+de lectura (D8) y no se restringe. `tests/permisosRoles.test.js` compara la tabla con `api-gateway/config/gateway_routes.php` y prueba las
+cuatro roles en cada ruta, así que las dos matrices no pueden separarse sin que falle una prueba. Atiende RNF07 y RNF09.
+
 ## D30. Las migraciones aplicadas son inmutables
 
 Todo cambio de esquema va en una migración nueva con su propio `down`, nunca editando una ya aplicada: las bases de los demás

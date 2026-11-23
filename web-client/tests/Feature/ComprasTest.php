@@ -199,6 +199,18 @@ class ComprasTest extends TestCase
             ->assertSee('id="plantilla-linea"', false)->assertSee('name="lineas[__I__][id_producto]"', false);
     }
 
+    public function test_los_formularios_de_compras_ofrecen_todos_los_productos_y_proveedores_aunque_pasen_de_100(): void
+    {
+        $productos = array_map(fn ($i) => ['id_producto' => $i, 'codigo' => "P$i", 'nombre' => "Producto $i", 'precio' => 1000], range(1, 250));
+        $proveedores = array_map(fn ($i) => ['id_proveedor' => $i, 'razon_social' => "Proveedor $i"], range(1, 120));
+        $this->gatewayDeCompras(['GET productos' => self::paginado($productos), 'GET proveedores' => self::paginado($proveedores)]);
+
+        foreach (['/compras/ordenes/nuevo', '/compras/devoluciones/nuevo'] as $ruta) {
+            $this->conSesion('ADMINISTRADOR')->get($ruta)->assertOk()->assertSee('Producto 250')->assertSee('Proveedor 120');
+        }
+        $this->assertTrue($this->seEnvio('GET', 'productos', fn (Request $p) => str_contains($p->url(), 'pagina=3') && str_contains($p->url(), 'estado=ACTIVO')));
+    }
+
     public function test_enviar_y_anular_una_orden_y_un_cambio_que_ya_no_procede(): void
     {
         $this->gatewayDeCompras(['PATCH ordenes-compra/1/estado' => Http::response($this->orden(['estado' => 'ENVIADA']))]);

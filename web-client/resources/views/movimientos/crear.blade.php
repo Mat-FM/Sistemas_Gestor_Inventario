@@ -12,7 +12,7 @@
 
         <ul class="nav nav-pills pestanas mb-3">
             @foreach (['ENTRADA' => 'Entra', 'SALIDA' => 'Sale', 'DEVOLUCION_CLIENTE' => 'Devolución', 'AJUSTE' => 'Ajuste'] as $codigo => $nombre)
-                <li class="nav-item"><a class="nav-link {{ $tipo === $codigo ? 'active' : '' }}" style="{{ $tipo === $codigo ? 'background:#0f766e' : '' }}"
+                <li class="nav-item"><a class="nav-link {{ $tipo === $codigo ? 'active' : '' }}"
                     href="{{ route('movimientos.crear', array_filter(['tipo' => $codigo, 'id_producto' => $producto['id_producto'] ?? null, 'id_bodega' => $idBodega ?? null])) }}">{{ $nombre }}</a></li>
             @endforeach
         </ul>

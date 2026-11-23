@@ -30,9 +30,11 @@ trait ResponderFallas
 
         if ($e->estado === 409 && $e->codigo === 'STOCK_INSUFICIENTE') {
             $disponible = $e->detalles[0]['disponible'] ?? null;
+            // ms-inventario no despacha lo vencido (D36) y lo dice entre paréntesis: «(hay 5 unidades vencidas que no se pueden despachar)».
+            $vencidas = preg_match('/\((hay \d+ unidades vencidas[^)]*)\)/', (string) ($e->detalles[0]['mensaje'] ?? ''), $coincidencia) === 1 ? " ({$coincidencia[1]})" : '';
 
             return $redireccion->withErrors(['cantidad' => $disponible !== null
-                ? "No hay stock suficiente. Disponible: {$disponible}."
+                ? "No hay stock suficiente. Disponible: {$disponible}{$vencidas}."
                 : 'No hay stock suficiente en esa bodega.']);
         }
 

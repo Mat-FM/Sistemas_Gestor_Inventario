@@ -9,6 +9,8 @@ use App\Http\Middleware\LogRequest;
 use App\Http\Middleware\RequireRole;
 use App\Services\Proxy\ProxyService;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\LostConnectionDetector;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -89,6 +91,17 @@ return Application::configure(basePath: dirname(__DIR__))
             $error = ApiException::deHttp($e);
 
             return $responder($error, $error->status === $e->getStatusCode() ? $e->getHeaders() : []);
+        });
+
+        // Base de datos del Gateway inalcanzable (el limitador y la autenticación la leen en cada petición, RNF18):
+        // 503 y no 500. Solo los fallos de conexión; un error de SQL (columna que no existe, etc.) sigue siendo un
+        // error interno. El detalle del driver no sale en la respuesta; queda en el log por el report normal.
+        $exceptions->render(function (QueryException|PDOException $e) use ($responder) {
+            if (! (new LostConnectionDetector)->causedByLostConnection($e)) {
+                return null;
+            }
+
+            return $responder(ApiException::servicioNoDisponible());
         });
 
         // Último recurso: nunca expone la traza ni el mensaje de la excepción, con o sin APP_DEBUG.

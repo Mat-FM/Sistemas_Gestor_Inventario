@@ -12,7 +12,8 @@ const { ISO_8601, datosNoValidos, esError, recursoNoExiste, rutaNoExiste } = req
 // separado (repositorio y servicio) están en movimientosCapas.test.js y la lista de rutas en routes.test.js.
 
 const ADM = headers('ADMINISTRADOR');
-const ROLES = ['ADMINISTRADOR', 'VENDEDOR', 'CONTADOR'];
+// Los roles que ven el kardex de cualquier bodega. El VENDEDOR no: el kardex es de ADMINISTRADOR, CONTADOR y OPERADOR_BODEGA (D37).
+const ROLES = ['ADMINISTRADOR', 'CONTADOR'];
 const CLAVES_MOVIMIENTO = [
   'id_movimiento', 'tipo', 'id_producto', 'id_bodega', 'id_lote', 'id_traslado', 'id_conteo', 'cantidad', 'saldo_resultante',
   'fecha', 'id_usuario', 'documento_referencia', 'observacion',

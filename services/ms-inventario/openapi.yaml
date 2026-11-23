@@ -56,7 +56,7 @@ info:
       (vacía salvo en los 422 y en algunos 409; `STOCK_INSUFICIENTE` añade `disponible` y `solicitado`). Códigos:
       `PETICION_MAL_FORMADA` 400, `NO_AUTENTICADO` 401, `SIN_PERMISO` 403, `NO_EXISTE` 404, `CONFLICTO` 409,
       `DATOS_NO_VALIDOS` 422, `SERVICIO_NO_DISPONIBLE` 503 y `ERROR_INTERNO` 500 (sin traza ni mensaje); los propios de
-      este servicio son `CODIGO_DUPLICADO`, `STOCK_INSUFICIENTE`, `BODEGA_INACTIVA`, `TRASLADO_YA_RECIBIDO` y
+      este servicio son `CODIGO_DUPLICADO`, `STOCK_INSUFICIENTE`, `BODEGA_INACTIVA`, `LOTE_VENCIDO`, `TRASLADO_YA_RECIBIDO` y
       `CONTEO_ESTADO_INVALIDO`, todos 409. Una ruta que no existe es 404 `NO_EXISTE`.
     - Todas las respuestas llevan `X-Request-Id`: el recibido, si es válido, o uno nuevo.
 
@@ -220,6 +220,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '409':
           description: 'Ya existe una bodega con ese código (sin distinguir mayúsculas), también si está inactiva.'
           content:
@@ -279,6 +280,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -313,6 +315,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -343,6 +346,7 @@ paths:
               schema: { $ref: '#/components/schemas/Bodega' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '413': { $ref: '#/components/responses/CuerpoDemasiadoGrande' }
         '415': { $ref: '#/components/responses/CodificacionNoSoportada' }
@@ -433,6 +437,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ListadoUmbrales' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '500': { $ref: '#/components/responses/ErrorInterno' }
 
@@ -469,6 +474,7 @@ paths:
               schema: { $ref: '#/components/schemas/Umbral' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404':
           description: 'El producto no existe en ms-catalogo, o el `{id_producto}` no es un entero positivo.'
           content:
@@ -516,6 +522,11 @@ paths:
           `campo` `id_lote`, si el lote no alcanza aunque el saldo sí). Sin `id_lote` sale por **FEFO**: consume los lotes por
           `fecha_vencimiento` ascendente (los lotes sin fecha, al final) y el resto sale del stock sin lote. `lote` en un
           movimiento que resta es 422: al retirar no se crea un lote.
+        - **Lotes vencidos (D36).** Un lote está vencido si su `fecha_vencimiento` es anterior a hoy (día de Bogotá); el que vence
+          hoy aún se vende. Una `SALIDA` no despacha lo vencido: sin `id_lote` sale por FEFO de los lotes vigentes y del stock sin
+          lote, y lo vencido no cuenta como disponible (409 `STOCK_INSUFICIENTE`, con `disponible` igual a lo vendible y el
+          número de unidades vencidas en el mensaje); con `id_lote` de un lote vencido es 409 `LOTE_VENCIDO`. Un `AJUSTE`
+          negativo y una `DEVOLUCION_PROVEEDOR` sí pueden consumirlo (así se da de baja).
         - `id_lote` y `lote` a la vez es 422. El movimiento guarda en `id_lote` el primer lote consumido, o `null`.
 
         **Idempotencia (RNF17).** Con la misma clave del mismo usuario se devuelve el movimiento original con 200, aunque el
@@ -748,8 +759,8 @@ paths:
 
         Del más próximo a vencer al último, con la **misma regla FEFO** que aplica la salida real sobre los mismos lotes. Es una
         consulta: no reserva nada, así que el stock puede cambiar entre la sugerencia y la salida. Asigna **solo desde lotes**
-        con existencia: si no alcanzan es 409 `STOCK_INSUFICIENTE` (`disponible` es lo que suman los lotes), aunque el saldo sí
-        alcance con stock sin lote. La suma de `cantidad_sugerida` es exactamente `cantidad` y ningún lote aparece con 0. Es un
+        con existencia **y vigentes** (los vencidos no se despachan, D36): si no alcanzan es 409 `STOCK_INSUFICIENTE`
+        (`disponible` es lo que suman esos lotes), aunque el saldo sí alcance con stock sin lote. La suma de `cantidad_sugerida` es exactamente `cantidad` y ningún lote aparece con 0. Es un
         arreglo plano, sin paginar. Un operador de bodega solo consulta su bodega (otra, 403).
       parameters:
         - name: id_producto
@@ -1012,6 +1023,7 @@ paths:
               schema: { $ref: '#/components/schemas/Conteo' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404':
           description: 'La bodega no existe.'
           content:
@@ -1190,6 +1202,7 @@ paths:
               schema: { $ref: '#/components/schemas/ConteoAprobado' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '404': { $ref: '#/components/responses/NoExiste' }
         '409':
           description: |
@@ -1269,6 +1282,7 @@ paths:
               schema: { $ref: '#/components/schemas/ResultadoCargaInicial' }
         '400': { $ref: '#/components/responses/PeticionMalFormada' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '413':
           description: 'El cuerpo supera 1 MB.'
           content:

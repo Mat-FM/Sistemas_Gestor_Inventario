@@ -13,7 +13,7 @@
 
         <ul class="nav nav-pills pestanas mb-3">
             @foreach (['EN_TRANSITO' => 'Por recibir', 'RECIBIDO' => 'Recibidos', 'todos' => 'Todos'] as $codigo => $nombre)
-                <li class="nav-item"><a class="nav-link {{ $estado === $codigo ? 'active' : '' }}" style="{{ $estado === $codigo ? 'background:#0f766e' : '' }}"
+                <li class="nav-item"><a class="nav-link {{ $estado === $codigo ? 'active' : '' }}"
                     href="{{ route('traslados.index', ['estado' => $codigo]) }}">{{ $nombre }}</a></li>
             @endforeach
         </ul>

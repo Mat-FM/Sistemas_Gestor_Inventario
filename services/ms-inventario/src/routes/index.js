@@ -1,8 +1,9 @@
-const { requireUser } = require('../middleware/identity');
+const { exigirRol, requireUser } = require('../middleware/identity');
 const { rutasBodegas } = require('./bodegas');
 const { rutasConteos } = require('./conteos');
 const { rutasInternas } = require('./internas');
 const { rutasLotes } = require('./lotes');
+const { PERMISOS } = require('./permisos');
 const { rutasMovimientos } = require('./movimientos');
 const { rutasSaldos } = require('./saldos');
 const { rutasTraslados } = require('./traslados');
@@ -48,7 +49,11 @@ function exigirUsuario(req, _res, next) {
 /** Monta en `app` las rutas de rutasDeclaradas(deps). Debe llamarse después de `identity` y antes del 404. */
 function registrarRutas(app, deps) {
   for (const { metodo, ruta, handler } of rutasDeclaradas(deps)) {
-    const cadena = metodo === 'get' ? [handler] : [exigirUsuario, handler];
+    const clave = `${metodo.toUpperCase()} ${ruta}`;
+    // Ninguna ruta sin regla de roles (D37): una nueva debe declararla en permisos.js o el servicio no arranca.
+    if (!(clave in PERMISOS)) throw new Error(`La ruta ${clave} no tiene regla de roles en src/routes/permisos.js`);
+    const roles = PERMISOS[clave];
+    const cadena = [...(metodo === 'get' ? [] : [exigirUsuario]), ...(roles === null ? [] : [exigirRol(roles)]), handler];
     app[metodo](ruta, ...cadena);
   }
 }

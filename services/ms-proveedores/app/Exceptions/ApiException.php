@@ -19,6 +19,11 @@ class ApiException extends RuntimeException
         parent::__construct($mensaje);
     }
 
+    public static function sinPermiso(string $mensaje = 'Su rol no puede realizar esta operación.'): self
+    {
+        return new self(403, 'SIN_PERMISO', $mensaje);
+    }
+
     public static function noExiste(string $mensaje = 'El recurso no existe.'): self
     {
         return new self(404, 'NO_EXISTE', $mensaje);

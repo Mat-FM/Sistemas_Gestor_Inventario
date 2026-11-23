@@ -30,7 +30,7 @@ services/             Los seis microservicios
 web-client/           Cliente web (solo se comunica con el Gateway)
 k8s/                  Archivos de configuración de Kubernetes
 performance-tests/    Pruebas de rendimiento (Locust), una carpeta por integrante
-smoke-tests/          Pruebas de funcionamiento de todo el sistema en contenedores (53 pruebas)
+smoke-tests/          Pruebas de funcionamiento de todo el sistema en contenedores (67 pruebas)
 docs/                 Documentos de cada entrega y contratos de API
 bitacoras-ia/         Bitácoras de uso de IA de cada entrega
 .github/workflows/    Integración continua
@@ -38,6 +38,9 @@ docker-compose.yml    Entorno local: las siete bases de datos, los siete servici
 ```
 
 ## Entorno local
+
+El paso a paso completo (requisitos, configuración del `.env`, verificación, primer ingreso, problemas frecuentes y despliegue en
+Kubernetes) está en el **[manual de instalación](docs/manual-de-instalacion.md)**. En resumen:
 
 ```bash
 cp .env.example .env      # cambiar las contraseñas y completar los secretos (cada uno trae el comando que lo genera)
@@ -55,7 +58,7 @@ PostgreSQL 5433 (inventario), 5434 (compras), 5435 (notificaciones), 5436 (repor
 Kubernetes (RNF04): los manifiestos están en [`k8s/`](k8s) con sus instrucciones; `k8s/probar-en-kind.sh` los despliega y prueba en un
 clúster local.
 
-Pruebas de funcionamiento: `./smoke-tests/ejecutar.sh` levanta todo con Docker Compose en un proyecto aparte, corre las 53 pruebas de
+Pruebas de funcionamiento: `./smoke-tests/ejecutar.sh` levanta todo con Docker Compose en un proyecto aparte, corre las 67 pruebas de
 [`smoke-tests/`](smoke-tests) y lo borra.
 
 ## Convenciones

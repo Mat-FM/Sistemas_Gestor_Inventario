@@ -120,6 +120,23 @@ class MovimientosTest extends TestCase
         $this->conSesion('CONTADOR')->get('/movimientos')->assertOk()->assertSee('−3')->assertSee('+2')->assertSee('Ajuste')->assertSee('Devolución de cliente');
     }
 
+    public function test_si_parte_del_stock_esta_vencido_el_aviso_lo_dice(): void
+    {
+        $mensaje = 'Disponible: 5; solicitado: 6 (hay 5 unidades vencidas que no se pueden despachar)';
+        $this->gatewayBase(['POST movimientos' => self::error(409, 'STOCK_INSUFICIENTE', 'No hay stock', [['campo' => 'cantidad', 'mensaje' => $mensaje, 'disponible' => 5, 'solicitado' => 6]])]);
+
+        $this->conSesion('ADMINISTRADOR')->from('/movimientos/nuevo')->post('/movimientos', self::FORMULARIO)
+            ->assertSessionHasErrors(['cantidad' => 'No hay stock suficiente. Disponible: 5 (hay 5 unidades vencidas que no se pueden despachar).']);
+    }
+
+    public function test_un_lote_vencido_se_explica_con_el_mensaje_del_servicio(): void
+    {
+        $this->gatewayBase(['POST movimientos' => self::error(409, 'LOTE_VENCIDO', 'El lote L1 venció el 2027-01-31: una salida no puede despacharlo')]);
+
+        $this->conSesion('ADMINISTRADOR')->from('/movimientos/nuevo')->post('/movimientos', self::FORMULARIO)
+            ->assertSessionHas('error', 'El lote L1 venció el 2027-01-31: una salida no puede despacharlo');
+    }
+
     public function test_tras_un_rechazo_definitivo_la_clave_se_descarta_para_que_el_formulario_genere_otra(): void
     {
         $this->gatewayBase(['POST movimientos' => self::error(409, 'STOCK_INSUFICIENTE', 'No hay stock', [['campo' => 'cantidad', 'disponible' => 2, 'solicitado' => 3]])]);

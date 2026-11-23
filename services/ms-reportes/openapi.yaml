@@ -50,7 +50,7 @@ info:
     - `numero_fila` es el número de la fila en el archivo, como en Excel (la primera de datos es la 2). `numero_fila`
       0 es un error de toda la importación.
     - `categoria` es el nombre de la categoría (sin distinguir mayúsculas); si dos categorías tienen ese nombre, la
-      fila se rechaza. `precio` y `cantidad` admiten coma decimal. `fecha_vencimiento` con el formato AAAA-MM-DD.
+      fila se rechaza. `precio` y `cantidad` admiten coma decimal y separador de miles (`2500,5`, `2.500,50` o `2,500.50`). `fecha_vencimiento` con el formato AAAA-MM-DD.
     - Estados: `PROCESADA` (ninguna fila con error), `CON_ERRORES` (al menos una fila con error, aunque no se cree
       ninguna) y `FALLIDA` (un servicio no respondió).
 
@@ -190,6 +190,9 @@ paths:
         Roles en el Gateway ADMINISTRADOR y CONTADOR (RF15). Los movimientos de `GET /movimientos` de ms-inventario con
         sus mismos filtros, del más reciente al más antiguo, con el código y el nombre del producto y el nombre de la
         bodega. Sin paginar.
+
+        Con más de `KARDEX_MAX_FILAS` movimientos (5000 por defecto) responde 422 con el total y pide acotar por
+        producto, bodega, tipo o fechas: traerlos de 100 en 100 tardaría más de los 3 s que espera el Gateway.
       parameters:
         - name: id_producto
           in: query
@@ -248,6 +251,10 @@ paths:
       description: |
         Roles en el Gateway ADMINISTRADOR y CONTADOR (RF14). Solo JSON. El periodo solo afecta a `mayor_rotacion`: sin
         `fecha_hasta` termina hoy y sin `fecha_desde` empieza 30 días antes. Los demás indicadores son del momento.
+
+        Si un servicio no responde, solo se pierden los indicadores que lo necesitan: salen en `null` y sus nombres en
+        `no_disponibles`. Responde 503 únicamente cuando no se puede calcular ninguno. Para responder antes de los 3 s del
+        Gateway, cada llamada del panel se hace una sola vez y espera como máximo 1 s.
       parameters:
         - name: fecha_desde
           in: query
@@ -263,18 +270,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  valor_total: { type: number, description: Valor de todo el inventario., example: 231756.25 }
-                  productos_bajo_umbral: { type: integer, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
+                  valor_total: { type: number, nullable: true, description: Valor de todo el inventario., example: 231756.25 }
+                  productos_bajo_umbral: { type: integer, nullable: true, description: 'Productos bajo su umbral mínimo (RF09).', example: 1 }
                   productos_agotados:
                     type: integer
+                    nullable: true
                     description: Productos ACTIVOS cuya suma en las dos bodegas es 0, también los que no tienen saldo.
                     example: 2
-                  proximos_a_vencer: { type: integer, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
+                  proximos_a_vencer: { type: integer, nullable: true, description: Lotes con existencia que vencen en los próximos 30 días., example: 2 }
                   mayor_rotacion:
                     type: array
+                    nullable: true
                     description: Los 5 productos con más salidas en el periodo.
                     items: { $ref: '#/components/schemas/ProductoRotacion' }
-                  ordenes_pendientes: { type: integer, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+                  ordenes_pendientes: { type: integer, nullable: true, description: Órdenes de compra ENVIADA o RECIBIDA_PARCIAL., example: 3 }
+                  no_disponibles:
+                    type: array
+                    description: Indicadores que no se pudieron calcular porque un servicio no respondió (salen en null).
+                    items: { type: string }
+                    example: [ordenes_pendientes]
         '422': { $ref: '#/components/responses/DatosNoValidos' }
         '503': { $ref: '#/components/responses/ServicioNoDisponible' }
 

@@ -81,6 +81,13 @@ class ReportesTest extends TestCase
             && str_contains($p->url(), 'id_usuario=1') && str_contains($p->url(), 'fecha_desde=2026-11-01') && str_contains($p->url(), 'fecha_hasta=2026-11-30')));
     }
 
+    public function test_el_filtro_por_producto_del_kardex_ofrece_todos_los_productos_aunque_pasen_de_100(): void
+    {
+        $this->gatewayDeReportes(['GET productos' => self::paginado(array_map(fn ($i) => ['id_producto' => $i, 'codigo' => "P$i", 'nombre' => "Producto $i"], range(1, 150)))]);
+
+        $this->conSesion('CONTADOR')->get('/reportes/kardex')->assertOk()->assertSee('Producto 150');
+    }
+
     public function test_el_contador_no_ve_el_filtro_de_usuarios_ni_los_pide(): void
     {
         $this->gatewayDeReportes();
@@ -95,6 +102,24 @@ class ReportesTest extends TestCase
 
         $this->conSesion('ADMINISTRADOR')->get('/reportes/kardex')->assertOk()
             ->assertSee('No pudimos generar el kardex')->assertSee('acota por producto, bodega o fechas');
+    }
+
+    public function test_si_el_kardex_supera_el_maximo_se_muestra_el_aviso_del_servicio(): void
+    {
+        $aviso = 'El kardex tiene 75000 movimientos y el máximo por consulta es 5000: acote por producto, bodega, tipo o fechas.';
+        $this->gatewayDeReportes(['GET reportes/kardex' => self::error(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos.', [['campo' => 'filtros', 'mensaje' => $aviso]])]);
+
+        $this->conSesion('ADMINISTRADOR')->get('/reportes/kardex')->assertOk()
+            ->assertSee('El kardex tiene 75000 movimientos')->assertSee('acote por producto, bodega, tipo o fechas');
+    }
+
+    public function test_si_el_archivo_del_kardex_supera_el_maximo_se_explica_como_acotarlo(): void
+    {
+        $aviso = 'El kardex tiene 75000 movimientos y el máximo por consulta es 5000: acote por producto, bodega, tipo o fechas.';
+        $this->gatewayDeReportes(['GET reportes/kardex' => self::error(422, 'DATOS_NO_VALIDOS', 'Los datos enviados no son válidos.', [['campo' => 'filtros', 'mensaje' => $aviso]])]);
+
+        $this->conSesion('ADMINISTRADOR')->from('/reportes/kardex')->get('/reportes/kardex?formato=csv')
+            ->assertRedirect('/reportes/kardex')->assertSessionHas('error', $aviso);
     }
 
     public function test_el_kardex_rechaza_un_rango_de_fechas_al_reves_sin_llamar_al_servicio(): void
