@@ -47,8 +47,8 @@ class DevolucionController extends Controller
             return view('compras.devoluciones.crear', ['sinBodega' => true]);
         }
 
-        [$proveedores] = Intento::de(fn () => $this->proveedores->listar(['estado' => 'ACTIVO', 'por_pagina' => 100])['datos']);
-        [$productos] = Intento::de(fn () => $this->catalogo->productos(['estado' => 'ACTIVO', 'por_pagina' => 100])['datos']);
+        [$proveedores] = Intento::de(fn () => $this->proveedores->todos(['estado' => 'ACTIVO']));
+        [$productos] = Intento::de(fn () => $this->catalogo->todos(['estado' => 'ACTIVO']));
         [$bodegas] = Intento::de(fn () => $this->nombres->bodegas());
 
         return view('compras.devoluciones.crear', [

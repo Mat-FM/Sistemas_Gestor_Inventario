@@ -17,6 +17,16 @@ class Proveedores
         return ['datos' => $respuesta['datos'] ?? [], 'meta' => $respuesta['meta'] ?? ['pagina' => 1, 'por_pagina' => 20, 'total' => 0]];
     }
 
+    /**
+     * Todos los proveedores que cumplen los filtros, sin paginar (para los desplegables).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function todos(array $filtros = []): array
+    {
+        return $this->gateway->todas('proveedores', $filtros);
+    }
+
     /** @return array<string, mixed> */
     public function obtener(int $id): array
     {

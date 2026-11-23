@@ -63,6 +63,21 @@ abstract class TestCase extends BaseTestCase
         return Http::response(['datos' => $datos, 'meta' => ['pagina' => 1, 'por_pagina' => 20, 'total' => $total ?? count($datos)]]);
     }
 
+    /** Un listado de varias páginas: responde la página pedida (`pagina`, `por_pagina`), como los servicios. */
+    protected static function paginado(array $datos): callable
+    {
+        return function (Request $peticion) use ($datos) {
+            parse_str((string) parse_url($peticion->url(), PHP_URL_QUERY), $consulta);
+            $porPagina = (int) ($consulta['por_pagina'] ?? 20);
+            $pagina = (int) ($consulta['pagina'] ?? 1);
+
+            return Http::response([
+                'datos' => array_slice($datos, ($pagina - 1) * $porPagina, $porPagina),
+                'meta' => ['pagina' => $pagina, 'por_pagina' => $porPagina, 'total' => count($datos)],
+            ]);
+        };
+    }
+
     protected static function bodegas()
     {
         return self::listado([

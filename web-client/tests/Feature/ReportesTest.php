@@ -81,6 +81,13 @@ class ReportesTest extends TestCase
             && str_contains($p->url(), 'id_usuario=1') && str_contains($p->url(), 'fecha_desde=2026-11-01') && str_contains($p->url(), 'fecha_hasta=2026-11-30')));
     }
 
+    public function test_el_filtro_por_producto_del_kardex_ofrece_todos_los_productos_aunque_pasen_de_100(): void
+    {
+        $this->gatewayDeReportes(['GET productos' => self::paginado(array_map(fn ($i) => ['id_producto' => $i, 'codigo' => "P$i", 'nombre' => "Producto $i"], range(1, 150)))]);
+
+        $this->conSesion('CONTADOR')->get('/reportes/kardex')->assertOk()->assertSee('Producto 150');
+    }
+
     public function test_el_contador_no_ve_el_filtro_de_usuarios_ni_los_pide(): void
     {
         $this->gatewayDeReportes();

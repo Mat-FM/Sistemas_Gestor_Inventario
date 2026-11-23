@@ -139,6 +139,33 @@ class GatewayClient
         return $resultado;
     }
 
+    /**
+     * Todos los elementos de un listado paginado, para los desplegables: deben ofrecer todo y no solo la primera página.
+     * La primera página dice cuántos hay; las demás se piden juntas con varias(). Si alguna falla, falla todo.
+     *
+     * @param  array<string, scalar|null>  $consulta
+     * @return list<array<string, mixed>>
+     */
+    public function todas(string $ruta, array $consulta = []): array
+    {
+        $consulta['por_pagina'] = 100; // el máximo que acepta cada servicio (Entrega 2, sección 4.1)
+        $primera = $this->get($ruta, ['pagina' => 1] + $consulta);
+        $datos = $primera['datos'] ?? [];
+
+        $resto = [];
+        for ($pagina = 2; $pagina <= (int) ceil((int) ($primera['meta']['total'] ?? 0) / 100); $pagina++) {
+            $resto["p$pagina"] = [$ruta, ['pagina' => $pagina] + $consulta];
+        }
+        foreach ($this->varias($resto) as $respuesta) {
+            if ($respuesta instanceof GatewayException) {
+                throw $respuesta;
+            }
+            array_push($datos, ...($respuesta['datos'] ?? []));
+        }
+
+        return $datos;
+    }
+
     private function base(bool $conToken, bool $json = true): PendingRequest
     {
         $peticion = Http::baseUrl(config('gateway.url').'/api')
