@@ -42,9 +42,6 @@ _ids_usuario = itertools.count(1000)
 _cuentas = itertools.cycle(range(len(CUENTAS))) if CUENTAS else None
 _tokens = {}
 _candado = gevent.lock.Semaphore()
-# Otro candado para la preparación: prepara datos con peticiones que inician sesión (_iniciar_sesion usa _candado) y un candado no se puede
-# pedir dos veces desde la misma tarea: con uno solo, en modo gateway la preparación se bloquearía para siempre.
-_candado_datos = gevent.lock.Semaphore()
 _preparado = {}
 
 
@@ -92,7 +89,7 @@ def url_publica(ruta):
 
 def una_vez(nombre, funcion):
     """Ejecuta la preparación una sola vez por corrida aunque la pidan los 50 usuarios a la vez."""
-    with _candado_datos:
+    with _candado:
         if nombre not in _preparado:
             _preparado[nombre] = funcion()
     return _preparado[nombre]

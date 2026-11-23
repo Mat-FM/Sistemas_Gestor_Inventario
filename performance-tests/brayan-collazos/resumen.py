@@ -23,11 +23,6 @@ def leer(id_escenario):
     return total, [f for f in filas if f["Name"] != "Aggregated"]
 
 
-def via_de(id_escenario):
-    archivo = AQUI / "results" / f"{id_escenario}.via"
-    return archivo.read_text(encoding="utf-8").strip() if archivo.exists() else "—"
-
-
 def numero(fila, columna):
     try:
         return float(fila[columna])
@@ -47,9 +42,9 @@ def veredicto(escenario, total):
 
 def main(rapido):
     lineas = [
-        "# Resultados de las pruebas de rendimiento — Brayan Collazos (API Gateway y ms-inventario)",
+        "# Resultados de las pruebas de rendimiento — Brayan Collazos",
         "",
-        f"Generado el {datetime.now():%Y-%m-%d %H:%M}. La columna «Vía» dice cómo llegó cada prueba: `gateway` (por el API Gateway, con sesión) o `directo` (a ms-inventario)"
+        f"Generado el {datetime.now():%Y-%m-%d %H:%M} · modo `{os.environ.get('PERF_MODO', 'directo')}`"
         + (" · **corrida rápida de comprobación (10 usuarios, 30 s): no es un resultado válido**" if rapido else ""),
         "",
         f"Entorno: {os.environ.get('PERF_ENTORNO', 'sin declarar')}",
@@ -57,20 +52,20 @@ def main(rapido):
         "Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia (escritura, integración, contención,",
         "estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas.",
         "",
-        "| Prueba | Vía | Tipo | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Prueba | Tipo | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     detalle = []
     for e in ESCENARIOS:
         total, filas = leer(e["id"])
         if total is None:
-            lineas.append(f"| {e['id']} {e['clase']} | — | {e['tipo']} | — | — | — | — | — | — | — | NO EJECUTADA |")
+            lineas.append(f"| {e['id']} {e['clase']} | {e['tipo']} | — | — | — | — | — | — | — | NO EJECUTADA |")
             continue
         peticiones = numero(total, "Request Count")
         errores = numero(total, "Failure Count")
         porcentaje = f"{errores:.0f} ({errores / peticiones:.2%})" if peticiones else "—"
         lineas.append(
-            f"| {e['id']} {e['clase']} | {via_de(e['id'])} | {e['tipo']} | {peticiones:.0f} | {porcentaje} | {numero(total, 'Median Response Time'):.0f} "
+            f"| {e['id']} {e['clase']} | {e['tipo']} | {peticiones:.0f} | {porcentaje} | {numero(total, 'Median Response Time'):.0f} "
             f"| {numero(total, '95%'):.0f} | {numero(total, '99%'):.0f} | {numero(total, 'Max Response Time'):.0f} "
             f"| {numero(total, 'Requests/s'):.1f} | {veredicto(e, total)} |"
         )

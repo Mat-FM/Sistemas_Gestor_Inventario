@@ -1,138 +1,134 @@
-# Resultados de las pruebas de rendimiento — Brayan Collazos (API Gateway y ms-inventario)
+# Resultados de las pruebas de rendimiento — Brayan Collazos
 
-Generado el 2026-11-21 12:11. La columna «Vía» dice cómo llegó cada prueba: `gateway` (por el API Gateway, con sesión) o `directo` (a ms-inventario)
+Generado el 2026-11-16 22:44 · modo `directo`
 
-Entorno: MacBook Pro Apple M5 Pro (24 GB), sistema completo con Docker Compose (imágenes del repositorio, un contenedor por servicio y por base de datos). Las pruebas G van por el API Gateway con una sola cuenta de administrador y con sus límites de peticiones subidos (RATE_LIMIT_PER_MINUTE=100000 y LOGIN_RATE_LIMIT_PER_MINUTE=1000), para medir el Gateway y no el limitador (RNF19); las pruebas I van directo a ms-inventario. Es una medición local de desarrollo, con el generador de carga en el mismo equipo; no es el despliegue en Kubernetes.
+Entorno: MacBook Pro Apple M5 Pro (24 GB), sin Gateway (modo directo): ms-inventario (Node) y PostgreSQL en contenedor locales; ms-catalogo es el servidor de desarrollo de PHP con SQLite. Es una medición local de desarrollo, no del despliegue en Kubernetes. Mientras corrían I01 a I03 el mismo equipo se usaba para otras tareas (instalaciones, pruebas), por eso el máximo de I03 (436 ms) sobresale; su percentil 95 no cambia el veredicto.
 
 Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia (escritura, integración, contención,
 estrés y pico) se comparan con el mismo umbral, pero RNF06 solo obliga a las consultas.
 
-| Prueba | Vía | Tipo | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |
-|---|---|---|---|---|---|---|---|---|---|---|
-| G01 SaludDelGateway | gateway | carga | 9516 | 0 (0.00%) | 8 | 13 | 28 | 6190 | 31.7 | CUMPLE |
-| G02 UsuariosYRoles | gateway | carga | 9535 | 0 (0.00%) | 21 | 38 | 110 | 2415 | 31.8 | CUMPLE |
-| G03 ProxyACatalogo | gateway | carga | 9432 | 0 (0.00%) | 35 | 59 | 120 | 2579 | 31.5 | CUMPLE |
-| G04 ProxyAInventario | gateway | carga | 9431 | 1 (0.01%) | 26 | 46 | 88 | 1787 | 31.5 | CUMPLE |
-| G05 EscrituraPorElGateway | gateway | escritura | 9247 | 0 (0.00%) | 47 | 100 | 180 | 2369 | 30.8 | dentro del umbral |
-| G06 EstresDelGateway | gateway | estres | 19478 | 46 (0.24%) | 130 | 840 | 1600 | 72139 | 64.9 | dentro del umbral |
-| G07 PicoDelGateway | gateway | pico | 8969 | 9 (0.10%) | 270 | 780 | 1400 | 114138 | 71.6 | dentro del umbral |
-| I01 ListadoSaldos | directo | carga | 9741 | 0 (0.00%) | 4 | 7 | 12 | 56 | 32.5 | CUMPLE |
-| I02 KardexConFiltros | directo | carga | 9748 | 0 (0.00%) | 7 | 10 | 18 | 85 | 32.5 | CUMPLE |
-| I03 LotesFefo | directo | carga | 9760 | 0 (0.00%) | 4 | 7 | 13 | 62 | 32.6 | CUMPLE |
-| I04 RegistrarEntradas | directo | escritura | 9680 | 0 (0.00%) | 21 | 35 | 56 | 2510 | 32.3 | dentro del umbral |
-| I05 IdempotenciaReintentos | directo | idempotencia | 27268 | 0 (0.00%) | 7 | 64 | 180 | 1731 | 152.0 | dentro del umbral |
-| I06 SalidasMismoSaldo | directo | contencion | 12843 | 0 (0.00%) | 38 | 150 | 270 | 731 | 71.6 | dentro del umbral |
-| I07 EstresConsultas | directo | estres | 26607 | 0 (0.00%) | 6 | 13 | 23 | 141 | 88.8 | dentro del umbral |
-| I08 PicoMixto | directo | pico | 15115 | 0 (0.00%) | 6 | 34 | 350 | 978 | 126.7 | dentro del umbral |
+| Prueba | Tipo | Peticiones | Errores | Mediana (ms) | p95 (ms) | p99 (ms) | Máx. (ms) | Peticiones/s | Resultado |
+|---|---|---|---|---|---|---|---|---|---|
+| I01 ListadoSaldos | carga | 9808 | 0 (0.00%) | 4 | 6 | 8 | 34 | 32.7 | CUMPLE |
+| I02 SaldosDeProducto | carga | 9798 | 0 (0.00%) | 4 | 6 | 8 | 33 | 32.7 | CUMPLE |
+| I03 KardexConFiltros | carga | 9786 | 0 (0.00%) | 5 | 7 | 12 | 436 | 32.6 | CUMPLE |
+| I04 LotesFefo | carga | 9821 | 0 (0.00%) | 4 | 6 | 9 | 29 | 32.8 | CUMPLE |
+| I05 SugerenciaFefo | carga | 9788 | 0 (0.00%) | 3 | 5 | 6 | 84 | 32.6 | CUMPLE |
+| I06 BodegasYUmbrales | carga | 9785 | 0 (0.00%) | 4 | 6 | 7 | 44 | 32.6 | CUMPLE |
+| I07 BajoUmbral | carga | 9836 | 0 (0.00%) | 3 | 5 | 6 | 30 | 32.8 | CUMPLE |
+| I08 TrasladosYConteos | carga | 9794 | 0 (0.00%) | 4 | 7 | 10 | 34 | 32.7 | CUMPLE |
+| I09 RegistrarEntradas | escritura | 9758 | 0 (0.00%) | 15 | 22 | 28 | 229 | 32.6 | dentro del umbral |
+| I10 SalidasConFefo | escritura | 19352 | 0 (0.00%) | 13 | 21 | 28 | 97 | 64.6 | dentro del umbral |
+| I11 IdempotenciaReintentos | idempotencia | 28834 | 0 (0.00%) | 2 | 16 | 21 | 105 | 160.9 | dentro del umbral |
+| I12 SalidasMismoSaldo | contencion | 14417 | 0 (0.00%) | 15 | 24 | 36 | 533 | 80.4 | dentro del umbral |
+| I13 CicloTraslado | integracion | 7650 | 0 (0.00%) | 14 | 24 | 31 | 68 | 25.5 | dentro del umbral |
+| I14 EstresConsultas | estres | 26592 | 0 (0.00%) | 5 | 11 | 13 | 50 | 88.8 | dentro del umbral |
+| I15 PicoMixto | pico | 15584 | 0 (0.00%) | 4 | 17 | 91 | 157 | 130.8 | dentro del umbral |
 
 ## Detalle por operación
-
-### G01 — GET /health: lo mínimo que cuesta una petición al Gateway (sin sesión ni base de datos)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /health` | 9516 | 0 | 13 |
-
-### G02 — Usuarios y roles, que resuelve el propio Gateway con su base MySQL (JWT, usuario releído en cada petición)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /api/roles` | 2428 | 0 | 35 |
-| `GET GET /api/usuarios` | 7107 | 0 | 39 |
-
-### G03 — Consultas de productos y categorías reenviadas a ms-catalogo
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /api/categorias` | 1924 | 0 | 57 |
-| `GET GET /api/productos` | 5637 | 0 | 58 |
-| `GET GET /api/productos?nombre` | 1871 | 0 | 61 |
-
-### G04 — Saldos, kardex y bodegas reenviados a ms-inventario
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /api/bodegas` | 1890 | 0 | 46 |
-| `GET GET /api/movimientos` | 3782 | 0 | 45 |
-| `GET GET /api/saldos` | 3759 | 1 | 46 |
-
-### G05 — POST /movimientos por el Gateway, con su Idempotency-Key, hacia ms-inventario (que valida con ms-catalogo)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `POST POST /api/movimientos` | 9247 | 0 | 100 |
-
-### G06 — Estrés: de 0 a 200 usuarios, uno por segundo, con consultas a catálogo, inventario y usuarios, para hallar el punto de quiebre
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /api/movimientos` | 2124 | 8 | 830 |
-| `GET GET /api/productos` | 6571 | 16 | 870 |
-| `GET GET /api/saldos` | 6403 | 15 | 810 |
-| `GET GET /api/usuarios` | 4380 | 7 | 810 |
-
-### G07 — Pico: 200 usuarios en 2 s con el uso típico de la interfaz (consultas y alguna entrada)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /api/movimientos` | 1374 | 1 | 770 |
-| `GET GET /api/productos` | 2753 | 1 | 780 |
-| `GET GET /api/saldos` | 4120 | 6 | 780 |
-| `POST POST /api/movimientos` | 722 | 1 | 810 |
 
 ### I01 — Listado paginado de saldos por producto y bodega (GET /saldos)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /saldos` | 9741 | 0 | 7 |
+| `GET GET /saldos` | 9808 | 0 | 6 |
 
-### I02 — Kardex paginado y filtrado por tipo, bodega, producto y fechas (GET /movimientos)
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `GET GET /movimientos` | 4148 | 0 | 9 |
-| `GET GET /movimientos?fechas&id_producto` | 2769 | 0 | 11 |
-| `GET GET /movimientos?tipo&id_bodega` | 2831 | 0 | 10 |
-
-### I03 — Lotes con existencia en orden FEFO, por vencer y por producto (GET /lotes)
+### I02 — Saldos de un producto con su total y de una bodega (?id_producto, ?id_bodega)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /lotes?id_producto&id_bodega` | 3273 | 0 | 7 |
-| `GET GET /lotes?vence_antes_de` | 6487 | 0 | 7 |
+| `GET GET /saldos?id_bodega` | 4889 | 0 | 6 |
+| `GET GET /saldos?id_producto` | 4909 | 0 | 6 |
 
-### I04 — Entradas de mercancía a la vez (POST /movimientos): una transacción por movimiento, con clave de idempotencia
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `POST POST /movimientos (ENTRADA)` | 9680 | 0 | 35 |
-
-### I05 — El mismo movimiento reintentado con la misma clave devuelve el original sin duplicarse (RNF17)
+### I03 — Kardex paginado y filtrado por tipo, bodega, producto y fechas (GET /movimientos)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `POST POST /movimientos (primer intento)` | 10930 | 0 | 110 |
-| `POST POST /movimientos (reintento)` | 16338 | 0 | 13 |
+| `GET GET /movimientos` | 4204 | 0 | 7 |
+| `GET GET /movimientos?fechas&id_producto` | 2727 | 0 | 7 |
+| `GET GET /movimientos?tipo&id_bodega` | 2855 | 0 | 8 |
 
-### I06 — Salidas simultáneas sobre la MISMA fila de saldo (SELECT … FOR UPDATE): deben serializarse sin errores
-
-| Operación | Peticiones | Errores | p95 (ms) |
-|---|---|---|---|
-| `POST POST /movimientos (SALIDA mismo saldo)` | 12843 | 0 | 150 |
-
-### I07 — Estrés: de 0 a 200 usuarios, uno por segundo, sobre saldos, kardex y lotes, para hallar el punto de quiebre
+### I04 — Lotes con existencia en orden FEFO, por vencer y por producto (GET /lotes)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /lotes?vence_antes_de` | 3855 | 0 | 10 |
-| `GET GET /movimientos` | 11492 | 0 | 15 |
-| `GET GET /saldos` | 11260 | 0 | 9 |
+| `GET GET /lotes?id_producto&id_bodega` | 3256 | 0 | 6 |
+| `GET GET /lotes?vence_antes_de` | 6565 | 0 | 6 |
 
-### I08 — Pico: 200 usuarios en 2 s con el uso típico (consultas y alguna entrada)
+### I05 — De qué lotes sacar una cantidad, por FEFO (GET /lotes/sugerencia-salida)
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /bodegas` | 1939 | 0 | 16 |
-| `GET GET /movimientos` | 3801 | 0 | 22 |
-| `GET GET /saldos` | 7509 | 0 | 18 |
-| `POST POST /movimientos (ENTRADA)` | 1866 | 0 | 74 |
+| `GET GET /lotes/sugerencia-salida` | 9788 | 0 | 5 |
+
+### I06 — Bodegas y umbrales de stock mínimo (GET /bodegas, /bodegas/{id}, /umbrales)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /bodegas` | 3929 | 0 | 6 |
+| `GET GET /bodegas/{id}` | 1936 | 0 | 5 |
+| `GET GET /umbrales` | 3920 | 0 | 6 |
+
+### I07 — Productos bajo su mínimo, sumados entre bodegas (GET /saldos/bajo-umbral)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /saldos/bajo-umbral` | 9836 | 0 | 5 |
+
+### I08 — Listados de traslados (también en tránsito) y de conteos (GET /traslados, /conteos)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /conteos` | 3861 | 0 | 6 |
+| `GET GET /traslados` | 3915 | 0 | 7 |
+| `GET GET /traslados?estado` | 2018 | 0 | 7 |
+
+### I09 — Entradas de mercancía a la vez (POST /movimientos): una transacción por movimiento, con clave de idempotencia
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /movimientos (ENTRADA)` | 9758 | 0 | 22 |
+
+### I10 — Salidas que consumen el lote que vence primero, con su reposición (POST /movimientos)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /movimientos (ENTRADA de reposición)` | 9676 | 0 | 18 |
+| `POST POST /movimientos (SALIDA)` | 9676 | 0 | 23 |
+
+### I11 — El mismo movimiento reintentado con la misma clave devuelve el original sin duplicarse (RNF17)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /movimientos (primer intento)` | 11532 | 0 | 19 |
+| `POST POST /movimientos (reintento)` | 17302 | 0 | 2 |
+
+### I12 — Salidas simultáneas sobre la MISMA fila de saldo (SELECT … FOR UPDATE): deben serializarse sin errores
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /movimientos (SALIDA mismo saldo)` | 14417 | 0 | 24 |
+
+### I13 — Enviar un traslado y recibirlo: inventario valida el producto en catálogo en cada paso
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `POST POST /traslados` | 3825 | 0 | 27 |
+| `POST POST /traslados/{id}/recepcion` | 3825 | 0 | 11 |
+
+### I14 — Estrés: de 0 a 200 usuarios, uno por segundo, sobre saldos, kardex y lotes, para hallar el punto de quiebre
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /lotes?vence_antes_de` | 3804 | 0 | 6 |
+| `GET GET /movimientos` | 11374 | 0 | 12 |
+| `GET GET /saldos` | 11414 | 0 | 6 |
+
+### I15 — Pico: 200 usuarios en 2 s con el uso típico (consultas y alguna entrada)
+
+| Operación | Peticiones | Errores | p95 (ms) |
+|---|---|---|---|
+| `GET GET /bodegas` | 1936 | 0 | 6 |
+| `GET GET /movimientos` | 3933 | 0 | 12 |
+| `GET GET /saldos` | 7763 | 0 | 6 |
+| `POST POST /movimientos (ENTRADA)` | 1952 | 0 | 22 |

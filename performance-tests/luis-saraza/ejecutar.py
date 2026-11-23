@@ -4,7 +4,6 @@ Uso (dentro del contenedor de Locust, ver README):
     python ejecutar.py                 # las 15, con la duración y los usuarios de cada escenario
     python ejecutar.py C01 N03         # solo algunas
     python ejecutar.py --rapido        # comprobación: 10 usuarios y 30 s por prueba (no sirve como resultado)
-    python ejecutar.py --duracion=1m   # preliminar: los mismos usuarios, cada prueba dura como máximo 1 min
 
 Cada prueba deja en results/ sus CSV y un informe HTML de Locust; resumen.py arma RESULTADOS.md con todas.
 """
@@ -18,10 +17,10 @@ AQUI = Path(__file__).resolve().parent
 RESULTADOS = AQUI / "results"
 
 
-def correr(escenario, rapido, duracion=None):
+def correr(escenario, rapido):
     usuarios = min(escenario["usuarios"], 10) if rapido else escenario["usuarios"]
     tasa = min(escenario["tasa"], 5) if rapido else escenario["tasa"]
-    duracion = "30s" if rapido else duracion or escenario["duracion"]
+    duracion = "30s" if rapido else escenario["duracion"]
     prefijo = RESULTADOS / escenario["id"]
     comando = [
         "locust", "-f", str(AQUI / escenario["archivo"]), escenario["clase"],
@@ -38,7 +37,6 @@ def correr(escenario, rapido, duracion=None):
 
 def main(argumentos):
     rapido = "--rapido" in argumentos
-    duracion = next((a.split("=", 1)[1] for a in argumentos if a.startswith("--duracion=")), None)
     pedidos = {a.upper() for a in argumentos if not a.startswith("--")}
     escenarios = [e for e in ESCENARIOS if not pedidos or e["id"] in pedidos]
     desconocidos = pedidos - {e["id"] for e in ESCENARIOS}
@@ -46,9 +44,8 @@ def main(argumentos):
         sys.exit(f"Escenarios desconocidos: {', '.join(sorted(desconocidos))}")
     RESULTADOS.mkdir(exist_ok=True)
     for escenario in escenarios:
-        correr(escenario, rapido, duracion)
-    extra = ["--rapido"] if rapido else [f"--duracion={duracion}"] if duracion else []
-    subprocess.run([sys.executable, str(AQUI / "resumen.py")] + extra, cwd=AQUI, check=True)
+        correr(escenario, rapido)
+    subprocess.run([sys.executable, str(AQUI / "resumen.py")] + (["--rapido"] if rapido else []), cwd=AQUI, check=True)
 
 
 if __name__ == "__main__":
