@@ -35,6 +35,27 @@ class AccesoTest extends TestCase
         $this->assertTrue($this->seEnvio('POST', 'auth/login', fn ($p) => ! $p->hasHeader('Authorization') && $p['correo'] === 'ana@elmontanero.test'));
     }
 
+    public function test_iniciar_sesion_borra_la_cookie_de_la_sesion_anterior(): void
+    {
+        // Con el driver de producción (cookie), los datos de cada sesión van en una cookie cuyo nombre es el id de la sesión.
+        // Si al iniciar sesión la anterior no se destruye, su cookie queda en el navegador: tras varios inicios de sesión la
+        // cabecera Cookie supera el límite de Apache (8190 bytes) y todo responde 400 Bad Request.
+        config(['session.driver' => 'cookie']);
+        $this->loginExitoso();
+
+        $formulario = $this->get('/login')->assertOk();
+        $nombre = config('session.cookie');
+        $idAnterior = $formulario->getCookie($nombre)->getValue();
+
+        $respuesta = $this->withCookie($nombre, $idAnterior)
+            ->withCookie($idAnterior, $formulario->getCookie($idAnterior)->getValue())
+            ->post('/login', ['correo' => 'ana@elmontanero.test', 'contrasena' => 'Clave12345'])
+            ->assertRedirect('/');
+
+        $respuesta->assertCookieExpired($idAnterior);
+        $this->assertNotSame($idAnterior, $respuesta->getCookie($nombre)->getValue());
+    }
+
     public function test_una_contrasena_temporal_obliga_a_cambiarla_antes_de_seguir(): void
     {
         $this->loginExitoso(['debe_cambiar_contrasena' => true]);

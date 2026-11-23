@@ -19,7 +19,9 @@ class Sesion
      */
     public function iniciar(array $inicio): void
     {
-        session()->regenerate();
+        // true destruye la sesión anterior: con el driver cookie, su cookie se borra del navegador. Sin eso, cada inicio de
+        // sesión dejaba una cookie huérfana y, tras varios, la cabecera Cookie superaba el límite de Apache (400 Bad Request).
+        session()->regenerate(true);
         session()->put(self::TOKEN, $inicio['token']);
         session()->put(self::VENCE, time() + (int) ($inicio['expira_en'] ?? 3600));
         session()->put(self::USUARIO, $inicio['usuario']);
