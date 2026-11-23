@@ -21,8 +21,10 @@ const config = {
     password: process.env.DB_PASSWORD || 'change_me',
     max: entero('DB_POOL_MAX', 10),
     // Si el pool está lleno, una petición espera como máximo esto por una conexión y luego responde 503,
-    // en vez de esperar para siempre y dejar el servicio colgado.
-    connectionTimeoutMillis: entero('DB_POOL_TIMEOUT_MS', 5000),
+    // en vez de esperar para siempre y dejar el servicio colgado. Es también lo que tarda en rendirse una conexión
+    // nueva cuando la base no responde: debe ser menor que los 3 s que el Gateway espera por toda la respuesta, para
+    // que quien llama reciba el 503 de este servicio y no un corte del Gateway.
+    connectionTimeoutMillis: entero('DB_POOL_TIMEOUT_MS', 2000),
   },
 
   servicios: {
