@@ -253,7 +253,8 @@ paths:
         `fecha_hasta` termina hoy y sin `fecha_desde` empieza 30 días antes. Los demás indicadores son del momento.
 
         Si un servicio no responde, solo se pierden los indicadores que lo necesitan: salen en `null` y sus nombres en
-        `no_disponibles`. Responde 503 únicamente cuando no se puede calcular ninguno.
+        `no_disponibles`. Responde 503 únicamente cuando no se puede calcular ninguno. Para responder antes de los 3 s del
+        Gateway, cada llamada del panel se hace una sola vez y espera como máximo 1 s.
       parameters:
         - name: fecha_desde
           in: query

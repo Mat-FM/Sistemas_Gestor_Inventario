@@ -4,7 +4,7 @@ import pytest
 import requests
 
 from app.clients import base, catalogo, proveedores
-from app.clients.base import ServicioNoDisponible
+from app.clients.base import ServicioNoDisponible, llamadas_rapidas
 from tests.simulacion import Respuesta
 
 
@@ -92,3 +92,26 @@ def test_cada_servicio_tiene_su_propio_cortacircuitos(app, servicios):
             proveedores.crear_proveedores([])
 
     assert catalogo.categorias() == []
+
+
+def test_las_llamadas_rapidas_se_intentan_una_vez_con_plazo_corto(app, servicios, sin_esperas):
+    servicios.responder("/categorias", Respuesta(503))
+
+    with llamadas_rapidas(1.0):
+        with pytest.raises(ServicioNoDisponible):
+            catalogo.categorias()
+
+    assert [llamada["timeout"] for llamada in servicios.llamadas] == [1.0]
+    assert sin_esperas == []
+
+
+def test_fuera_de_las_llamadas_rapidas_vuelve_rnf18(app, servicios, sin_esperas):
+    with llamadas_rapidas(1.0):
+        pass
+    servicios.responder("/categorias", Respuesta(503))
+
+    with pytest.raises(ServicioNoDisponible):
+        catalogo.categorias()
+
+    assert len(servicios.llamadas) == 4
+    assert sin_esperas == [0.2, 0.4, 0.8]

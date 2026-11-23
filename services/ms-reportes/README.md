@@ -111,7 +111,7 @@ Toda la comunicación está en `app/clients/` y pasa por `app/clients/base.py`:
   ms-proveedores **no** se reintentan: repetirlas rechazaría como duplicadas las filas ya creadas.
 - **Cortacircuitos:** uno por servicio. Tras 5 llamadas fallidas seguidas, durante 30 s no se le llama y se falla de
   inmediato; después se vuelve a probar.
-- **Excepción, el panel de indicadores (RNF18):** si un servicio no responde, solo se pierden los indicadores que lo necesitan (salen en `null` y se listan en `no_disponibles`); responde 503 únicamente cuando no se puede calcular ninguno.
+- **Excepción, el panel de indicadores (RNF18):** si un servicio no responde, solo se pierden los indicadores que lo necesitan (salen en `null` y se listan en `no_disponibles`); responde 503 únicamente cuando no se puede calcular ninguno. Para que ese panel parcial llegue antes de los 3 s del Gateway, **sus llamadas se hacen una sola vez y esperan como máximo 1 s** (`ESPERA_INDICADORES`, con `llamadas_rapidas()` de `app/clients/base.py`): con los reintentos y el plazo normal, un servicio lento (por ejemplo, ms-compras con su base caída tarda 5 s en responder 503) hacía que el Gateway cortara el panel entero. Los demás reportes conservan el plazo y los reintentos de RNF18.
 - Si la base de datos de ms-reportes no responde, solo fallan las importaciones (503): los reportes y el panel no la usan.
 - Si un servicio no responde, los demás reportes responden 503 `SERVICIO_NO_DISPONIBLE` y la importación se guarda como
   `FALLIDA`. Una respuesta con otra forma (por ejemplo sin `datos` o sin `creados`) se trata igual.

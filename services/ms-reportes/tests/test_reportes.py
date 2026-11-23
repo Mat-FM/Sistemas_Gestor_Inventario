@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 import requests
 
-from tests.simulacion import paginado
+from tests.simulacion import Respuesta, paginado
 
 PRODUCTOS = [
     {"id_producto": 1, "codigo": "CAF-500", "nombre": "Café molido", "id_categoria": 2, "precio": "18500.50",
@@ -198,6 +198,46 @@ def test_los_indicadores_sin_ms_compras_siguen_con_lo_demas(client, datos):
     assert indicadores["no_disponibles"] == ["ordenes_pendientes"]
     assert (indicadores["valor_total"], indicadores["productos_agotados"], indicadores["productos_bajo_umbral"]) == (231756.25, 2, 1)
     assert len(indicadores["mayor_rotacion"]) == 3
+
+
+def test_el_panel_no_espera_a_un_servicio_lento(client, datos, sin_esperas):
+    """ms-compras con su base caída tarda 5 s en responder 503: el panel lo intenta una sola vez y espera como máximo 1 s, para
+    responder antes de los 3 s del Gateway con los demás indicadores (smoke-tests: «base de datos de ms-compras caída»)."""
+    datos.responder("/ordenes-compra", requests.Timeout("ms-compras no respondió a tiempo"))
+
+    respuesta = client.get("/indicadores")
+
+    assert respuesta.status_code == 200
+    assert respuesta.get_json()["no_disponibles"] == ["ordenes_pendientes"]
+    assert len(datos.llamadas_a("/ordenes-compra")) == 1
+    assert sin_esperas == []
+    assert {llamada["timeout"] for llamada in datos.llamadas} == {1.0}
+
+
+def test_el_panel_no_reintenta_un_5xx(client, datos, sin_esperas):
+    datos.responder("/ordenes-compra", Respuesta(503))
+
+    respuesta = client.get("/indicadores")
+
+    assert respuesta.status_code == 200
+    assert len(datos.llamadas_a("/ordenes-compra")) == 1
+    assert sin_esperas == []
+
+
+def test_los_demas_reportes_conservan_el_plazo_y_los_reintentos(app, client, datos, sin_esperas):
+    """El plazo corto es solo del panel: después de él, un reporte vuelve a esperar CALL_TIMEOUT_SECONDS y a reintentar (RNF18)."""
+    client.get("/indicadores")
+    datos.llamadas.clear()
+    fallos = iter([Respuesta(502)])
+    datos.responder("/categorias", lambda llamada: next(fallos, None) or [
+        {"id_categoria": 2, "nombre": "Bebidas", "id_categoria_padre": None}])
+
+    client.get("/reportes/existencias")
+    respuesta = client.get("/reportes/existencias?id_categoria=2")
+
+    assert respuesta.status_code == 200
+    assert {llamada["timeout"] for llamada in datos.llamadas} == {app.config["CALL_TIMEOUT_SECONDS"]}
+    assert sin_esperas == [0.2]
 
 
 def test_los_indicadores_sin_ms_catalogo_pierden_solo_los_que_lo_necesitan(client, datos):
