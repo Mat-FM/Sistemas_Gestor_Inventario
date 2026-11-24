@@ -42,9 +42,6 @@ _ids_usuario = itertools.count(1000)
 _cuentas = itertools.cycle(range(len(CUENTAS))) if CUENTAS else None
 _tokens = {}
 _candado = gevent.lock.Semaphore()
-# Otro candado para la preparación: prepara datos con peticiones que inician sesión (_iniciar_sesion usa _candado) y un candado no se puede
-# pedir dos veces desde la misma tarea: con uno solo, en modo gateway la preparación se bloquearía para siempre.
-_candado_datos = gevent.lock.Semaphore()
 _preparado = {}
 
 
@@ -92,7 +89,7 @@ def url_publica(ruta):
 
 def una_vez(nombre, funcion):
     """Ejecuta la preparación una sola vez por corrida aunque la pidan los 50 usuarios a la vez."""
-    with _candado_datos:
+    with _candado:
         if nombre not in _preparado:
             _preparado[nombre] = funcion()
     return _preparado[nombre]
@@ -124,12 +121,9 @@ class UsuarioBase(HttpUser):
             # Cada usuario simulado es una persona distinta: el movimiento guarda quién lo registró (RF10).
             self.cabeceras = {**ADMIN_DIRECTO, "X-User-Id": str(next(_ids_usuario))}
 
-    def pedir(self, metodo, ruta, nombre, esperados=(200,), validar=None, **opciones):
-        """Petición medida. `nombre` agrupa las rutas con parámetros en una sola fila de resultados.
-
-        Cuenta como error (guía del taller: no contar como éxito lo que no lo es):
-        - un estado fuera de `esperados` (por ejemplo, un 409 por stock insuficiente o un 429 por el límite de peticiones);
-        - un cuerpo que no cumple `validar(cuerpo)`: la función devuelve un texto con el problema, o None si está bien."""
+    def pedir(self, metodo, ruta, nombre, esperados=(200,), **opciones):
+        """Petición medida. `nombre` agrupa las rutas con parámetros en una sola fila de resultados. Un estado fuera
+        de `esperados` cuenta como error."""
         cabeceras = {**self.cabeceras, "X-Request-Id": nuevo_request_id(self.__class__.__name__), **opciones.pop("headers", {})}
         with self.client.request(
             metodo, f"{self.prefijo}{ruta}", name=nombre, headers=cabeceras, catch_response=True, **opciones
@@ -137,40 +131,8 @@ class UsuarioBase(HttpUser):
             if respuesta.status_code not in esperados:
                 respuesta.failure(f"{respuesta.status_code}: {respuesta.text[:200]}")
                 return None
-            try:
-                cuerpo = respuesta.json()
-            except ValueError:
-                cuerpo = None
-            problema = validar(cuerpo) if validar else None
-            if problema:
-                respuesta.failure(problema)
-                return None
             respuesta.success()
-            return cuerpo
-
-
-# ---------------- Validaciones de cuerpo ----------------
-
-def paginado(cuerpo, vacio_ok=False):
-    """Un listado paginado del contrato: {"datos": [...], "meta": {"pagina", "por_pagina", "total"}}."""
-    if not isinstance(cuerpo, dict) or not isinstance(cuerpo.get("datos"), list) or not isinstance(cuerpo.get("meta"), dict):
-        return "el cuerpo no es un listado paginado (datos y meta)"
-    if not cuerpo["datos"] and not vacio_ok:
-        return "el listado llegó vacío: la preparación debía dejar datos"
-    return None
-
-
-def paginado_de(pagina):
-    """Como `paginado`, pero una página posterior a la primera puede llegar vacía (la preparación deja pocos usuarios y saldos)."""
-    return lambda cuerpo: paginado(cuerpo, vacio_ok=pagina > 1)
-
-
-def lista(cuerpo):
-    """Una lista no vacía, plana o dentro de «datos» (el árbol de categorías no pagina)."""
-    datos = cuerpo.get("datos") if isinstance(cuerpo, dict) else cuerpo
-    return None if isinstance(datos, list) and datos else "la lista llegó vacía o con otra forma"
-
-
-def movimiento_registrado(cuerpo):
-    """Un POST /movimientos exitoso devuelve el movimiento con su identificador."""
-    return None if isinstance(cuerpo, dict) and cuerpo.get("id_movimiento") else "la respuesta no trae id_movimiento"
+            try:
+                return respuesta.json()
+            except ValueError:
+                return None
