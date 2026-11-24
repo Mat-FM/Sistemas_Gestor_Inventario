@@ -94,8 +94,10 @@ dice la duración real de cada una).
   peticiones, en G02, G03, G04 y M01) son el mismo: `SQLSTATE[40001] 1213 Deadlock found` en `insert ignore into cache … :timer`, y el
   registro del Gateway tiene exactamente 23 respuestas 500 en ese rato. El límite de peticiones guarda su contador en la tabla `cache` de
   MySQL (`CACHE_STORE=database`, para que las réplicas lo compartan: RNF05); cuando arranca una prueba o se renueva la ventana de un minuto,
-  varias peticiones intentan crear a la vez la misma clave y MySQL aborta una. El Gateway responde `500 ERROR_INTERNO` a una petición válida. Está dentro de RNF06 (< 1 %), pero crece con la concurrencia y con las réplicas: queda para
-  corregirlo (por ejemplo, reintentar el contador ante un *deadlock*).
+  varias peticiones intentan crear a la vez la misma clave y MySQL aborta una. El Gateway responde `500 ERROR_INTERNO` a una petición válida. Estaba dentro de RNF06 (< 1 %), pero crece con la concurrencia y con las réplicas.
+  **Corregido después de esta corrida (PR #33)**: `DatabaseStoreConReintento` reintenta el contador ante un *deadlock*. La tabla de
+  `RESULTADOS.md` es de antes del arreglo; con él, G02, G03, G04, M01 y E01 (2 min, 50 usuarios y estrés hasta unos 240) dieron 0 errores en
+  23 568 peticiones y 0 respuestas 500, con 36 *deadlocks* reales resueltos todos en el primer reintento.
 - **Mezcla (M01, E01 y S01)**, 2 min cada una: M01 con p95 de 17 ms y 0,13 % de errores (los mismos *deadlocks*); E01 **no se quebró**: en
   2 min alcanzó 238 usuarios y 101 peticiones/s con p99 de 32 ms, aunque una petición tardó 50 s; S01 estable (p95 de 17 a 15 ms), pero 2
   minutos no dicen nada sobre la tendencia de una hora. **El quiebre y la tendencia reales exigen E01 completa (5 min, 300 usuarios) y
