@@ -2,12 +2,15 @@
 
 namespace App\Providers;
 
+use App\Cache\DatabaseStoreConReintento;
 use App\Exceptions\ApiException;
 use App\Services\Jwt\JwtService;
 use App\Services\Proxy\ProxyService;
 use App\Services\Routing\RouteMap;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -42,7 +45,33 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $this->registrarAlmacenDeCacheConReintento();
         $this->configurarLimitadores();
+    }
+
+    /**
+     * Sustituye el controlador `database` de la caché por el que reintenta los deadlocks de MySQL (ver
+     * DatabaseStoreConReintento). Conserva el nombre para que `CACHE_STORE=database` (Dockerfile, compose y k8s) siga valiendo.
+     */
+    private function registrarAlmacenDeCacheConReintento(): void
+    {
+        // Laravel enlaza esta función al CacheManager: `$this` es él y puede usar lo mismo que su `createDatabaseDriver`.
+        Cache::extend('database', function (Application $app, array $config) {
+            $almacen = new DatabaseStoreConReintento(
+                $app['db']->connection($config['connection'] ?? null),
+                $config['table'],
+                $this->getPrefix($config),
+                $config['lock_table'] ?? 'cache_locks',
+                $config['lock_lottery'] ?? [2, 100],
+                $config['lock_timeout'] ?? 86400,
+                $this->getSerializableClasses($config),
+            );
+
+            return $this->repository(
+                $almacen->setLockConnection($app['db']->connection($config['lock_connection'] ?? $config['connection'] ?? null)),
+                $config,
+            );
+        });
     }
 
     /**
