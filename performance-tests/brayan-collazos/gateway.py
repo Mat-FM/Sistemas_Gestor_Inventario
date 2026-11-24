@@ -1,4 +1,4 @@
-"""Pruebas G01 a G07: el API Gateway (Laravel). Los escenarios están en escenarios.py.
+"""Pruebas G01 a G06: el API Gateway (Laravel). Los escenarios están en escenarios.py.
 
 Van SIEMPRE por el Gateway (aunque PERF_MODO sea directo) y con usuarios con sesión: miden lo que el Gateway añade a cada petición
 (validar el JWT, releer al usuario de su base, aplicar el permiso por rol y el límite de peticiones, reenviar al servicio y devolver
@@ -8,10 +8,10 @@ LOGIN_RATE_LIMIT_PER_MINUTE altos. Ver README.
 """
 import random
 
-from locust import between, task
+from locust import task
 
 import comun
-from comun import UsuarioBase, clave, una_vez
+from comun import UsuarioBase, clave, lista, movimiento_registrado, paginado, paginado_de, una_vez
 from inventario import _datos
 
 
@@ -29,6 +29,7 @@ class UsuarioGateway(UsuarioBase):
     def entrada(self, cantidad=1):
         return self.pedir(
             "POST", "/movimientos", "POST /api/movimientos", esperados=(201,), headers={"Idempotency-Key": clave()},
+            validar=movimiento_registrado,
             json={"tipo": "ENTRADA", "id_producto": comun.ID_PRODUCTO, "id_bodega": comun.ID_BODEGA, "cantidad": cantidad},
         )
 
@@ -49,11 +50,12 @@ class UsuariosYRoles(UsuarioGateway):
 
     @task(3)
     def usuarios(self):
-        self.pedir("GET", f"/usuarios?pagina={random.randint(1, 2)}&por_pagina=20", "GET /api/usuarios")
+        pagina = random.randint(1, 2)
+        self.pedir("GET", f"/usuarios?pagina={pagina}&por_pagina=20", "GET /api/usuarios", validar=paginado_de(pagina))
 
     @task
     def roles(self):
-        self.pedir("GET", "/roles", "GET /api/roles")
+        self.pedir("GET", "/roles", "GET /api/roles", validar=paginado)
 
 
 class ProxyACatalogo(UsuarioGateway):
@@ -61,15 +63,17 @@ class ProxyACatalogo(UsuarioGateway):
 
     @task(3)
     def listado(self):
-        self.pedir("GET", "/productos?por_pagina=20", "GET /api/productos")
+        self.pedir("GET", "/productos?por_pagina=20", "GET /api/productos", validar=paginado)
 
     @task
     def busqueda(self):
-        self.pedir("GET", f"/productos?nombre={random.choice(['Caf', 'Jug', 'Pan', 'Gal'])}&por_pagina=10", "GET /api/productos?nombre")
+        # Puede no coincidir con ningún producto: aquí se mide el reenvío, no el contenido de la búsqueda.
+        self.pedir("GET", f"/productos?nombre={random.choice(['Caf', 'Jug', 'Pan', 'Gal'])}&por_pagina=10", "GET /api/productos?nombre",
+                   validar=lambda c: paginado(c, vacio_ok=True))
 
     @task
     def categorias(self):
-        self.pedir("GET", "/categorias", "GET /api/categorias")
+        self.pedir("GET", "/categorias", "GET /api/categorias", validar=lista)
 
 
 class ProxyAInventario(UsuarioGateway):
@@ -77,18 +81,18 @@ class ProxyAInventario(UsuarioGateway):
 
     @task(2)
     def saldos(self):
-        self.pedir("GET", "/saldos?por_pagina=20", "GET /api/saldos")
+        self.pedir("GET", "/saldos?por_pagina=20", "GET /api/saldos", validar=paginado)
 
     @task(2)
     def kardex(self):
-        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 3)}&por_pagina=20", "GET /api/movimientos")
+        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 3)}&por_pagina=20", "GET /api/movimientos", validar=paginado)
 
     @task
     def bodegas(self):
-        self.pedir("GET", "/bodegas", "GET /api/bodegas")
+        self.pedir("GET", "/bodegas", "GET /api/bodegas", validar=paginado)
 
 
-# ---------------- Escritura ----------------
+# ---------------- Escritura e inicio de sesión ----------------
 
 class EscrituraPorElGateway(UsuarioGateway):
     """G05: POST /movimientos por el Gateway: reenvía el cuerpo y la Idempotency-Key, y ms-inventario valida con ms-catalogo."""
@@ -98,45 +102,19 @@ class EscrituraPorElGateway(UsuarioGateway):
         self.entrada(random.randint(1, 10))
 
 
-# ---------------- Estrés y pico ----------------
-
-class EstresDelGateway(UsuarioGateway):
-    """G06: de 0 a 200 usuarios, uno por segundo, con la mezcla de consultas por varios servicios, para hallar el punto de quiebre."""
-
-    @task(3)
-    def productos(self):
-        self.pedir("GET", "/productos?por_pagina=20", "GET /api/productos")
-
-    @task(3)
-    def saldos(self):
-        self.pedir("GET", "/saldos?por_pagina=20", "GET /api/saldos")
-
-    @task(2)
-    def usuarios(self):
-        self.pedir("GET", "/usuarios?por_pagina=20", "GET /api/usuarios")
+class InicioDeSesion(UsuarioGateway):
+    """G06: POST /auth/login. Lo que cuesta emitir un token (verificar la contraseña con bcrypt a propósito lenta y firmar el JWT),
+    que es lo único del Gateway que no reenvía nada ni se parece a las consultas. El límite de inicios de sesión (10 por minuto y por
+    IP, RNF19) debe estar subido: si no, esta prueba mediría el limitador."""
 
     @task
-    def kardex(self):
-        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 3)}&por_pagina=20", "GET /api/movimientos")
-
-
-class PicoDelGateway(UsuarioGateway):
-    """G07: 200 usuarios en 2 s con el uso típico de la interfaz: casi todo consultas y alguna entrada."""
-
-    wait_time = between(1, 2)
-
-    @task(6)
-    def saldos(self):
-        self.pedir("GET", "/saldos?por_pagina=20", "GET /api/saldos")
-
-    @task(4)
-    def productos(self):
-        self.pedir("GET", "/productos?por_pagina=20", "GET /api/productos")
-
-    @task(2)
-    def kardex(self):
-        self.pedir("GET", "/movimientos?por_pagina=20", "GET /api/movimientos")
-
-    @task
-    def registrar_entrada(self):
-        self.entrada(random.randint(1, 5))
+    def iniciar(self):
+        correo, contrasena = random.choice(comun.CUENTAS)
+        with self.client.post("/api/auth/login", name="POST /api/auth/login", json={"correo": correo, "contrasena": contrasena},
+                              catch_response=True) as r:
+            if r.status_code != 200:
+                r.failure(f"{r.status_code}: {r.text[:200]}")
+            elif not (r.json() or {}).get("token"):
+                r.failure("el inicio de sesión no devolvió un token")
+            else:
+                r.success()

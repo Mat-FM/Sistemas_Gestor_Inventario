@@ -1,4 +1,4 @@
-"""Pruebas I01 a I08: ms-inventario (Express + PostgreSQL). Los escenarios están en escenarios.py."""
+"""Pruebas I01 a I06: ms-inventario (Express + PostgreSQL). Los escenarios están en escenarios.py."""
 import random
 import uuid
 from datetime import date, timedelta
@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from locust import between, task
 
 import comun
-from comun import UsuarioBase, clave, preparar, una_vez
+from comun import UsuarioBase, clave, movimiento_registrado, paginado, paginado_de, preparar, una_vez
 
 MOVIMIENTOS_DE_HISTORIA = 200
 STOCK_INICIAL = 1_000_000
@@ -42,7 +42,7 @@ class UsuarioInventario(UsuarioBase):
 
     def movimiento(self, tipo, cantidad, nombre=None, producto=None, bodega=None, **extra):
         return self.pedir(
-            "POST", "/movimientos", nombre or f"POST /movimientos ({tipo})", esperados=(201,),
+            "POST", "/movimientos", nombre or f"POST /movimientos ({tipo})", esperados=(201,), validar=movimiento_registrado,
             headers={"Idempotency-Key": clave()},
             json={"tipo": tipo, "id_producto": producto or comun.ID_PRODUCTO, "id_bodega": bodega or comun.ID_BODEGA, "cantidad": cantidad, **extra},
         )
@@ -55,7 +55,8 @@ class ListadoSaldos(UsuarioInventario):
 
     @task
     def saldos(self):
-        self.pedir("GET", f"/saldos?pagina={random.randint(1, 2)}&por_pagina=20", "GET /saldos")
+        pagina = random.randint(1, 2)
+        self.pedir("GET", f"/saldos?pagina={pagina}&por_pagina=20", "GET /saldos", validar=paginado_de(pagina))
 
 
 class KardexConFiltros(UsuarioInventario):
@@ -63,16 +64,18 @@ class KardexConFiltros(UsuarioInventario):
 
     @task(3)
     def kardex(self):
-        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 5)}&por_pagina=20", "GET /movimientos")
+        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 5)}&por_pagina=20", "GET /movimientos", validar=paginado)
 
     @task(2)
     def por_tipo(self):
-        self.pedir("GET", f"/movimientos?tipo={random.choice(['ENTRADA', 'SALIDA'])}&id_bodega={comun.ID_BODEGA}", "GET /movimientos?tipo&id_bodega")
+        self.pedir("GET", f"/movimientos?tipo={random.choice(['ENTRADA', 'SALIDA'])}&id_bodega={comun.ID_BODEGA}", "GET /movimientos?tipo&id_bodega",
+                   validar=paginado)
 
     @task(2)
     def por_fechas(self):
         desde = (date.today() - timedelta(days=30)).isoformat()
-        self.pedir("GET", f"/movimientos?fecha_desde={desde}&fecha_hasta={date.today().isoformat()}&id_producto={comun.ID_PRODUCTO}", "GET /movimientos?fechas&id_producto")
+        self.pedir("GET", f"/movimientos?fecha_desde={desde}&fecha_hasta={date.today().isoformat()}&id_producto={comun.ID_PRODUCTO}", "GET /movimientos?fechas&id_producto",
+                   validar=paginado)
 
 
 class LotesFefo(UsuarioInventario):
@@ -81,11 +84,11 @@ class LotesFefo(UsuarioInventario):
     @task(2)
     def por_vencer(self):
         limite = (date.today() + timedelta(days=365)).isoformat()
-        self.pedir("GET", f"/lotes?vence_antes_de={limite}&con_existencia=true&por_pagina=20", "GET /lotes?vence_antes_de")
+        self.pedir("GET", f"/lotes?vence_antes_de={limite}&con_existencia=true&por_pagina=20", "GET /lotes?vence_antes_de", validar=paginado)
 
     @task
     def de_un_producto(self):
-        self.pedir("GET", f"/lotes?id_producto={comun.ID_PRODUCTO}&id_bodega={comun.ID_BODEGA}", "GET /lotes?id_producto&id_bodega")
+        self.pedir("GET", f"/lotes?id_producto={comun.ID_PRODUCTO}&id_bodega={comun.ID_BODEGA}", "GET /lotes?id_producto&id_bodega", validar=paginado)
 
 
 # ---------------- Escritura, idempotencia, contención e integración ----------------
@@ -108,7 +111,8 @@ class IdempotenciaReintentos(UsuarioInventario):
     def con_reintentos(self):
         llave = clave()
         cuerpo = {"tipo": "ENTRADA", "id_producto": comun.ID_PRODUCTO, "id_bodega": comun.ID_BODEGA, "cantidad": 3}
-        original = self.pedir("POST", "/movimientos", "POST /movimientos (primer intento)", esperados=(201,), headers={"Idempotency-Key": llave}, json=cuerpo)
+        original = self.pedir("POST", "/movimientos", "POST /movimientos (primer intento)", esperados=(201,),
+                              validar=movimiento_registrado, headers={"Idempotency-Key": llave}, json=cuerpo)
         for _ in range(random.randint(1, 2)):
             cabeceras = {**self.cabeceras, "Idempotency-Key": llave}
             with self.client.post(f"{self.prefijo}/movimientos", name="POST /movimientos (reintento)", json=cuerpo, headers=cabeceras, catch_response=True) as r:
@@ -128,41 +132,3 @@ class SalidasMismoSaldo(UsuarioInventario):
     @task
     def salida(self):
         self.movimiento("SALIDA", 1, nombre="POST /movimientos (SALIDA mismo saldo)", producto=comun.ID_PRODUCTO_2, bodega=comun.ID_BODEGA_2)
-
-
-# ---------------- Estrés y pico ----------------
-
-class EstresConsultas(UsuarioInventario):
-    """I07: de 0 a 200 usuarios, uno por segundo, con la mezcla de consultas más pesada, para hallar el punto de quiebre."""
-
-    @task(3)
-    def saldos(self):
-        self.pedir("GET", "/saldos?por_pagina=20", "GET /saldos")
-
-    @task(3)
-    def kardex(self):
-        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 5)}&por_pagina=20", "GET /movimientos")
-
-    @task
-    def lotes(self):
-        self.pedir("GET", f"/lotes?vence_antes_de={(date.today() + timedelta(days=365)).isoformat()}&con_existencia=true", "GET /lotes?vence_antes_de")
-
-
-class PicoMixto(UsuarioInventario):
-    """I08: 200 usuarios en 2 s con el uso típico: casi todo consultas y algún movimiento."""
-
-    @task(8)
-    def saldos(self):
-        self.pedir("GET", "/saldos?por_pagina=20", "GET /saldos")
-
-    @task(4)
-    def kardex(self):
-        self.pedir("GET", f"/movimientos?pagina={random.randint(1, 3)}&por_pagina=20", "GET /movimientos")
-
-    @task(2)
-    def bodegas(self):
-        self.pedir("GET", "/bodegas", "GET /bodegas")
-
-    @task(2)
-    def entrada(self):
-        self.movimiento("ENTRADA", random.randint(1, 10))
