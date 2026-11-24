@@ -15,9 +15,9 @@ Si se corren por separado, respetar el mismo orden y preferir una pila nueva.
 """
 import os
 
-# S01 debe correr cerca del máximo ESTABLE (no del quiebre): por defecto 60 usuarios. Ajustarlo con PERF_CAPACIDAD_USUARIOS a ~70 % del
-# número de usuarios en que E01 se quebró (ver RESULTADOS.md).
-USUARIOS_CAPACIDAD = int(os.environ.get("PERF_CAPACIDAD_USUARIOS", "60"))
+# S01 debe correr cerca del máximo ESTABLE (no del quiebre): ~70 % de los usuarios en que E01 llegó a su meseta de rendimiento. En la medición
+# local, E01 se estancó en ~97 peticiones/s con ~172 usuarios (ver RESULTADOS.md): 70 % = 120. Se ajusta con PERF_CAPACIDAD_USUARIOS.
+USUARIOS_CAPACIDAD = int(os.environ.get("PERF_CAPACIDAD_USUARIOS", "120"))
 
 ESCENARIOS = [
     # ---------------- API Gateway: consultas ----------------

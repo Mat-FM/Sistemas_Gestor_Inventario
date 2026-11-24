@@ -36,7 +36,7 @@ o un reintento idempotente que devuelve otro movimiento.
 | I03 | carga (RNF06) | ms-inventario | 50 | 5/s | 5 min | Lotes con existencia en orden FEFO, por vencer y por producto (`GET /lotes`) |
 | M01 | **carga** | los dos | 50 | 5/s | 10 min | Mezcla: ~85 % GET y ~15 % POST por el Gateway, en meseta (comportamiento nominal) |
 | E01 | **estrés** | los dos | 0 → 300 | 2/s | 5 min | La misma mezcla con una rampa agresiva: **punto de quiebre** (usuarios y RPS) |
-| S01 | **capacidad** | los dos | 60 (ajustable) | 5/s | 60 min | La misma mezcla, sostenida cerca del máximo estable: **tendencia en el tiempo** |
+| S01 | **capacidad** | los dos | 120 (ajustable) | 5/s | 60 min | La misma mezcla, sostenida cerca del máximo estable: **tendencia en el tiempo** |
 | G05 | carga | Gateway → ms-inventario | 50 | 5/s | 5 min | `POST /movimientos` por el Gateway, con su `Idempotency-Key` |
 | G06 | carga | Gateway | 10 | 2/s | 3 min | **Inicio de sesión** (`POST /auth/login`): contraseña con bcrypt y firma del JWT |
 | I04 | carga | ms-inventario | 50 | 5/s | 5 min | Entradas de mercancía a la vez (`POST /movimientos`): una transacción por movimiento |
@@ -65,10 +65,11 @@ Son 17 de 20 en GET (85 %) y 3 en POST (15 %). El stock de preparación (1 000 0
 60 minutos de S01 (unas 7 000 salidas de 1 a 3 unidades), así que un 409 `STOCK_INSUFICIENTE` sería un defecto y no el fin de las existencias.
 
 - **E01 (estrés)**: `resumen.py` busca en el historial segundo a segundo el primer momento en que el p95 pasa de 2 s o los errores de 1 % y
-  siguen así 5 s seguidos, y anota **con cuántos usuarios y a cuántas peticiones por segundo** ocurrió.
-- **S01 (capacidad)**: la guía pide una carga **cercana al máximo estable, no al quiebre**. Corra E01 primero y ajuste
-  `PERF_CAPACIDAD_USUARIOS` a ~70 % de los usuarios del quiebre. **El valor por defecto (60) no está calibrado**: se eligió antes de tener
-  un quiebre medido, porque en la comprobación preliminar E01 no llegó a quebrarse. `resumen.py` compara el p95, las peticiones por segundo y
+  siguen así 5 s seguidos, y anota **con cuántos usuarios y a cuántas peticiones por segundo** ocurrió. Como esa regla no ve a los usuarios
+  que esperan turno sin completar peticiones (no dejan muestras), también anota la **meseta de rendimiento**: el momento en que las
+  peticiones por segundo dejan de crecer aunque sigan entrando usuarios.
+- **S01 (capacidad)**: la guía pide una carga **cercana al máximo estable, no al quiebre**: ~70 % de los usuarios de la meseta de E01. En la
+  medición local E01 se estancó en ~172 usuarios, y el 70 % es **120** (el valor por defecto; se cambia con `PERF_CAPACIDAD_USUARIOS`). `resumen.py` compara el p95, las peticiones por segundo y
   los errores del primer y el último 10 % de la meseta.
 
 ## Orden y datos
@@ -85,8 +86,8 @@ Son 17 de 20 en GET (85 %) y 3 en POST (15 %). El stock de preparación (1 000 0
 ## Lo que mostraron (preliminar)
 
 Detalle en [RESULTADOS.md](RESULTADOS.md): pila nueva con el código de `develop` y los límites del Gateway subidos; **las siete consultas con
-su duración completa (5 min, 50 usuarios)** y las otras ocho con los usuarios de su escenario y un tope de 2 min (la tabla de parámetros
-dice la duración real de cada una).
+su duración completa (5 min, 50 usuarios)**, el estrés E01 (5 min, hasta 300 usuarios) y la capacidad S01 (60 min, 120 usuarios) también
+completos, y las otras seis con los usuarios de su escenario y un tope de 2 min (la tabla de parámetros dice la duración real de cada una).
 
 - **Las siete consultas cumplen RNF06**: p95 entre 5 y 16 ms y entre 0 % y 0,09 % de errores con 50 usuarios, por el Gateway (G01 a G04) y
   directo a ms-inventario (I01 a I03, 0 % de errores).
@@ -98,10 +99,21 @@ dice la duración real de cada una).
   **Corregido después de esta corrida (PR #33)**: `DatabaseStoreConReintento` reintenta el contador ante un *deadlock*. La tabla de
   `RESULTADOS.md` es de antes del arreglo; con él, G02, G03, G04, M01 y E01 (2 min, 50 usuarios y estrés hasta unos 240) dieron 0 errores en
   23 568 peticiones y 0 respuestas 500, con 36 *deadlocks* reales resueltos todos en el primer reintento.
-- **Mezcla (M01, E01 y S01)**, 2 min cada una: M01 con p95 de 17 ms y 0,13 % de errores (los mismos *deadlocks*); E01 **no se quebró**: en
-  2 min alcanzó 238 usuarios y 101 peticiones/s con p99 de 32 ms, aunque una petición tardó 50 s; S01 estable (p95 de 17 a 15 ms), pero 2
-  minutos no dicen nada sobre la tendencia de una hora. **El quiebre y la tendencia reales exigen E01 completa (5 min, 300 usuarios) y
-  S01 completa (60 min)**: no se corrieron.
+- **Mezcla, carga (M01, 2 min)**: p95 de 17 ms y 0,13 % de errores (los *deadlocks* de arriba).
+- **Estrés (E01, completo)**: por el criterio de la guía **no se quebró**: 26 421 peticiones, 0 errores, p95 de 15 ms con 300 usuarios. Pero
+  **las peticiones por segundo se estancan en ~97 desde los ~172 usuarios** aunque sigan entrando hasta 300: los 128 de más esperan turno sin
+  completar peticiones (por eso no aparecen en el p95), y las que al fin terminan tardaron hasta 77 y 151 s. Esa es la **meseta de
+  rendimiento** que anota `resumen.py`. Causa: un Gateway atiende como máximo ~150 usuarios a la vez. Apache (`mpm_prefork`) llega a sus
+  150 procesos (`MaxRequestWorkers`, el registro dice `AH00161: server reached MaxRequestWorkers`) y MySQL tiene `max_connections` = 151: al
+  subir el tope de Apache a 256 en una copia, MySQL rechazó las conexiones (`1040 Too many connections`) y el 40 % de las peticiones falló.
+  No se debe a la cuenta única de las pruebas, ni al `KeepAlive` (150 s con 300 usuarios: 74 peticiones/s de base, 72 con `KeepAlive Off` y 80 con 30 cuentas, sin mejora apreciable), ni
+  al generador de carga (Locust usaba el 6 % de la CPU en una prueba corta). Consecuencia para RNF05: el autoescalado por CPU (> 70 %) no avisaría, porque el Gateway se
+  satura por procesos y conexiones y no por CPU; hay que dimensionar Apache y MySQL juntos o escalar por conexiones. **No se corrigió**: las
+  pruebas miden, y cambiar esos topes es una decisión de despliegue.
+- **Capacidad (S01, completa)**: 120 usuarios, 60 min, **257 512 peticiones y 0 errores**; p95 de 540 ms y p99 de 890 ms en todo el tramo
+  (la petición más lenta, 12,8 s, al arrancar); **estable**: el p95 bajó de 704 a 350 ms (de 949 ms en los primeros 10 min a 362 ms en los últimos) y las peticiones por segundo de 70,5 a 74,1 entre el
+  primer y el último 10 % de la meseta, sin degradación con el tiempo. El Gateway usó una mediana de 155 % de CPU (un núcleo y medio) y es
+  el que más consume; la memoria no pasó de 600 MB por contenedor.
 - **Las escrituras y la idempotencia** (G05, I04 e I05): 0 % de errores y p95 de 8 a 19 ms. En I05, ningún reintento con la misma clave
   duplicó un movimiento (0 errores en 19 343 peticiones). **La contención** (I06, 30 usuarios sobre la misma fila de saldo): 0 % de errores y p95 de 9 ms.
 - **Inicio de sesión** (G06): 200 ms de p95 con 10 usuarios, que es lo que cuesta verificar la

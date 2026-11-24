@@ -1,8 +1,8 @@
 # Resultados de las pruebas de rendimiento — Brayan Collazos (API Gateway y ms-inventario)
 
-Generado el 2026-11-23 23:10 con Locust 2.31.8. · **resultados preliminares: duración reducida en M01 2m (definida: 10m), E01 2m (definida: 5m), S01 2m (definida: 60m), G05 2m (definida: 5m), G06 2m (definida: 3m), I04 2m (definida: 5m), I05 2m (definida: 3m), I06 2m (definida: 3m); el resto con la definida**
+Generado el 2026-11-23 22:16 con Locust 2.32.5. · **resultados preliminares: duración reducida en M01 2m (definida: 10m), G05 2m (definida: 5m), G06 2m (definida: 3m), I04 2m (definida: 5m), I05 2m (definida: 3m), I06 2m (definida: 3m); el resto con la definida**
 
-Entorno: MacBook Pro Apple M5 Pro (24 GB), sistema completo con Docker Compose (imágenes del repositorio, un contenedor por servicio y por base de datos) y Locust 2.31.8 en un contenedor de la misma red; medición local de desarrollo, no es Kubernetes, y el equipo estaba en uso. Límites del Gateway subidos (RATE_LIMIT_PER_MINUTE=100000, LOGIN_RATE_LIMIT_PER_MINUTE=1000) para medir el Gateway y no el limitador (RNF19).
+Entorno: sin declarar
 
 Estado de la API: los listados del Gateway (usuarios) y de ms-inventario (saldos, kardex, lotes y bodegas) y de ms-catalogo **paginan** (`?pagina&por_pagina`, 20 por defecto, máximo 100); `/categorias` devuelve el árbol completo, sin paginar. Las pruebas G y la mezcla (M01, E01 y S01) van siempre por el Gateway, con una sola cuenta de administrador y los límites de peticiones del Gateway subidos (RNF19) para medir el Gateway y no el limitador.
 
@@ -18,8 +18,8 @@ Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia se comp
 | I02 KardexConFiltros | carga | consulta | directo | 9821 | 0 (0.00%) | 3 | 6 | 7 | 27 | 32.8 | CUMPLE |
 | I03 LotesFefo | carga | consulta | directo | 9803 | 0 (0.00%) | 3 | 5 | 6 | 13 | 32.7 | CUMPLE |
 | M01 CargaMixta | carga | mezcla | gateway | 3797 | 5 (0.13%) | 10 | 17 | 24 | 2393 | 31.8 | dentro del umbral |
-| E01 EstresMixto | estres | mezcla | gateway | 8400 | 0 (0.00%) | 8 | 14 | 32 | 49958 | 66.6 | dentro del umbral |
-| S01 CapacidadMixta | capacidad | mezcla | gateway | 4520 | 0 (0.00%) | 9 | 16 | 20 | 31 | 37.9 | dentro del umbral |
+| E01 EstresMixto | estres | mezcla | gateway | 26421 | 0 (0.00%) | 9 | 15 | 42 | 150775 | 86.2 | dentro del umbral |
+| S01 CapacidadMixta | capacidad | mezcla | gateway | 257512 | 0 (0.00%) | 89 | 540 | 890 | 12806 | 71.6 | dentro del umbral |
 | G05 EscrituraPorElGateway | carga | escritura | gateway | 3804 | 0 (0.00%) | 13 | 19 | 24 | 32 | 31.9 | dentro del umbral |
 | G06 InicioDeSesion | carga | sesion | gateway | 696 | 0 (0.00%) | 180 | 200 | 210 | 209 | 5.8 | dentro del umbral |
 | I04 RegistrarEntradas | carga | escritura | directo | 3807 | 0 (0.00%) | 8 | 13 | 17 | 22 | 31.9 | dentro del umbral |
@@ -38,8 +38,8 @@ Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia se comp
 | I02 | 50 | 5 | 5m | http://ms-inventario:3000 |
 | I03 | 50 | 5 | 5m | http://ms-inventario:3000 |
 | M01 | 50 | 5 | 2m | http://api-gateway:8000 |
-| E01 | 300 | 2 | 2m | http://api-gateway:8000 |
-| S01 | 60 | 5 | 2m | http://api-gateway:8000 |
+| E01 | 300 | 2 | 5m | http://api-gateway:8000 |
+| S01 | 120 | 5 | 60m | http://api-gateway:8000 |
 | G05 | 50 | 5 | 2m | http://api-gateway:8000 |
 | G06 | 10 | 2 | 2m | http://api-gateway:8000 |
 | I04 | 50 | 5 | 2m | http://ms-inventario:3000 |
@@ -48,36 +48,38 @@ Criterio RNF06: p95 < 2000 ms y errores < 1 %. Las pruebas de referencia se comp
 
 ## Estrés (E01): punto de quiebre
 
-**No se quebró**: llegó a 238 usuarios y 100.9 peticiones/s sin salir del umbral de forma sostenida.
+**No se quebró**: llegó a 300 usuarios y 103.7 peticiones/s sin salir del umbral de forma sostenida.
 
-## Capacidad (S01): tendencia en el tiempo con 60 usuarios
+**Meseta de rendimiento a los 81 s, con 172 usuarios y 97.5 peticiones/s**: desde ahí las peticiones por segundo no crecen aunque lleguen hasta 300 usuarios. Los 128 de más esperan turno sin completar peticiones (no cuentan en el p95 ni en los errores); la petición más lenta tardó 151 s.
+
+## Capacidad (S01): tendencia en el tiempo con 120 usuarios
 
 | Tramo | p95 medio (ms) | Peticiones/s | Errores |
 |---|---|---|---|
-| Primer 10 % de la meseta | 17 | 30.4 | 0.00% |
-| Último 10 % de la meseta | 15 | 39.5 | 0.00% |
+| Primer 10 % de la meseta | 704 | 70.5 | 0.00% |
+| Último 10 % de la meseta | 350 | 74.1 | 0.00% |
 
-Cambio del p95: -11% → **estable** (se toma como estable un cambio menor del 20 %).
+Cambio del p95: -50% → **mejora con el tiempo** (se toma como estable un cambio menor del 20 %).
 
 ## CPU y memoria de los contenedores
 
-| Contenedor | CPU máx. (%) | Memoria en ese momento |
-|---|---|---|
-| gi-prueba-api-gateway-1 | 151.3 | 90.28MiB / 7.748GiB |
-| gi-prueba-ms-catalogo-1 | 52.8 | 60.87MiB / 7.748GiB |
-| gi-prueba-ms-inventario-1 | 39.8 | 96.61MiB / 7.748GiB |
-| gi-prueba-ms-notificaciones-1 | 19.1 | 58.55MiB / 7.748GiB |
-| gi-prueba-db-ms-inventario-1 | 18.9 | 54.92MiB / 7.748GiB |
-| gi-prueba-db-api-gateway-1 | 13.8 | 497MiB / 7.748GiB |
-| gi-prueba-ms-reportes-1 | 13.5 | 212.6MiB / 7.748GiB |
-| gi-prueba-web-client-1 | 9.3 | 70.27MiB / 7.748GiB |
-| gi-prueba-db-ms-catalogo-1 | 8.5 | 455.7MiB / 7.748GiB |
-| gi-prueba-db-ms-notificaciones-1 | 3.8 | 24.09MiB / 7.748GiB |
-| gi-prueba-db-ms-compras-1 | 3.6 | 23.76MiB / 7.748GiB |
-| gi-prueba-db-ms-reportes-1 | 3.4 | 24.95MiB / 7.748GiB |
-| gi-prueba-db-ms-proveedores-1 | 2.9 | 471.9MiB / 7.748GiB |
-| gi-prueba-ms-proveedores-1 | 2.3 | 46.89MiB / 7.748GiB |
-| gi-prueba-ms-compras-1 | 2.2 | 24.49MiB / 7.748GiB |
+| Contenedor | CPU mediana (%) | CPU máx. (%) | Memoria en el pico |
+|---|---|---|---|
+| gi-prueba-api-gateway-1 | 155.3 | 751.8 | 313.7MiB / 7.748GiB |
+| gi-prueba-ms-catalogo-1 | 36.0 | 93.2 | 57.83MiB / 7.748GiB |
+| gi-prueba-db-api-gateway-1 | 35.2 | 108.1 | 599.5MiB / 7.748GiB |
+| gi-prueba-ms-inventario-1 | 23.8 | 82.8 | 92.68MiB / 7.748GiB |
+| gi-prueba-db-ms-inventario-1 | 12.6 | 102.6 | 75.63MiB / 7.748GiB |
+| gi-prueba-db-ms-catalogo-1 | 4.4 | 43.0 | 468MiB / 7.748GiB |
+| gi-prueba-db-ms-proveedores-1 | 0.5 | 20.6 | 452.8MiB / 7.748GiB |
+| gi-prueba-ms-reportes-1 | 0.0 | 86.5 | 220.3MiB / 7.748GiB |
+| gi-prueba-ms-notificaciones-1 | 0.0 | 168.6 | 90.64MiB / 7.748GiB |
+| gi-prueba-web-client-1 | 0.0 | 26.2 | 40.93MiB / 7.748GiB |
+| gi-prueba-ms-proveedores-1 | 0.0 | 66.2 | 56.65MiB / 7.748GiB |
+| gi-prueba-ms-compras-1 | 0.0 | 23.0 | 28.54MiB / 7.748GiB |
+| gi-prueba-db-ms-notificaciones-1 | 0.0 | 75.1 | 25.65MiB / 7.748GiB |
+| gi-prueba-db-ms-reportes-1 | 0.0 | 91.1 | 28.42MiB / 7.748GiB |
+| gi-prueba-db-ms-compras-1 | 0.0 | 103.8 | 47.55MiB / 7.748GiB |
 
 ## Detalle por operación
 
@@ -149,29 +151,29 @@ Cambio del p95: -11% → **estable** (se toma como estable un cambio menor del 2
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /api/bodegas` | 439 | 0 | 13 |
-| `GET GET /api/lotes?vence_antes_de` | 771 | 0 | 11 |
-| `GET GET /api/movimientos` | 1677 | 0 | 11 |
-| `GET GET /api/productos` | 1322 | 0 | 14 |
-| `GET GET /api/productos?nombre` | 409 | 0 | 15 |
-| `GET GET /api/saldos` | 2125 | 0 | 11 |
-| `GET GET /api/usuarios` | 404 | 0 | 10 |
-| `POST POST /api/movimientos (ENTRADA)` | 842 | 0 | 17 |
-| `POST POST /api/movimientos (SALIDA)` | 411 | 0 | 18 |
+| `GET GET /api/bodegas` | 1283 | 0 | 12 |
+| `GET GET /api/lotes?vence_antes_de` | 2581 | 0 | 12 |
+| `GET GET /api/movimientos` | 5192 | 0 | 12 |
+| `GET GET /api/productos` | 3994 | 0 | 15 |
+| `GET GET /api/productos?nombre` | 1303 | 0 | 15 |
+| `GET GET /api/saldos` | 6781 | 0 | 11 |
+| `GET GET /api/usuarios` | 1293 | 0 | 11 |
+| `POST POST /api/movimientos (ENTRADA)` | 2652 | 0 | 19 |
+| `POST POST /api/movimientos (SALIDA)` | 1342 | 0 | 19 |
 
-### S01 — Capacidad (soak): la misma mezcla con 60 usuarios durante 60 min, para ver la tendencia en el tiempo
+### S01 — Capacidad (soak): la misma mezcla con 120 usuarios durante 60 min, para ver la tendencia en el tiempo
 
 | Operación | Peticiones | Errores | p95 (ms) |
 |---|---|---|---|
-| `GET GET /api/bodegas` | 233 | 0 | 13 |
-| `GET GET /api/lotes?vence_antes_de` | 467 | 0 | 13 |
-| `GET GET /api/movimientos` | 904 | 0 | 13 |
-| `GET GET /api/productos` | 659 | 0 | 15 |
-| `GET GET /api/productos?nombre` | 243 | 0 | 16 |
-| `GET GET /api/saldos` | 1148 | 0 | 12 |
-| `GET GET /api/usuarios` | 199 | 0 | 12 |
-| `POST POST /api/movimientos (ENTRADA)` | 422 | 0 | 19 |
-| `POST POST /api/movimientos (SALIDA)` | 245 | 0 | 19 |
+| `GET GET /api/bodegas` | 12980 | 0 | 540 |
+| `GET GET /api/lotes?vence_antes_de` | 25848 | 0 | 530 |
+| `GET GET /api/movimientos` | 51387 | 0 | 530 |
+| `GET GET /api/productos` | 38705 | 0 | 550 |
+| `GET GET /api/productos?nombre` | 12822 | 0 | 540 |
+| `GET GET /api/saldos` | 64085 | 0 | 520 |
+| `GET GET /api/usuarios` | 12937 | 0 | 520 |
+| `POST POST /api/movimientos (ENTRADA)` | 25854 | 0 | 570 |
+| `POST POST /api/movimientos (SALIDA)` | 12894 | 0 | 590 |
 
 ### G05 — POST /movimientos por el Gateway, con su Idempotency-Key, hacia ms-inventario (que valida con ms-catalogo)
 

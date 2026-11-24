@@ -91,6 +91,27 @@ def punto_de_quiebre(filas):
     return f"**No se quebró**: llegó a {usuarios:.0f} usuarios y {rps:.1f} peticiones/s sin salir del umbral de forma sostenida."
 
 
+def meseta_de_rendimiento(filas, maximo_ms):
+    """La otra forma de quebrarse: las peticiones por segundo dejan de crecer aunque sigan entrando usuarios. Los usuarios de más quedan
+    esperando un turno (un proceso del servidor, una conexión a la base de datos) y no completan peticiones, así que ni el p95 ni los
+    errores lo muestran: solo aparecen, al final, como la petición más lenta. Se toma como meseta el primer momento en que el promedio
+    de 10 s llega al 95 % de su máximo, si después todavía entran al menos un 20 % más de usuarios."""
+    if len(filas) < 30:
+        return ""
+    rps = [numero(f, "Requests/s") or 0 for f in filas]
+    suave = [sum(rps[max(0, i - 9):i + 1]) / len(rps[max(0, i - 9):i + 1]) for i in range(len(rps))]
+    tope = max(suave)
+    i = next(i for i, v in enumerate(suave) if v >= 0.95 * tope)
+    usuarios = numero(filas[i], "User Count") or 0
+    maximos = max(numero(f, "User Count") or 0 for f in filas)
+    if not usuarios or maximos < usuarios * 1.2:
+        return ""
+    segundos = int(numero(filas[i], "Timestamp") - numero(filas[0], "Timestamp"))
+    return (f"**Meseta de rendimiento a los {segundos} s, con {usuarios:.0f} usuarios y {suave[i]:.1f} peticiones/s**: desde ahí las peticiones por "
+            f"segundo no crecen aunque lleguen hasta {maximos:.0f} usuarios. Los {maximos - usuarios:.0f} de más esperan turno sin completar "
+            f"peticiones (no cuentan en el p95 ni en los errores); la petición más lenta tardó {maximo_ms / 1000:.0f} s.")
+
+
 def promedio(filas, columna):
     valores = [v for v in (numero(f, columna) for f in filas) if v is not None]
     return sum(valores) / len(valores) if valores else 0
@@ -125,20 +146,23 @@ def tendencia(filas, usuarios):
 
 
 def recursos():
-    """Máximo de CPU y memoria por contenedor, de results/recursos.csv (lo escribe recursos.sh durante la corrida)."""
+    """CPU y memoria por contenedor, de results/recursos.csv (lo escribe recursos.sh durante la corrida). El pico suele ser el arranque
+    (preparación de datos, inicios de sesión): la mediana dice cuánto usa en el régimen normal. 100 % es un núcleo."""
     filas = leer_csv(RESULTADOS / "recursos.csv")
     if not filas:
         return ["No se registraron (correr `./recursos.sh` en otra terminal durante las pruebas)."]
-    maximos = {}
+    por_contenedor = {}
     for f in filas:
-        cpu = float(f["cpu"].rstrip("%") or 0)
-        actual = maximos.setdefault(f["contenedor"], {"cpu": 0.0, "memoria": f["memoria"]})
-        if cpu >= actual["cpu"]:
-            actual["cpu"] = cpu
-            actual["memoria"] = f["memoria"]
-    lineas = ["| Contenedor | CPU máx. (%) | Memoria en ese momento |", "|---|---|---|"]
-    for nombre, valor in sorted(maximos.items(), key=lambda par: -par[1]["cpu"]):
-        lineas.append(f"| {nombre} | {valor['cpu']:.1f} | {valor['memoria']} |")
+        por_contenedor.setdefault(f["contenedor"], []).append((float(f["cpu"].rstrip("%") or 0), f["memoria"]))
+    lineas = ["| Contenedor | CPU mediana (%) | CPU máx. (%) | Memoria en el pico |", "|---|---|---|---|"]
+    resumen = []
+    for nombre, muestras in por_contenedor.items():
+        cpus = sorted(c for c, _ in muestras)
+        mediana = cpus[len(cpus) // 2]
+        pico = max(muestras, key=lambda m: m[0])
+        resumen.append((nombre, mediana, pico[0], pico[1]))
+    for nombre, mediana, maximo, memoria in sorted(resumen, key=lambda r: -r[1]):
+        lineas.append(f"| {nombre} | {mediana:.1f} | {maximo:.1f} | {memoria} |")
     return lineas
 
 
@@ -201,7 +225,9 @@ def main(rapido):
     capacidad = next(e for e in ESCENARIOS if e["id"] == "S01")
     usuarios_s01 = json.loads(texto_de("S01", ".params.json", "{}")).get("usuarios", capacidad["usuarios"])
     lineas += parametros
-    lineas += ["", "## Estrés (E01): punto de quiebre", "", punto_de_quiebre(historial("E01"))]
+    total_e01 = leer("E01")[0]
+    meseta = meseta_de_rendimiento(historial("E01"), numero(total_e01, "Max Response Time") or 0) if total_e01 else ""
+    lineas += ["", "## Estrés (E01): punto de quiebre", "", punto_de_quiebre(historial("E01"))] + (["", meseta] if meseta else [])
     lineas += ["", f"## Capacidad (S01): tendencia en el tiempo con {usuarios_s01} usuarios", "", tendencia(historial("S01"), usuarios_s01)]
     lineas += ["", "## CPU y memoria de los contenedores", ""] + recursos()
     lineas += ["", "## Detalle por operación"] + detalle + [""]
