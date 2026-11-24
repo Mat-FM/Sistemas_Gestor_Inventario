@@ -63,7 +63,10 @@ Pruebas de funcionamiento: `./smoke-tests/ejecutar.sh` levanta todo con Docker C
 
 ## Convenciones
 
-- Ramas: `main` (versión estable), `develop` (integración) y `feature/<servicio>-<descripción>`.
+- Ramas: `main` (versión estable), `develop` (integración) y una rama por componente, con su nombre y sin sufijos: `api-gateway`,
+  `ms-catalogo`, `ms-proveedores`, `ms-inventario`, `ms-compras`, `ms-notificaciones`, `ms-reportes`, `web-client`, `performance-tests`,
+  `k8s` y `docs`. Cada integrante tiene además su rama personal (`brayan`, `Mateo-FM`, `LuisSaraza`). El detalle de cada cambio va en los
+  commits y en el pull request, no en el nombre de la rama.
 - Todo cambio entra por pull request hacia `develop`, revisado por otro integrante.
 - Commits con Conventional Commits (`feat:`, `fix:`, `docs:`).
 - Cada servicio publica su especificación OpenAPI en `/docs` y expone `/health`.
